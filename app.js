@@ -271,6 +271,14 @@ if (!appState.userOnboarding || !appState.userOnboarding.phase) {
 
 const tracks = appState.tracks;
 let arrangement = appState.arrangement;
+if (appState.transport && typeof appState.transport === "object") {
+  if (appState.transport.active || appState.transport.frameId) {
+    appState.transport = null;
+  } else {
+    appState.transport.active = false;
+    appState.transport.frameId = null;
+  }
+}
 let transport = appState.transport || null;
 
 appState.tracks = tracks;
