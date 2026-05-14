@@ -270,6 +270,14 @@ if (!appState.userOnboarding || !appState.userOnboarding.phase) {
   appState.userOnboarding = { phase: "seed", needsHint: true };
 }
 
+const tracks = appState.tracks;
+let arrangement = appState.arrangement;
+let transport = appState.transport || null;
+
+appState.tracks = tracks;
+appState.arrangement = arrangement;
+appState.transport = transport;
+
 refreshTrackLookup();
 tracks.forEach((track) => {
   if (typeof track.solo !== "boolean") {
@@ -309,6 +317,15 @@ function normalizeTrackPreferences(track) {
 }
 
 tracks.forEach(normalizeTrackPreferences);
+function syncArrangementState(nextArrangement) {
+  arrangement = nextArrangement;
+  appState.arrangement = nextArrangement;
+}
+
+function syncTransportState(nextTransport) {
+  transport = nextTransport;
+  appState.transport = nextTransport;
+}
 
 function markAppStateDirty(force = false) {
   if (typeof appState.__markStateDirty === "function") {
@@ -2459,7 +2476,7 @@ function startTransportWithState() {
   const startAt = now;
   const beatMs = 60000 / resolvePreferredBpm();
   const barMs = beatMs * 4;
-  transport = {
+  syncTransportState({
     active: true,
     bpm: resolvePreferredBpm(),
     beatMs,
@@ -2470,7 +2487,7 @@ function startTransportWithState() {
     arrangementStartStep: arrangement.step,
     arrangementStep: -1,
     frameId: null,
-  };
+  });
 
   if (arrangement.enabled && hasArrangementClips()) {
     updateArrangementStep(arrangement.step, startAt, true);
@@ -2521,7 +2538,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       cell.classList.remove("playing");
     });
   }
-  transport = null;
+  syncTransportState(null);
   arrangementPlayheadStep = -1;
 
   window.freemixRender?.updateTransportRow?.();
@@ -3376,7 +3393,7 @@ function toggleArrangement() {
 function clearArrangement() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
-  arrangement = createInitialArrangement();
+  syncArrangementState(createInitialArrangement());
   refreshArrangementHasClipsState();
   closeArrangementClearMenu();
   if (transport?.active) {
@@ -3446,7 +3463,7 @@ function updateArrangementStepCount(event) {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementStepCount = nextLength;
-  arrangement = createInitialArrangement(nextLength);
+  syncArrangementState(createInitialArrangement(nextLength));
   if (previousArrangement?.clips) {
     for (let index = 0; index < Math.min(previousArrangement.clips.length, arrangement.clips.length); index += 1) {
       arrangement.clips[index] = previousArrangement.clips[index] || {};
