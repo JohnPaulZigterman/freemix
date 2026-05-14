@@ -6,7 +6,18 @@ const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
 const SEARCH_QUERY_MIN_LENGTH = 2;
-const SEARCH_RESULT_FIELDS = Object.freeze(["identifier", "title", "creator", "year", "runtime", "downloads"]);
+const SEARCH_RESULT_FIELDS = Object.freeze([
+  "identifier",
+  "title",
+  "creator",
+  "description",
+  "subject",
+  "year",
+  "runtime",
+  "downloads",
+]);
+const SEARCHABLE_TEXT_FIELDS = Object.freeze(["title", "creator", "description", "subject", "identifier", "collection"]);
+const SEARCH_QUERY_VARIANT_TARGET = 18;
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -842,14 +853,13 @@ async function seedStarterSample(track, rawQuery = QUICKSTART_SAMPLE_QUERY) {
   }
 
   const query = normalizeLaunchActionQuery(rawQuery);
-  const archiveQuery = buildArchiveSearchQuery(query) || query;
   clearGuidanceHint();
   setStatus(`${targetTrack.name}: loading starter`);
   renderTrackResultsMessage(targetTrack, "Loading starter...");
 
   try {
-    const docs = await fetchSearchResults(archiveQuery);
-    const ranked = rankAndFilterResults(normalizeResults(docs), targetTrack.durationFilter, query);
+    const docs = await runArchiveSearchQueries(query);
+    const ranked = rankAndFilterResults(docs, targetTrack.durationFilter, query);
     const best = ranked[0];
     if (!best) {
       renderTrackResultsMessage(targetTrack, "No samples found");
@@ -945,6 +955,8 @@ function normalizeResults(docs) {
       identifier: doc.identifier,
       title: textValue(doc.title) || doc.identifier,
       creator: textValue(doc.creator),
+      description: textListValue(doc.description),
+      subject: textListValue(doc.subject),
       year: textValue(doc.year),
       runtime: textValue(doc.runtime),
       downloads: Number(textValue(doc.downloads)) || 0,
@@ -960,6 +972,14 @@ function textValue(value) {
   }
 
   return value ?? "";
+}
+
+function textListValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry ?? "").trim()).filter(Boolean).join(" ");
+  }
+
+  return textValue(value);
 }
 
 function parseRuntime(runtime) {
@@ -1020,25 +1040,57 @@ function escapeArchiveQueryValue(value) {
 }
 
 function buildArchiveSearchQuery(rawQuery) {
+  const variants = buildArchiveSearchQueryVariants(rawQuery);
+  return variants[0] || "";
+}
+
+function buildArchiveSearchQueryVariants(rawQuery) {
   const normalized = normalizeSearchInput(rawQuery);
   if (!normalized) {
-    return "";
+    return [];
   }
 
-  const safeQuery = escapeArchiveQueryValue(normalized);
-  const tokenQueries = tokenizeSearchQuery(normalized)
-    .map((token) => {
-      const safeToken = escapeArchiveQueryValue(token);
-      return `((title:"${safeToken}") OR (creator:"${safeToken}") OR (identifier:"${safeToken}"))`;
-    })
-    .join(" OR ");
+  const safeQuery = escapeArchiveQueryValue(rawQuery.trim());
+  const safeTokens = tokenizeSearchQuery(normalized)
+    .map((token) => escapeArchiveQueryValue(token))
+    .filter(Boolean);
+  const uniqueTokens = Array.from(new Set(safeTokens));
 
-  const baseQuery = `((title:"${safeQuery}") OR (creator:"${safeQuery}") OR "${safeQuery}")`;
-  if (tokenQueries) {
-    return `mediatype:(movies) AND (${baseQuery} OR (${tokenQueries}))`;
+  if (!safeQuery) {
+    return [];
   }
 
-  return `mediatype:(movies) AND ${baseQuery}`;
+  const queries = new Set();
+  const addQuery = (query) => {
+    const clean = String(query || "").trim();
+    if (clean) {
+      queries.add(clean);
+    }
+  };
+
+  const toFieldClause = (value) =>
+    `(${SEARCHABLE_TEXT_FIELDS.map((field) => `${field}:(${value})`).join(" OR ")})`;
+  const mediaScoped = (query) => `mediatype:(movies) AND (${query})`;
+  const wildcardValue = safeQuery.includes(" ") ? "" : `${safeQuery}*`;
+
+  addQuery(
+    mediaScoped(`${toFieldClause(`"${safeQuery}"`)}${wildcardValue ? ` OR ${toFieldClause(wildcardValue)}` : ""}`),
+  );
+
+  if (uniqueTokens.length > 0) {
+    const tokenClause = uniqueTokens.map((token) => toFieldClause(`"${token}"`)).join(" OR ");
+    addQuery(mediaScoped(tokenClause));
+  }
+
+  if (safeQuery !== rawQuery.trim()) {
+    addQuery(mediaScoped(toFieldClause(`"${safeQuery}"`)));
+  }
+
+  addQuery(mediaScoped(`"${safeQuery}"`));
+  addQuery(mediaScoped(safeQuery));
+  addQuery(toFieldClause(`"${safeQuery}"`));
+
+  return Array.from(queries).slice(0, 5);
 }
 
 function searchRelevance(result, rawQuery) {
@@ -1047,6 +1099,8 @@ function searchRelevance(result, rawQuery) {
   const title = String(result.title || "").toLowerCase();
   const creator = String(result.creator || "").toLowerCase();
   const identifier = String(result.identifier || "").toLowerCase();
+  const description = String(result.description || "").toLowerCase();
+  const subject = String(result.subject || "").toLowerCase();
 
   let score = 0;
   if (!normalizedQuery) {
@@ -1067,6 +1121,14 @@ function searchRelevance(result, rawQuery) {
     score += 45;
   }
 
+  if (description.includes(normalizedQuery)) {
+    score += 34;
+  }
+
+  if (subject.includes(normalizedQuery)) {
+    score += 32;
+  }
+
   for (const token of tokens) {
     if (!token) {
       continue;
@@ -1083,6 +1145,12 @@ function searchRelevance(result, rawQuery) {
     }
     if (identifier.includes(token)) {
       score += 8;
+    }
+    if (description.includes(token)) {
+      score += 7;
+    }
+    if (subject.includes(token)) {
+      score += 6;
     }
   }
 
@@ -3359,6 +3427,56 @@ async function fetchSearchResults(rawQuery, signal) {
   }
 }
 
+async function runArchiveSearchQueries(query, options = {}) {
+  const { signal, maxResults = SEARCH_QUERY_VARIANT_TARGET } = options;
+  const normalizedQuery = normalizeSearchInput(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const queryVariants = buildArchiveSearchQueryVariants(normalizedQuery);
+  if (!queryVariants.length) {
+    return [];
+  }
+
+  const seenIdentifiers = new Set();
+  const merged = [];
+  let lastError = null;
+  for (const searchQuery of queryVariants) {
+    if (signal?.aborted) {
+      throw signal.reason || new DOMException("Request aborted", "AbortError");
+    }
+
+    try {
+      const docs = await fetchSearchResults(searchQuery, signal);
+      const normalizedDocs = normalizeResults(docs);
+      for (const result of normalizedDocs) {
+        if (!result.identifier || seenIdentifiers.has(result.identifier)) {
+          continue;
+        }
+
+        seenIdentifiers.add(result.identifier);
+        merged.push(result);
+      }
+
+      if (merged.length >= maxResults) {
+        break;
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  if (!merged.length && lastError) {
+    throw lastError;
+  }
+
+  return merged;
+}
+
 async function searchTrackSource(track, query) {
   const signal = (() => {
     const controller = new AbortController();
@@ -3369,32 +3487,19 @@ async function searchTrackSource(track, query) {
   track.searchRequestId = requestId;
   renderTrackResultsMessage(track, "Searching...");
 
-  const searchQuery = buildArchiveSearchQuery(query);
-  const queryToUse = searchQuery || query;
-
   try {
-    const docs = await fetchSearchResults(queryToUse, signal);
+    const docs = await runArchiveSearchQueries(query, {
+      signal,
+      maxResults: SEARCH_QUERY_VARIANT_TARGET,
+    });
     if (track.searchRequestId !== requestId) {
       return;
     }
 
-    const results = rankAndFilterResults(normalizeResults(docs), track.durationFilter, query);
+    const results = rankAndFilterResults(docs, track.durationFilter, query);
     if (results.length) {
       renderTrackResults(track, results);
       return;
-    }
-
-    if (searchQuery && queryToUse !== `mediatype:(movies) AND (${query})`) {
-      const fallbackDocs = await fetchSearchResults(`mediatype:(movies) AND (${query})`, signal);
-      if (track.searchRequestId !== requestId) {
-        return;
-      }
-
-      const fallbackResults = rankAndFilterResults(normalizeResults(fallbackDocs), track.durationFilter, query);
-      if (fallbackResults.length) {
-        renderTrackResults(track, fallbackResults);
-        return;
-      }
     }
 
     renderTrackResultsMessage(track, "No matches");
