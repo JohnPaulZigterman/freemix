@@ -54,17 +54,51 @@ const FX_CONTROLS = [
   { key: "reverb", label: "Verb", min: 0, max: 1, step: 0.01 },
 ];
 
-let selectedSource = null;
-let transport = null;
-let audioContext = null;
-let webAudioDisabled = false;
-let masterMuted = false;
-let simpleMode = true;
-let arrangementStepCount = DEFAULT_ARRANGEMENT_STEPS;
-let tracks = createInitialTracks();
-let arrangement = createInitialArrangement(arrangementStepCount);
-let videoLayout = "stack";
-let trackSearchRequestCounter = 0;
+const appState = window.freemixState || {};
+appState.selectedSource ??= null;
+appState.transport ??= null;
+appState.audioContext ??= null;
+appState.webAudioDisabled ??= false;
+appState.masterMuted ??= false;
+appState.simpleMode ??= true;
+appState.arrangementStepCount ??= DEFAULT_ARRANGEMENT_STEPS;
+appState.arrangementCopyMode ??= false;
+appState.arrangementCopySourceStep ??= null;
+appState.videoLayout ??= "stack";
+appState.trackSearchRequestCounter ??= 0;
+
+if (!appState.tracks) {
+  appState.tracks = createInitialTracks();
+}
+if (!appState.arrangement) {
+  appState.arrangement = createInitialArrangement(appState.arrangementStepCount);
+}
+
+[
+  "selectedSource",
+  "transport",
+  "audioContext",
+  "webAudioDisabled",
+  "masterMuted",
+  "simpleMode",
+  "arrangementStepCount",
+  "arrangementCopyMode",
+  "arrangementCopySourceStep",
+  "tracks",
+  "arrangement",
+  "videoLayout",
+  "trackSearchRequestCounter",
+].forEach((key) => {
+  Object.defineProperty(window, key, {
+    configurable: true,
+    get() {
+      return appState[key];
+    },
+    set(value) {
+      appState[key] = value;
+    },
+  });
+});
 
 window.addEventListener("pagehide", () => {
   hardStopPlayback("page hidden");
@@ -80,12 +114,6 @@ window.addEventListener("beforeunload", () => {
 
 renderWorkstation();
 setStatus("Ready");
-
-document.addEventListener("click", (event) => {
-  if (!event.target.closest(".track-source")) {
-    tracks.forEach((track) => renderTrackResults(track, []));
-  }
-});
 
 function normalizeResults(docs) {
   return docs
@@ -279,13 +307,15 @@ function renderWorkstation() {
         ${renderArrangementPanel()}
       </div>
 
-      <div class="control-bank" aria-label="Track controls">
+  <div class="control-bank" aria-label="Track controls">
         ${tracks.map((track) => renderTrackControlRow(track)).join("")}
       </div>
     </section>
   `;
 
   bindWorkstationControls();
+  window.freemixRender?.updateTransportRow?.();
+  window.freemixRender?.updateSourceStrip?.();
 }
 
 function renderArrangementPanel() {
@@ -301,7 +331,7 @@ function renderArrangementPanel() {
               ).join("")}
             </select>
           </label>
-          <button
+        <button
             class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
             type="button"
             id="arrangementToggle"
@@ -309,14 +339,36 @@ function renderArrangementPanel() {
         >
           ${arrangement.enabled ? "On" : "Off"}
         </button>
+          <button
+            class="arrangement-copy ${arrangementCopyMode ? "active" : ""}"
+            type="button"
+            id="arrangementCopyButton"
+            aria-pressed="${arrangementCopyMode}"
+          >
+            ${arrangementCopyMode ? "Copying" : "Copy"}
+          </button>
       </div>
         <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}">
           <div class="arrangement-corner">Trk</div>
-          ${Array.from({ length: arrangementStepCount }, (_, index) => `<div class="arrangement-step-label">${index + 1}</div>`).join("")}
+          ${Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("")}
         ${tracks.map((track) => renderArrangementRow(track)).join("")}
       </div>
       <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
     </aside>
+  `;
+}
+
+function renderArrangementStepLabel(stepIndex) {
+  const isCopySource = arrangementCopyMode && arrangementCopySourceStep === stepIndex;
+  return `
+    <button
+      class="arrangement-step-label ${isCopySource ? "copy-source" : ""}"
+      type="button"
+      data-arr-step="${stepIndex}"
+      title="${isCopySource ? "Copy source selected" : "Select or paste section here"}"
+    >
+      ${stepIndex + 1}
+    </button>
   `;
 }
 
@@ -506,61 +558,23 @@ function renderFxControl(track, fxControl) {
 }
 
 function bindWorkstationControls() {
-  document.querySelector("#playButton").addEventListener("click", startTransport);
-  document.querySelector("#stopButton").addEventListener("click", stopTransport);
-  document
-    .querySelector("#simpleModeButton")
-    ?.addEventListener("click", () => toggleSimpleMode());
-  document.querySelector("#bpmInput").addEventListener("input", (event) => {
-    if (!transport) {
-      return;
-    }
+  if (typeof window.freemixBindWorkstationControls === "function") {
+    window.freemixBindWorkstationControls();
+    tracks.forEach((track) => applyVideoFx(track));
+    renderArrangementPlayhead();
+    window.freemixRender?.updateTransportRow?.();
+    return;
+  }
 
-    transport.bpm = clamp(Number(event.target.value), 40, 220);
-    const now = performance.now();
-    transport.nextBeatAt = now;
-    transport.beatIndex = 0;
-    if (arrangement.enabled && hasArrangementClips()) {
-      updateArrangementStep(arrangement.step, now, true);
-    } else {
-      updateTrackTriggerGrid(now);
-    }
-  });
-  document.querySelector("#metroButton").addEventListener("click", () => {
-    masterMuted = !masterMuted;
-    document.querySelector("#metroButton").classList.toggle("active", !masterMuted);
-  });
-  document.querySelector("#layoutSelect").addEventListener("change", (event) => {
-    videoLayout = event.target.value;
-    stopTransport(false);
-    tracks.forEach((track) => disposeTrackAudio(track));
-    renderWorkstation();
-  });
-  document.querySelector("#arrangementToggle").addEventListener("click", toggleArrangement);
-  document.querySelector("#arrangementClear").addEventListener("click", clearArrangement);
-  document
-    .querySelector("#arrangementStepsSelect")
-    ?.addEventListener("change", updateArrangementStepCount);
+  if (bindWorkstationControls._pendingModuleBind) {
+    return;
+  }
 
-  document.querySelectorAll("[data-track-control]").forEach((control) => {
-    control.addEventListener("input", handleTrackControl);
-    control.addEventListener("click", handleTrackControl);
-    control.addEventListener("keydown", handleTrackSearchKeydown);
-  });
-
-  document.querySelectorAll(".track-video").forEach((video) => {
-    video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
-    video.addEventListener("error", () => setStatus("Media error", true));
-    video.muted = false;
-    video.volume = 1;
-  });
-
-  document.querySelectorAll("[data-arr-track]").forEach((cell) => {
-    cell.addEventListener("click", handleArrangementCell);
-  });
-
-  tracks.forEach((track) => applyVideoFx(track));
-  renderArrangementPlayhead();
+  bindWorkstationControls._pendingModuleBind = true;
+  window.setTimeout(() => {
+    bindWorkstationControls._pendingModuleBind = false;
+    bindWorkstationControls();
+  }, 0);
 }
 
 function handleTrackControl(event) {
@@ -681,7 +695,7 @@ function startTransportWithState() {
     updateTrackTriggerGrid(startAt);
   }
 
-  document.querySelector("#playButton").classList.add("active");
+  window.freemixRender?.updateTransportRow?.();
   setStatus("Playing");
   tickTransport();
 }
@@ -692,7 +706,7 @@ function stopTransport(resetVideos = true) {
   }
 
   transport = null;
-  document.querySelector("#playButton")?.classList.remove("active");
+  window.freemixRender?.updateTransportRow?.();
   document.querySelectorAll(".beat-light").forEach((light) => light.classList.remove("active"));
 
   if (resetVideos) {
@@ -721,10 +735,7 @@ function hardStopPlayback(reason = "stopped") {
   }
 
   masterMuted = true;
-  const metroButton = document.querySelector("#metroButton");
-  if (metroButton) {
-    metroButton.classList.remove("active");
-  }
+  window.freemixRender?.updateTransportRow?.();
 
   stopTransport(true);
   tracks.forEach((track) => {
@@ -1112,6 +1123,78 @@ function handleArrangementCell(event) {
   arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
   selectArrangementStep(stepIndex);
   setStatus(`${track.name}: placed in ${stepIndex + 1}`);
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+    window.freemixRender.updateTrackRow?.(track);
+    window.freemixRender.updateArrangementPlayhead?.();
+    return;
+  }
+
+  renderWorkstation();
+}
+
+function handleArrangementStepLabel(event) {
+  const stepIndex = Number(event.currentTarget.dataset.arrStep);
+  if (!Number.isInteger(stepIndex)) {
+    return;
+  }
+
+  if (arrangementCopyMode) {
+    if (stepIndex === arrangementCopySourceStep) {
+      setStatus("Choose a destination section to paste");
+      return;
+    }
+
+    pasteArrangementSection(stepIndex);
+    return;
+  }
+
+  selectArrangementStep(stepIndex);
+}
+
+function toggleArrangementCopyMode() {
+  arrangementCopyMode = !arrangementCopyMode;
+  if (arrangementCopyMode) {
+    arrangementCopySourceStep = arrangement.step;
+    setStatus(`Copying section ${arrangementCopySourceStep + 1}; click destination sections`);
+  } else {
+    arrangementCopySourceStep = null;
+    setStatus("Copy mode off");
+  }
+
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+    return;
+  }
+
+  renderWorkstation();
+}
+
+function pasteArrangementSection(targetStep) {
+  if (arrangementCopySourceStep === null) {
+    setStatus("Pick a source section first");
+    return;
+  }
+
+  const sourceStep = arrangement.clips[arrangementCopySourceStep];
+  arrangement.clips[targetStep] = cloneArrangementStep(sourceStep);
+  arrangement.step = targetStep;
+
+  if (
+    transport?.active &&
+    arrangement.enabled &&
+    hasArrangementClips() &&
+    transport.arrangementStep === targetStep
+  ) {
+    updateArrangementStep(targetStep, performance.now(), true);
+  }
+  setStatus(`Section ${arrangementCopySourceStep + 1} pasted to ${targetStep + 1}`);
+
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+    return;
+  }
+
   renderWorkstation();
 }
 
@@ -1126,17 +1209,27 @@ function toggleArrangement() {
     }
   }
 
-  renderWorkstation();
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+  } else {
+    renderWorkstation();
+  }
   setStatus(arrangement.enabled ? "Arrangement on" : "Arrangement off");
 }
 
 function clearArrangement() {
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
   arrangement = createInitialArrangement();
   if (transport?.active) {
     updateTrackTriggerGrid(performance.now());
   }
 
-  renderWorkstation();
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+  } else {
+    renderWorkstation();
+  }
   setStatus("Arrangement cleared");
 }
 
@@ -1147,6 +1240,8 @@ function updateArrangementStepCount(event) {
   }
 
   stopTransport(false);
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
   arrangementStepCount = nextLength;
   arrangement = createInitialArrangement(nextLength);
   renderWorkstation();
@@ -1214,6 +1309,19 @@ function captureTrackClip(track) {
     blendMode: track.blendMode,
     fx: { ...track.fx },
   };
+}
+
+function cloneArrangementClip(clip) {
+  return {
+    ...clip,
+    fx: { ...clip.fx },
+  };
+}
+
+function cloneArrangementStep(step) {
+  return Object.fromEntries(
+    Object.entries(step).map(([trackId, clip]) => [trackId, cloneArrangementClip(clip)]),
+  );
 }
 
 function queueTrackSearch(track, query) {
@@ -1287,7 +1395,14 @@ function renderTrackResults(track, results) {
     return;
   }
 
+  window.freemixTrackSourceCache = window.freemixTrackSourceCache || {};
+  window.freemixTrackSourceCache[track.id] = Object.fromEntries(
+    results.map((result) => [result.identifier, result]),
+  );
+
   if (!results.length) {
+    window.freemixTrackSourceCache = window.freemixTrackSourceCache || {};
+    window.freemixTrackSourceCache[track.id] = {};
     resultsEl.hidden = true;
     resultsEl.innerHTML = "";
     return;
@@ -1307,15 +1422,6 @@ function renderTrackResults(track, results) {
       `,
     )
     .join("");
-
-  resultsEl.querySelectorAll(".track-result-button").forEach((button) => {
-    button.addEventListener("click", () => {
-      const result = results.find((item) => item.identifier === button.dataset.sourceId);
-      if (result) {
-        loadTrackSource(track, result);
-      }
-    });
-  });
 }
 
 function formatResultMeta(result) {
@@ -1345,7 +1451,12 @@ async function loadTrackSource(track, result) {
     track.startTime = 0;
     track.lastStep = -1;
     selectedSource = tracks.find((item) => item.source)?.source ?? source;
-    renderWorkstation();
+    if (window.freemixRender?.updateTrackRow) {
+      window.freemixRender.updateTrackRow(track);
+      window.freemixRender.updateSourceStrip?.();
+    } else {
+      renderWorkstation();
+    }
     setStatus(`${track.name}: ready`);
   } catch (error) {
     renderTrackResultsMessage(track, "No playable file");
@@ -1404,6 +1515,11 @@ function createInitialArrangement(steps = arrangementStepCount) {
 }
 
 function setStatus(message, isError = false) {
+  if (window.freemixRender?.updateStatus) {
+    window.freemixRender.updateStatus(message, isError);
+    return;
+  }
+
   statusPill.textContent = message;
   statusPill.classList.toggle("error", isError);
 }
