@@ -46,6 +46,7 @@ const DURATION_FILTERS = {
   medium: { label: "15-30m", min: 15 * 60, max: 30 * 60 },
   long: { label: "30m+", min: 30 * 60, max: Infinity },
 };
+const AV_READY_TIMEOUT_MS = 1200;
 const FX_CONTROLS = [
   { key: "eqLow", label: "EQ Low", min: -12, max: 12, step: 1 },
   { key: "eqMid", label: "EQ Mid", min: -12, max: 12, step: 1 },
@@ -498,7 +499,18 @@ function renderArrangementPanel() {
           ${Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("")}
         ${tracks.map((track) => renderArrangementRow(track)).join("")}
       </div>
-      <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
+      <div class="arrangement-clear-group">
+        <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
+        <div class="arrangement-clear-menu" id="arrangementClearMenu" data-open="false" hidden>
+          <small>Clear all sections?</small>
+          <button class="arrangement-clear-action" type="button" data-arrangement-clear="confirm">
+            Yes
+          </button>
+          <button class="arrangement-clear-action" type="button" data-arrangement-clear="cancel">
+            No
+          </button>
+        </div>
+      </div>
     </aside>
   `;
 }
@@ -608,15 +620,6 @@ function renderTrackControlRow(track) {
       ${advancedControls}
       ${fxChain}
       <button
-        class="track-advanced-toggle"
-        type="button"
-        data-track-control="${track.id}"
-        data-control="advanced"
-        aria-pressed="${!!track.showAdvanced}"
-      >
-        ${track.showAdvanced ? "Now" : "More"}
-      </button>
-      <button
         class="track-toggle"
         type="button"
         data-track-control="${track.id}"
@@ -716,6 +719,20 @@ function renderTrackFxChain(track) {
               ).join("")}
             </select>
           </label>
+          <label class="control-field fx-opacity">
+            <span>Opacity</span>
+            <input
+              id="opacity-${track.id}"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
+              data-track-control="${track.id}"
+              data-control="opacity"
+              aria-label="${escapeHtml(`${track.name} Opacity`)}"
+            >
+          </label>
           <label class="control-field fx-top-control control-advanced">
             <span>Pitch</span>
             <output class="fx-mini-value" for="pitch-${track.id}" aria-hidden="true">${pitchValue > 0 ? "+" : ""}${pitchValue}</output>
@@ -746,20 +763,15 @@ function renderTrackFxChain(track) {
               aria-label="${escapeHtml(`${track.name} Speed`)}"
             >
           </label>
-          <label class="control-field fx-opacity">
-            <span>Opacity</span>
-            <input
-              id="opacity-${track.id}"
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
-              data-track-control="${track.id}"
-              data-control="opacity"
-              aria-label="${escapeHtml(`${track.name} Opacity`)}"
-            >
-          </label>
+          <button
+          class="track-advanced-toggle fx-advanced-toggle"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="advanced"
+          aria-pressed="${!!track.showAdvanced}"
+        >
+          ${track.showAdvanced ? "Less" : "More"}
+        </button>
         </div>
       </div>
       ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
@@ -914,7 +926,7 @@ function handleTrackControl(event) {
 
   if (controlName === "advanced") {
     track.showAdvanced = !track.showAdvanced;
-    control.textContent = track.showAdvanced ? "Now" : "More";
+    control.textContent = track.showAdvanced ? "Less" : "More";
     control.setAttribute("aria-pressed", String(track.showAdvanced));
     applyTrackControlVisibility(track);
   }
@@ -934,6 +946,9 @@ function startTransport() {
     return;
   }
 
+  const bootToken = (startTransport.bootToken ?? 0) + 1;
+  startTransport.bootToken = bootToken;
+
   stopTransport(false);
   let contextStart;
   try {
@@ -949,12 +964,20 @@ function startTransport() {
         webAudioDisabled = true;
       })
       .finally(() => {
+        if (startTransport.bootToken !== bootToken) {
+          return;
+        }
+        startTransportWithState();
         startTransport.runningPromise = null;
       });
+    return;
   }
 
   // Start transport scheduling in the click stack to keep browser autoplay context
   // aligned with the user gesture that initiated playback.
+  if (startTransport.bootToken !== bootToken) {
+    return;
+  }
   startTransportWithState();
 }
 
@@ -973,7 +996,7 @@ function safeSetCurrentTime(video, track) {
   }
 }
 
-function waitForTrackReady(video) {
+function waitForTrackReady(video, timeoutMs = AV_READY_TIMEOUT_MS) {
   if (video.readyState >= 2) {
     return Promise.resolve();
   }
@@ -987,20 +1010,45 @@ function waitForTrackReady(video) {
 
     video.addEventListener("canplay", done, { once: true });
     video.addEventListener("error", done, { once: true });
+    window.setTimeout(() => {
+      video.removeEventListener("canplay", done);
+      video.removeEventListener("error", done);
+      resolve();
+    }, timeoutMs);
   });
 }
 
 function attemptVideoPlay(video, track, clipState) {
   const shouldBeMuted = !!clipState?.muted || !!track.muted;
   const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
+  const clip = clipState || track;
+  const hasLiveAudioGraph =
+    !!track.audio && !webAudioDisabled && audioContext?.state === "running";
+  const clipVolume = clamp(targetVolume, 0, 1);
+
+  if (clip?.source?.mediaUrl && clip.source.mediaUrl !== video.src) {
+    video.src = clip.source.mediaUrl;
+    video.load();
+  }
+
+  if (audioContext && audioContext.state !== "running" && track.audio) {
+    disposeTrackAudio(track);
+  }
 
   const playWithState = async (muted) => {
     video.muted = muted;
-    video.volume = muted ? 0 : Number.isFinite(track.audio?.output?.gain?.value) ? 1 : targetVolume;
+    if (hasLiveAudioGraph && track.audio?.output?.gain) {
+      track.audio.output.gain.value = muted ? 0 : clipVolume;
+      video.volume = 1;
+    } else {
+      video.volume = muted ? 0 : clipVolume;
+    }
+
     if (video.readyState < 2 && video.networkState !== 0) {
       video.load();
     }
 
+    await waitForTrackReady(video);
     await video.play();
 
     return muted;
@@ -1019,6 +1067,17 @@ function attemptVideoPlay(video, track, clipState) {
         throw error;
       }
 
+      const nativeRetry = async () => {
+        if (track.audio) {
+          disposeTrackAudio(track);
+        }
+        video.muted = shouldBeMuted;
+        video.volume = shouldBeMuted ? 0 : clipVolume;
+        await waitForTrackReady(video);
+        await video.play();
+        return shouldBeMuted;
+      };
+
       try {
         const wasMuted = await playWithState(true);
         if (wasMuted) {
@@ -1034,7 +1093,16 @@ function attemptVideoPlay(video, track, clipState) {
           setStatus("Playback failed", true);
         }
 
-        throw fallbackError;
+        try {
+          const recovered = await nativeRetry();
+          if (!shouldBeMuted && recovered) {
+            video.muted = false;
+            applyTrackVolume(track, clipState);
+          }
+          return recovered;
+        } catch (nativeError) {
+          throw nativeError;
+        }
       }
     })
     .then((wasMuted) => {
@@ -1075,6 +1143,21 @@ function startTransportWithState() {
     track.stepMs = 0;
   });
 
+  tracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    if (!video || !track.source) {
+      return;
+    }
+
+    safeSetCurrentTime(video, track);
+    if (track.source?.mediaUrl && video.src !== track.source.mediaUrl) {
+      video.src = track.source.mediaUrl;
+      video.load();
+    }
+    setupTrackAudio(track, video);
+    applyTrackVolume(track, track);
+  });
+
   const now = performance.now();
   const startAt = now;
   transport = {
@@ -1100,6 +1183,10 @@ function startTransportWithState() {
 }
 
 function stopTransport(resetVideos = true) {
+  if (Number.isFinite(startTransport.bootToken)) {
+    startTransport.bootToken += 1;
+  }
+
   if (transport?.frameId) {
     cancelAnimationFrame(transport.frameId);
   }
@@ -1265,7 +1352,7 @@ function ensureAudioContext() {
     }
   }
 
-  if (audioContext.state === "suspended") {
+  if (audioContext.state === "suspended" || audioContext.state === "interrupted") {
     return audioContext
       .resume()
       .catch((error) => {
@@ -1311,19 +1398,31 @@ function syncStartControls(track) {
 }
 
 function applyTrackVolume(track, state = track) {
+  const isMuted = !!state.muted;
+  const volume = clamp(Number(state.volume), 0, 1);
+  const hasLiveAudioGraph =
+    !!track.audio && !webAudioDisabled && audioContext?.state === "running" && track.audio.mediaElement;
+
+  if (!hasLiveAudioGraph && track.audio) {
+    disposeTrackAudio(track);
+  }
+
   const video = getTrackVideo(track);
-  if (track.audio?.output) {
-    track.audio.output.gain.value = state.muted ? 0 : state.volume;
+  if (track.audio?.output && hasLiveAudioGraph) {
+    track.audio.output.gain.value = isMuted ? 0 : volume;
   }
 
   if (video) {
-    video.muted = false;
-    video.volume = track.audio ? 1 : state.muted ? 0 : state.volume;
+    video.muted = isMuted;
+    video.volume = hasLiveAudioGraph ? 1 : (isMuted ? 0 : volume);
   }
 }
 
 function setupTrackAudio(track, video) {
   if (webAudioDisabled || !audioContext || audioContext.state !== "running" || !video) {
+    if (track.audio) {
+      disposeTrackAudio(track);
+    }
     return false;
   }
 
@@ -1647,6 +1746,7 @@ function toggleArrangement() {
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    window.freemixRender.updateTransportRow();
     markAppStateDirty();
   } else {
     renderWorkstation();
@@ -1659,6 +1759,7 @@ function clearArrangement() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangement = createInitialArrangement();
+  closeArrangementClearMenu();
   if (transport?.active) {
     updateTrackTriggerGrid(performance.now());
   }
@@ -1672,6 +1773,41 @@ function clearArrangement() {
   markAppStateDirty();
 }
 
+function openArrangementClearMenu() {
+  const clearMenu = document.querySelector("#arrangementClearMenu");
+  if (!clearMenu) {
+    return;
+  }
+
+  clearMenu.hidden = false;
+  clearMenu.setAttribute("data-open", "true");
+}
+
+function closeArrangementClearMenu() {
+  const clearMenu = document.querySelector("#arrangementClearMenu");
+  if (!clearMenu) {
+    return;
+  }
+
+  clearMenu.hidden = true;
+  clearMenu.setAttribute("data-open", "false");
+}
+
+function confirmClearArrangement() {
+  closeArrangementClearMenu();
+  clearArrangement();
+}
+
+function isArrangementClearMenuOpen() {
+  const clearMenu = document.querySelector("#arrangementClearMenu");
+  return clearMenu?.getAttribute("data-open") === "true" && clearMenu?.hidden === false;
+}
+
+window.confirmClearArrangement = confirmClearArrangement;
+window.closeArrangementClearMenu = closeArrangementClearMenu;
+window.openArrangementClearMenu = openArrangementClearMenu;
+window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
+
 function updateArrangementStepCount(event) {
   const nextLength = Number(event.target.value);
   if (!Number.isInteger(nextLength) || !ARRANGEMENT_STEP_OPTIONS.includes(nextLength)) {
@@ -1679,7 +1815,10 @@ function updateArrangementStepCount(event) {
   }
 
   const previousArrangement = arrangement;
-  stopTransport(false);
+  const wasTransportActive = !!transport?.active;
+  if (wasTransportActive) {
+    stopTransport(false);
+  }
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementStepCount = nextLength;
@@ -1696,6 +1835,7 @@ function updateArrangementStepCount(event) {
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
     window.freemixRender.updateSourceStrip?.();
+    window.freemixRender.updateTransportRow?.();
   } else {
     renderWorkstation();
   }
