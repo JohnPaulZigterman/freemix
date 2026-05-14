@@ -273,12 +273,12 @@ input[type="search"]:focus {
 
 .workstation {
   height: 100%;
-  padding: 4px;
+  padding: 3px;
   position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  gap: 2px;
+  gap: 1px;
 }
 
 .source-strip {
@@ -482,7 +482,7 @@ input[type="number"]:focus {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(300px, 0.95fr) minmax(360px, 1.6fr);
-  gap: 4px;
+  gap: 2px;
   align-items: start;
   min-height: 0;
   width: 100%;
@@ -628,7 +628,7 @@ input[type="number"]:focus {
   max-height: min(54vh, 430px);
   overflow: hidden;
   min-width: 0;
-  padding: 3px;
+  padding: 2px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
   background: var(--panel-strong);
@@ -645,7 +645,7 @@ input[type="number"]:focus {
   justify-content: space-between;
   gap: 4px;
   flex-wrap: wrap;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   color: var(--amber);
   font-size: 0.68rem;
   font-weight: 900;
@@ -696,7 +696,7 @@ input[type="number"]:focus {
   width: 100%;
   grid-template-columns: repeat(var(--arrangement-steps), minmax(0, 1fr));
   gap: var(--control-gap-tight);
-  margin-top: 4px;
+  margin-top: 2px;
   overflow: auto;
 }
 
@@ -1017,12 +1017,12 @@ input[type="number"]:focus {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 2px;
+  gap: 1px;
   margin-top: 0;
   max-height: min(54vh, 430px);
   overflow: auto;
   position: relative;
-  padding-top: 1px;
+  padding-top: 0;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.02),
     inset 0 0 22px rgba(0, 0, 0, 0.45);
@@ -1034,7 +1034,7 @@ input[type="number"]:focus {
 }
 
 .track-add-button {
-  min-height: 17px;
+  min-height: 16px;
   border: 1px solid var(--line);
   border-radius: 1px 2px 1px 0;
   background:
@@ -1077,12 +1077,12 @@ input[type="number"]:focus {
     "label source source source source source"
     "label moment sec energy volume toggle"
     "fx fx fx fx fx fx";
-  gap: var(--control-gap-tight);
+  gap: 1px;
   align-items: start;
   align-self: start;
   min-width: 0;
   width: 100%;
-  padding: 1px 2px;
+  padding: 1px;
   border: 1px solid var(--line);
   border-left: 2px solid var(--track-color);
   border-radius: var(--radius-panel);
@@ -1133,7 +1133,7 @@ input[type="number"]:focus {
   display: grid;
   align-content: center;
   min-width: 0;
-  padding: 1px 3px;
+  padding: 1px 2px;
   border: 1px solid color-mix(in srgb, var(--track-color) 55%, var(--panel-strong));
   border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--panel-strong) 78%, var(--bg) 22%);
@@ -1202,9 +1202,9 @@ input[type="number"]:focus {
   grid-area: fx;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  gap: 2px;
   align-items: end;
-  padding-top: 3px;
+  padding-top: 2px;
   border-top: 1px solid color-mix(in srgb, var(--silver) 40%, transparent);
   position: relative;
   z-index: 1;
@@ -1289,7 +1289,7 @@ input[type="number"]:focus {
 
 .fx-field {
   display: grid;
-  min-height: 33px;
+  min-height: 30px;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   align-items: center;
@@ -1309,7 +1309,7 @@ input[type="number"]:focus {
 .fx-field input[type="range"] {
   grid-column: 1 / -1;
   height: 18px;
-  margin-bottom: 1px;
+  margin-bottom: 0;
 }
 
 .track-source-search input[type="search"] {
@@ -1544,7 +1544,7 @@ input[type="range"]::-moz-range-thumb {
 .track-row .track-advanced-toggle,
 .track-row select,
 .track-row input[type="number"] {
-  min-height: 20px;
+  min-height: 18px;
   line-height: 1.1;
 }
 
@@ -1770,7 +1770,7 @@ input[type="range"]::-moz-range-thumb {
 
   .arrangement-track-inline {
     grid-template-columns: 1fr;
-    gap: 4px;
+    gap: 2px;
   }
 
   .video-matrix {
@@ -1891,12 +1891,12 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .arrangement-panel {
-    max-height: min(40vh, 235px);
+    max-height: min(40vh, 220px);
     padding: 2px;
   }
 
   .control-bank {
-    max-height: min(40vh, 235px);
+    max-height: min(40vh, 220px);
     padding-top: 0;
     gap: 1px;
   }

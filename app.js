@@ -278,7 +278,7 @@ function syncArrangementTrackHeights() {
       return;
     }
 
-    arrangementRow.style.setProperty("--arr-track-height", `${Math.max(28, nextHeight)}px`);
+    arrangementRow.style.setProperty("--arr-track-height", `${Math.max(22, nextHeight)}px`);
   });
 }
 
