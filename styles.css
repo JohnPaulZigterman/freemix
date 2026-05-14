@@ -14,7 +14,9 @@
   --accent-soft: #173d2f;
   --amber: #ffb020;
   --danger: #ff5c48;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.42);
+  --shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+  --radius-panel: 2px;
+  --radius-control: 1px;
 }
 
 * {
@@ -32,17 +34,17 @@ body {
 }
 
 .app-shell {
-  width: min(1040px, calc(100vw - 16px));
+  width: min(1080px, calc(100vw - 10px));
   margin: 0 auto;
-  padding: 8px 0;
+  padding: 5px 0;
 }
 
 .search-panel {
   z-index: 10;
-  padding: 7px 9px;
+  padding: 5px 7px;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
-  border-radius: 6px;
+  border-radius: var(--radius-panel);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 44%),
     var(--panel);
@@ -53,9 +55,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 5px;
-  padding-bottom: 5px;
+  gap: 10px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -85,10 +87,10 @@ h1 {
 .status-pill {
   flex: 0 0 auto;
   max-width: 44%;
-  padding: 6px 9px;
+  padding: 4px 7px;
   overflow: hidden;
   border: 1px solid rgba(22, 199, 132, 0.35);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 0.72rem;
@@ -106,10 +108,10 @@ h1 {
 
 input[type="search"] {
   width: 100%;
-  height: 38px;
-  padding: 0 12px;
+  height: 30px;
+  padding: 0 8px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   outline: none;
   background: var(--panel-strong);
   color: var(--ink);
@@ -127,27 +129,27 @@ input[type="search"]:focus {
 }
 
 .player-panel {
-  margin-top: 8px;
+  margin-top: 5px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
-  border-radius: 6px;
+  border-radius: var(--radius-panel);
   background: var(--panel);
   box-shadow: var(--shadow);
 }
 
 .workstation {
-  padding: 8px;
+  padding: 5px;
 }
 
 .source-strip {
   display: none;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 4px 6px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: #191c1f;
 }
 
@@ -188,12 +190,12 @@ input[type="search"]:focus {
 .transport {
   display: grid;
   grid-template-columns: auto auto 110px auto minmax(96px, 1fr);
-  gap: 6px;
+  gap: 4px;
   align-items: stretch;
   margin-top: 0;
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-panel);
   background: #17191c;
 }
 
@@ -201,9 +203,9 @@ input[type="search"]:focus {
 .track-toggle,
 select,
 input[type="number"] {
-  min-height: 34px;
+  min-height: 30px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: var(--control);
   color: var(--ink);
   font: inherit;
@@ -214,7 +216,7 @@ input[type="number"] {
 
 .transport-button,
 .track-toggle {
-  padding: 0 12px;
+  padding: 0 9px;
   cursor: pointer;
 }
 
@@ -234,7 +236,7 @@ input[type="number"]:focus {
 }
 
 .play-button {
-  min-width: 74px;
+  min-width: 66px;
 }
 
 .bpm-field {
@@ -250,16 +252,16 @@ input[type="number"]:focus {
 .meter {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  gap: 4px;
   align-items: center;
-  padding: 0 2px;
+  padding: 0 1px;
 }
 
 .beat-light {
   display: block;
-  height: 12px;
+  height: 10px;
   border: 1px solid #3d444b;
-  border-radius: 2px;
+  border-radius: 0;
   background: #08090a;
   box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
 }
@@ -272,12 +274,12 @@ input[type="number"]:focus {
 
 .performance-grid {
   display: grid;
-  grid-template-columns: minmax(360px, 1fr) 164px;
-  gap: 6px;
+  grid-template-columns: minmax(330px, 1fr) 150px;
+  gap: 4px;
   align-items: stretch;
-  max-width: 740px;
+  max-width: 660px;
   margin-inline: auto;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .video-matrix {
@@ -290,7 +292,7 @@ input[type="number"]:focus {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 1px solid var(--line-hot);
-  border-radius: 5px;
+  border-radius: var(--radius-panel);
   background: #030405;
 }
 
@@ -298,9 +300,9 @@ input[type="number"]:focus {
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-width: 0;
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: var(--radius-panel);
   background: #111315;
 }
 
@@ -308,8 +310,8 @@ input[type="number"]:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 5px;
+  gap: 4px;
+  margin-bottom: 4px;
   color: var(--amber);
   font-size: 0.68rem;
   font-weight: 900;
@@ -318,9 +320,9 @@ input[type="number"]:focus {
 
 .arrangement-toggle,
 .arrangement-clear {
-  min-height: 22px;
+  min-height: 20px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: var(--control);
   color: var(--ink);
   font: inherit;
@@ -338,8 +340,8 @@ input[type="number"]:focus {
 
 .arrangement-grid {
   display: grid;
-  grid-template-columns: 24px repeat(var(--arrangement-steps), minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: 22px repeat(var(--arrangement-steps), minmax(0, 1fr));
+  gap: 2px;
   align-content: center;
 }
 
@@ -349,7 +351,7 @@ input[type="number"]:focus {
   display: grid;
   place-items: center;
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.56rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -384,7 +386,7 @@ input[type="number"]:focus {
   aspect-ratio: 1;
   place-items: center;
   border: 1px solid #3d444b;
-  border-radius: 2px;
+  border-radius: 0;
   background: #060708;
   color: var(--track-color);
   font-size: 0.58rem;
@@ -403,7 +405,7 @@ input[type="number"]:focus {
 }
 
 .arrangement-clear {
-  margin-top: 5px;
+  margin-top: 4px;
   width: 100%;
 }
 
@@ -479,14 +481,14 @@ input[type="number"]:focus {
 .track-badge {
   position: absolute;
   z-index: 2;
-  top: 5px;
-  left: 5px;
+  top: 4px;
+  left: 4px;
   display: flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
-  padding: 4px 6px;
+  padding: 3px 5px;
   border: 1px solid color-mix(in srgb, var(--track-color) 58%, #111);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: rgba(5, 6, 7, 0.82);
   color: var(--ink);
   font-size: 0.68rem;
@@ -524,25 +526,25 @@ input[type="number"]:focus {
 .control-bank {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 6px;
+  gap: 3px;
+  margin-top: 4px;
 }
 
 .track-row {
   position: relative;
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 48px minmax(86px, 0.62fr) 54px;
+  grid-template-columns: 54px minmax(0, 1fr) 42px minmax(78px, 0.62fr) 48px;
   grid-template-areas:
     "label source source source source"
     "label moment sec energy toggle"
     "label volume volume volume toggle"
     "fx fx fx fx fx";
-  gap: 3px;
+  gap: 2px;
   align-items: end;
-  padding: 3px;
+  padding: 2px;
   border: 1px solid var(--line);
-  border-left: 4px solid var(--track-color);
-  border-radius: 4px;
+  border-left: 3px solid var(--track-color);
+  border-radius: var(--radius-panel);
   background: #17191c;
 }
 
@@ -552,9 +554,9 @@ input[type="number"]:focus {
   display: grid;
   align-content: center;
   min-width: 0;
-  padding: 2px 4px;
+  padding: 2px 3px;
   border: 1px solid color-mix(in srgb, var(--track-color) 55%, #111);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: #0f1113;
   text-transform: uppercase;
 }
@@ -569,14 +571,14 @@ input[type="number"]:focus {
 
 .track-row-label strong {
   color: var(--track-color);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   line-height: 1.1;
 }
 
 .track-row-label span {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 900;
 }
 
@@ -584,8 +586,8 @@ input[type="number"]:focus {
   grid-area: source;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(84px, 0.75fr) 70px minmax(0, 1.15fr);
-  gap: 4px;
+  grid-template-columns: minmax(80px, 0.75fr) 66px minmax(0, 1.15fr);
+  gap: 3px;
   padding: 0;
 }
 
@@ -614,7 +616,7 @@ input[type="number"]:focus {
   grid-area: fx;
   display: grid;
   grid-template-columns: auto repeat(6, minmax(0, 1fr));
-  gap: 4px;
+  gap: 3px;
   align-items: end;
   padding-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
@@ -629,27 +631,27 @@ input[type="number"]:focus {
 }
 
 .fx-field input[type="range"] {
-  height: 16px;
+  height: 14px;
 }
 
 .track-source-search input[type="search"] {
-  height: 24px;
-  padding: 0 8px;
+  height: 20px;
+  padding: 0 6px;
   font-size: 0.78rem;
 }
 
 .duration-filter select {
-  min-height: 24px;
-  padding: 0 5px;
+  min-height: 20px;
+  padding: 0 4px;
   font-size: 0.72rem;
 }
 
 .track-source-name {
   min-width: 0;
-  height: 24px;
-  padding: 2px 6px;
+  height: 20px;
+  padding: 1px 5px;
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: #111315;
 }
 
@@ -663,13 +665,13 @@ input[type="number"]:focus {
 
 .track-source-name strong {
   color: var(--ink);
-  font-size: 0.68rem;
+  font-size: 0.64rem;
   line-height: 1.15;
   text-transform: uppercase;
 }
 
 .track-source-name span {
-  margin-top: 2px;
+  margin-top: 1px;
   color: var(--muted);
   font-size: 0.61rem;
   font-weight: 800;
@@ -684,7 +686,7 @@ input[type="number"]:focus {
   max-height: 260px;
   overflow-y: auto;
   border: 1px solid var(--line-hot);
-  border-radius: 4px;
+  border-radius: var(--radius-panel);
   background: #111315;
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
 }
@@ -693,9 +695,9 @@ input[type="number"]:focus {
   display: grid;
   width: 100%;
   grid-template-columns: 54px minmax(0, 1fr);
-  gap: 7px;
+  gap: 5px;
   align-items: center;
-  padding: 5px;
+  padding: 4px;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
@@ -720,7 +722,7 @@ input[type="number"]:focus {
   aspect-ratio: 16 / 10;
   object-fit: cover;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: var(--radius-control);
   background: #08090a;
 }
 
@@ -746,7 +748,7 @@ input[type="number"]:focus {
 }
 
 .track-result-message {
-  padding: 9px;
+  padding: 7px;
   text-transform: uppercase;
 }
 
@@ -757,7 +759,7 @@ input[type="number"]:focus {
 .control-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
+  gap: 1px;
   color: var(--muted);
   font-size: 0.62rem;
   font-weight: 900;
@@ -778,12 +780,12 @@ input[type="number"]:focus {
 
 select {
   width: 100%;
-  padding: 0 8px;
+  padding: 0 6px;
 }
 
 input[type="range"] {
   width: 100%;
-  height: 22px;
+  height: 16px;
   margin: 0;
   accent-color: var(--track-color, var(--accent));
 }
@@ -791,7 +793,7 @@ input[type="range"] {
 .track-row .track-toggle,
 .track-row select,
 .track-row input[type="number"] {
-  min-height: 26px;
+  min-height: 21px;
 }
 
 .track-toggle[aria-pressed="true"] {
@@ -830,7 +832,7 @@ input[type="range"] {
   height: 64px;
   place-items: center;
   border: 1px solid rgba(22, 199, 132, 0.65);
-  border-radius: 6px;
+  border-radius: var(--radius-panel);
   background: #14291f;
   color: white;
   box-shadow: inset 0 0 20px rgba(22, 199, 132, 0.16);
@@ -899,9 +901,9 @@ input[type="range"] {
 
 .archive-link {
   flex: 0 0 auto;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border: 1px solid rgba(255, 176, 32, 0.55);
-  border-radius: 4px;
+  border-radius: var(--radius-control);
   background: #3b2b0d;
   color: var(--amber);
   font-size: 0.78rem;
@@ -917,12 +919,12 @@ input[type="range"] {
 @media (max-width: 640px) {
   .app-shell {
     width: min(100% - 10px, 1120px);
-    padding: 6px 0;
+    padding: 5px 0;
   }
 
   .search-panel {
     top: 8px;
-    padding: 12px;
+    padding: 7px;
   }
 
   .brand-row {
@@ -940,7 +942,7 @@ input[type="range"] {
   }
 
   input[type="search"] {
-    height: 42px;
+    height: 32px;
     font-size: 0.92rem;
   }
 
@@ -972,7 +974,7 @@ input[type="range"] {
   }
 
   .track-row {
-    grid-template-columns: 58px minmax(0, 1fr) 54px;
+    grid-template-columns: 52px minmax(0, 1fr) 50px;
     grid-template-areas:
       "label source source"
       "label moment sec"
