@@ -207,7 +207,7 @@ input[type="search"]:focus {
 
 .transport {
   display: grid;
-  grid-template-columns: auto auto 86px auto 72px minmax(96px, 1fr);
+  grid-template-columns: auto auto auto 86px auto 72px minmax(96px, 1fr);
   gap: 4px;
   align-items: stretch;
   margin-top: 0;

@@ -58,6 +58,7 @@ let transport = null;
 let audioContext = null;
 let webAudioDisabled = false;
 let masterMuted = false;
+let simpleMode = true;
 let tracks = createInitialTracks();
 let arrangement = createInitialArrangement();
 let videoLayout = "stack";
@@ -233,6 +234,15 @@ function renderWorkstation() {
       <div class="transport" aria-label="Transport controls">
         <button class="transport-button play-button" id="playButton" type="button">Play</button>
         <button class="transport-button" id="stopButton" type="button">Stop</button>
+        <button
+          class="transport-button ${simpleMode ? "active" : ""}"
+          id="simpleModeButton"
+          type="button"
+          aria-pressed="${simpleMode}"
+          title="Toggle advanced controls"
+        >
+          ${simpleMode ? "Simple" : "Advanced"}
+        </button>
         <label class="control-field bpm-field">
           <span>BPM</span>
           <input id="bpmInput" type="number" min="40" max="220" step="1" value="${DEFAULT_BPM}">
@@ -382,7 +392,7 @@ function renderTrackControlRow(track) {
               .join("")}
           </select>
         </label>
-        <label class="control-field blend-field">
+        ${simpleMode ? "" : `<label class="control-field blend-field">
           <span>Blend</span>
           <select data-track-control="${track.id}" data-control="blendMode">
             ${Object.entries(BLEND_MODES)
@@ -392,7 +402,7 @@ function renderTrackControlRow(track) {
               )
               .join("")}
           </select>
-        </label>
+        </label>`}
         <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
           <strong>${escapeHtml(sourceTitle)}</strong>
           <span>${escapeHtml(sourceMeta)}</span>
@@ -445,10 +455,16 @@ function renderTrackControlRow(track) {
           data-control="volume"
         >
       </label>
+      ${
+        simpleMode
+          ? ""
+          : `
       <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
         <span class="fx-title">FX</span>
         ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
       </div>
+      `
+      }
       <button
         class="track-toggle"
         type="button"
@@ -482,6 +498,9 @@ function renderFxControl(track, fxControl) {
 function bindWorkstationControls() {
   document.querySelector("#playButton").addEventListener("click", startTransport);
   document.querySelector("#stopButton").addEventListener("click", stopTransport);
+  document
+    .querySelector("#simpleModeButton")
+    ?.addEventListener("click", () => toggleSimpleMode());
   document.querySelector("#bpmInput").addEventListener("input", (event) => {
     if (!transport) {
       return;
@@ -676,6 +695,11 @@ function stopTransport(resetVideos = true) {
   if (tracks.some((track) => track.source)) {
     setStatus("Source ready");
   }
+}
+
+function toggleSimpleMode() {
+  simpleMode = !simpleMode;
+  renderWorkstation();
 }
 
 function hardStopPlayback(reason = "stopped") {
