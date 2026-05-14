@@ -15,6 +15,8 @@
   --amber: #ffb020;
   --danger: #ff5c48;
   --shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+  --mech-edge: #4b545f;
+  --mech-accent: #7a828b;
   --radius-panel: 2px;
   --radius-control: 1px;
 }
@@ -213,7 +215,7 @@ input[type="search"]:focus {
 .transport {
   display: grid;
   grid-template-columns: auto auto auto 86px auto 72px minmax(96px, 1fr);
-  gap: 4px;
+  gap: 3px;
   align-items: stretch;
   margin-top: 0;
   padding: 4px;
@@ -226,21 +228,31 @@ input[type="search"]:focus {
 .track-toggle,
 select,
 input[type="number"] {
-  min-height: 28px;
-  border: 1px solid var(--line);
+  min-height: 20px;
+  border: 1px solid var(--mech-edge);
   border-radius: var(--radius-control);
-  background: var(--control);
+  background:
+    linear-gradient(180deg, #323a42 0, var(--control) 56%, #262e35 100%);
   color: var(--ink);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.62rem;
   font-weight: 900;
   text-transform: uppercase;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(0, 0, 0, 0.2);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease;
 }
 
 .transport-button,
 .track-toggle,
 .track-advanced-toggle {
-  padding: 0 9px;
+  padding: 0 6px;
   cursor: pointer;
 }
 
@@ -249,15 +261,21 @@ input[type="number"] {
 .track-advanced-toggle:hover,
 select:hover,
 input[type="number"]:focus {
-  border-color: var(--line-hot);
-  background: var(--control-hot);
+  border-color: var(--mech-accent);
+  background:
+    linear-gradient(180deg, #3d4651 0, var(--control-hot) 56%, #2b333c 100%);
 }
 
 .transport-button.active,
 .metronome-button.active {
-  border-color: rgba(22, 199, 132, 0.6);
-  background: #143525;
+  border-color: rgba(22, 199, 132, 0.75);
+  background:
+    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
   color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(22, 199, 132, 0.45);
 }
 
 .play-button {
@@ -466,27 +484,34 @@ input[type="number"]:focus {
 .arrangement-toggle,
 .arrangement-copy,
 .arrangement-clear {
-  min-height: 20px;
+  min-height: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: var(--control);
+  background:
+    linear-gradient(180deg, #323a42 0, var(--control) 56%, #262e35 100%);
   color: var(--ink);
   font: inherit;
-  font-size: 0.66rem;
+  font-size: 0.6rem;
   font-weight: 900;
   text-transform: uppercase;
   cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(0, 0, 0, 0.2);
 }
 
 .arrangement-toggle.active {
-  border-color: rgba(22, 199, 132, 0.55);
-  background: #143525;
+  border-color: rgba(22, 199, 132, 0.75);
+  background:
+    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
   color: var(--accent);
 }
 
 .arrangement-copy.active {
-  border-color: rgba(22, 199, 132, 0.55);
-  background: #143525;
+  border-color: rgba(22, 199, 132, 0.75);
+  background:
+    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
   color: var(--accent);
 }
 
@@ -1008,9 +1033,9 @@ input[type="number"]:focus {
 .control-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 0;
+  gap: 1px;
   color: var(--muted);
-  font-size: 0.56rem;
+  font-size: 0.54rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -1023,27 +1048,79 @@ input[type="number"]:focus {
 
 .compact-number input {
   width: 100%;
-  padding: 0 3px;
+  padding: 0 2px;
+  min-height: 16px;
   text-align: center;
 }
 
 select {
   width: 100%;
-  padding: 0 4px;
+  padding: 0 2px;
+  min-height: 16px;
+  font-size: 0.56rem;
+  border: 1px solid var(--mech-edge);
+  background: linear-gradient(180deg, #313841 0, #2a3138 54%, #252c33 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(0, 0, 0, 0.2);
 }
 
 input[type="range"] {
   width: 100%;
-  height: 13px;
+  height: 12px;
   margin: 0;
   accent-color: var(--track-color, var(--accent));
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  border: 0;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border: 1px solid var(--mech-edge);
+  background:
+    linear-gradient(90deg, #9ca4ac, color-mix(in srgb, var(--track-color, #9ca4ac) 45%, #101318 55%));
+  box-shadow: inset 0 -1px 0 #0f1317;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 11px;
+  margin-top: -4px;
+  border: 1px solid #bec6cf;
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, #ecf3fa 0, #7f8892 52%, #606973 100%);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border: 1px solid var(--mech-edge);
+  background:
+    linear-gradient(90deg, #9ca4ac, color-mix(in srgb, var(--track-color, #9ca4ac) 45%, #101318 55%));
+  box-shadow: inset 0 -1px 0 #0f1317;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 11px;
+  border: 1px solid #bec6cf;
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, #ecf3fa 0, #7f8892 52%, #606973 100%);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
 
 .track-row .track-toggle,
 .track-row .track-advanced-toggle,
 .track-row select,
 .track-row input[type="number"] {
-  min-height: 18px;
+  min-height: 16px;
 }
 
 .track-row:not(.is-advanced) .control-advanced,
@@ -1062,20 +1139,47 @@ input[type="range"] {
   min-height: 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: #2b2f34;
+  background:
+    linear-gradient(180deg, #313841 0, var(--control) 56%, #262e35 100%);
   color: var(--muted);
   font: inherit;
-  font-size: 0.6rem;
+  font-size: 0.54rem;
   font-weight: 900;
   text-transform: uppercase;
   cursor: pointer;
   padding: 2px 3px;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(0, 0, 0, 0.2);
+}
+
+.debug-action-button:hover {
+  border-color: var(--mech-accent);
+  background:
+    linear-gradient(180deg, #3b454f 0, #323a43 56%, #2d353e 100%);
+}
+
+.debug-action-button:active {
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 1px 0 rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(122, 130, 139, 0.35);
 }
 
 .track-toggle[aria-pressed="true"] {
   border-color: rgba(255, 92, 72, 0.55);
   background: #351b19;
   color: var(--danger);
+}
+
+.track-toggle[aria-pressed="true"],
+.track-advanced-toggle[aria-pressed="true"] {
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 1px 0 rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 92, 72, 0.4);
 }
 
 .empty-state {
