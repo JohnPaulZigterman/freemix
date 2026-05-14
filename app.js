@@ -2756,7 +2756,7 @@ function tickTransport() {
         continue;
       }
 
-      triggerTrack(track, track.arrangementClip ?? track);
+      triggerTrack(track, track.arrangementClip ?? track, transport.sessionToken);
       track.nextTriggerAt += track.stepMs;
     }
 
@@ -2771,7 +2771,11 @@ function tickTransport() {
   transport.frameId = requestAnimationFrame(tickTransport);
 }
 
-function triggerTrack(track, clip = track) {
+function triggerTrack(track, clip = track, transportSessionToken = transport?.sessionToken) {
+  if (transport?.active && transportSessionToken && track.__transportPrimedFor !== transportSessionToken) {
+    return;
+  }
+
   const video = getTrackVideo(track);
   const cell = getTrackCell(track);
   if (!video || !cell) {
@@ -3405,13 +3409,8 @@ function pasteArrangementSection(targetStep) {
   arrangement.step = targetStep;
   refreshArrangementHasClipsState();
 
-  if (
-    transport?.active &&
-    arrangement.enabled &&
-    hasArrangementClips() &&
-    transport.arrangementStep === targetStep
-  ) {
-    updateArrangementStep(targetStep, performance.now(), true);
+  if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+    rebindArrangementClipsForActiveTransport();
   }
 
   tracks.forEach((track) => {
@@ -3461,6 +3460,10 @@ function copyCurrentArrangementSectionToAll() {
 
   refreshArrangementHasClipsState();
 
+  if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+    rebindArrangementClipsForActiveTransport();
+  }
+
   if (window.freemixRender?.updateArrangementGrid) {
     if (typeof window.freemixRender.updateArrangementCell === "function") {
       destinationSteps.forEach((stepIndex) => {
@@ -3488,6 +3491,38 @@ function copyCurrentArrangementSectionToAll() {
 
   setStatus(`Filled ${destinationSteps.length} empty sections`);
   markAppStateDirty();
+}
+
+function rebindArrangementClipsForActiveTransport() {
+  if (!transport?.active || !arrangement?.clips) {
+    return;
+  }
+
+  const activeStep = Number.isFinite(Number(transport.arrangementStep))
+    ? Number(transport.arrangementStep)
+    : Number.isFinite(Number(arrangement.step))
+    ? Number(arrangement.step)
+    : 0;
+
+  const activeClips = arrangement.clips?.[activeStep];
+  if (!activeClips || typeof activeClips !== "object" || Array.isArray(activeClips)) {
+    return;
+  }
+
+  const beatMs = transport?.beatMs || 60000 / transport.bpm;
+  const barMs = transport?.barMs || beatMs * 4;
+  const nextBeatAt = Number.isFinite(transport.nextBeatAt)
+    ? transport.nextBeatAt
+    : performance.now();
+
+  tracks.forEach((track) => {
+    const clip = activeClips[track.id] ?? null;
+    track.arrangementClip = clip;
+    track.stepMs = clip ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar) : 0;
+    if (!Number.isFinite(track.nextTriggerAt) || track.nextTriggerAt < nextBeatAt) {
+      track.nextTriggerAt = nextBeatAt;
+    }
+  });
 }
 
 function toggleArrangement() {
