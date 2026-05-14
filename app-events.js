@@ -1,16 +1,20 @@
 (function initFreemixEvents() {
   let isBound = false;
+  let playerPanel = null;
 
   const CONTROL_SELECTOR = "[data-track-control]";
   const RESULT_SELECTOR = ".track-result-button[data-track-id][data-source-id]";
   const DEBUG_ACTION_SELECTOR = "[data-debug-action]";
+  const ARRANGEMENT_CLEAR_MENU_SELECTOR = "#arrangementClearMenu";
 
   function getTrackFromControl(control) {
     if (!control) {
       return null;
     }
 
-    return tracks.find((track) => track.id === control.dataset.trackControl);
+    return typeof window.freemixGetTrackById === "function"
+      ? window.freemixGetTrackById(control.dataset.trackControl)
+      : tracks.find((track) => track.id === control.dataset.trackControl);
   }
 
   function getResultTrack(trackId) {
@@ -18,7 +22,9 @@
       return null;
     }
 
-    return tracks.find((track) => track.id === trackId);
+    return typeof window.freemixGetTrackById === "function"
+      ? window.freemixGetTrackById(trackId)
+      : tracks.find((track) => track.id === trackId);
   }
 
   function findCachedResult(trackId, sourceId) {
@@ -28,6 +34,10 @@
     }
 
     return trackCache[sourceId] || null;
+  }
+
+  function getArrangementClearMenu() {
+    return playerPanel?.querySelector(ARRANGEMENT_CLEAR_MENU_SELECTOR) || null;
   }
 
   function clearResults() {
@@ -93,7 +103,11 @@
     }
 
     if (id === "arrangementClear") {
-      clearArrangement();
+      if (typeof window.openArrangementClearMenu === "function") {
+        window.openArrangementClearMenu();
+      } else {
+        clearArrangement();
+      }
       return true;
     }
 
@@ -105,6 +119,13 @@
     if (id === "arrangementCopyAllButton") {
       if (typeof window.copyCurrentArrangementSectionToAll === "function") {
         window.copyCurrentArrangementSectionToAll();
+      }
+      return true;
+    }
+
+    if (id === "addTrackButton") {
+      if (typeof window.addTrack === "function") {
+        window.addTrack();
       }
       return true;
     }
@@ -160,6 +181,35 @@
       return;
     }
 
+    const clearAction = target.closest(".arrangement-clear-action");
+    if (clearAction) {
+      const menu = getArrangementClearMenu();
+      if (!menu || !menu.contains(clearAction)) {
+        return;
+      }
+
+      const mode = clearAction.getAttribute("data-arrangement-clear");
+
+      if (mode === "confirm") {
+        if (typeof window.confirmClearArrangement === "function") {
+          window.confirmClearArrangement();
+        } else {
+          clearArrangement();
+        }
+      } else if (typeof window.closeArrangementClearMenu === "function") {
+        window.closeArrangementClearMenu();
+      }
+
+      if (menu) {
+        return;
+      }
+    }
+
+    const clearMenu = getArrangementClearMenu();
+    if (window.isArrangementClearMenuOpen?.() && clearMenu && !clearMenu.contains(target)) {
+      window.closeArrangementClearMenu();
+    }
+
     if (target.closest(RESULT_SELECTOR)) {
       handleSearchResultClick(target.closest(RESULT_SELECTOR));
       return;
@@ -185,7 +235,7 @@
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
-      handleTrackControl({ currentTarget: trackControl, target: trackControl });
+      handleTrackControl({ type: event.type, target: trackControl, currentTarget: trackControl });
       return;
     }
 
@@ -213,7 +263,7 @@
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
-      handleTrackControl({ currentTarget: trackControl, target: trackControl });
+      handleTrackControl({ type: event.type, target: trackControl, currentTarget: trackControl });
     }
   }
 
@@ -237,7 +287,7 @@
       return;
     }
 
-    const playerPanel = document.querySelector("#playerPanel");
+    playerPanel = document.querySelector("#playerPanel");
     if (!playerPanel) {
       return;
     }

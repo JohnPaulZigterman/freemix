@@ -5,6 +5,36 @@ const IA_SEARCH_URL = "https://archive.org/advancedsearch.php";
 const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
+const SEARCH_QUERY_MIN_LENGTH = 2;
+const SEARCH_RESULT_FIELDS = Object.freeze(["identifier", "title", "creator", "year", "description", "runtime", "downloads"]);
+const SEARCH_RESULT_CACHE_TTL_MS = 45_000;
+const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
+const REVERB_BUFFER_CACHE = new WeakMap();
+const TUBE_CURVE_CACHE = new Map();
+const TRACK_LOOKUP = new Map();
+const UI_NODE_CACHE = {
+  beatLights: null,
+  arrangementCells: null,
+};
+const SEARCH_ROWS_PER_REQUEST = 24;
+const SEARCH_RESULTS_LIMIT = 6;
+const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 2;
+const APP_STATE_PROXY_KEYS = Object.freeze([
+  "selectedSource",
+  "transport",
+  "audioContext",
+  "webAudioDisabled",
+  "masterMuted",
+  "arrangementStepCount",
+  "arrangementCopyMode",
+  "arrangementCopySourceStep",
+  "tracks",
+  "arrangement",
+  "videoLayout",
+  "trackSearchRequestCounter",
+  "userOnboarding",
+]);
+const APP_STATE_PROXY_DIRTY_KEYS = new Set(["arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"]);
 const DEFAULT_BPM = 92;
 const DEFAULT_ARRANGEMENT_STEPS = 8;
 const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
@@ -23,12 +53,11 @@ const BLEND_MODES = {
   hard: "Hard",
 };
 const BLEND_MODE_OPTIONS = Object.entries(BLEND_MODES).map(([value, label]) => ({ value, label }));
-const TRACKS = [
-  { name: "Perc", role: "Impact", color: "green" },
-  { name: "Bass", role: "Weight", color: "amber" },
-  { name: "Rhythm", role: "Motion", color: "blue" },
-  { name: "Lead", role: "Hook", color: "red" },
-];
+const MAX_TRACK_COUNT = 4;
+const DEFAULT_TRACK_COUNT = 1;
+const TRACK_COLORS = ["green", "amber", "blue", "red"];
+const TRACK_BLEND_DEFAULTS = ["normal", "screen", "difference", "add"];
+const TRACK_RETRIGGER_DEFAULTS = [1, 2, 4, 8];
 const RETRIGGER_LABELS = {
   1: "1 - anchor",
   2: "2 - stride",
@@ -139,8 +168,10 @@ const appState = window.freemixState || {};
 const appStateManager = window.freemixStateManager || {};
 const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
 
-if (!appState.tracks) {
-  appState.tracks = createInitialTracks();
+if (!Array.isArray(appState.tracks) || appState.tracks.length === 0) {
+  appState.tracks = createInitialTracks(DEFAULT_TRACK_COUNT);
+} else if (appState.tracks.length > MAX_TRACK_COUNT) {
+  appState.tracks = appState.tracks.slice(0, MAX_TRACK_COUNT);
 }
 
 if (typeof appStateManager.hydrateTracks === "function") {
@@ -156,6 +187,8 @@ if (!appState.arrangement) {
 if (!appState.userOnboarding || !appState.userOnboarding.phase) {
   appState.userOnboarding = { phase: "seed", needsHint: true };
 }
+
+refreshTrackLookup();
 
 function markAppStateDirty(force = false) {
   if (typeof appState.__markStateDirty === "function") {
@@ -177,6 +210,99 @@ function resolvePreferredBpm() {
   return clamp(Number(appState.preferredBpm), 40, 220);
 }
 
+const searchResultCache = new Map();
+
+function getTrackById(trackId) {
+  if (!trackId) {
+    return null;
+  }
+
+  return TRACK_LOOKUP.get(trackId) || null;
+}
+
+window.freemixGetTrackById = getTrackById;
+
+function refreshTrackLookup() {
+  TRACK_LOOKUP.clear();
+  tracks.forEach((track) => {
+    if (track?.id) {
+      TRACK_LOOKUP.set(track.id, track);
+    }
+  });
+}
+
+function getTrackRowElement(track) {
+  const trackId = track?.id;
+  if (!trackId) {
+    return null;
+  }
+
+  return playerPanel?.querySelector(`article.track-row[data-track-row-id="${trackId}"]`) || null;
+}
+
+function getTrackControls(track, controlName) {
+  const trackId = track?.id;
+  if (!trackId || !controlName) {
+    return [];
+  }
+
+  return playerPanel
+    ? Array.from(playerPanel.querySelectorAll(`[data-track-control="${trackId}"][data-control="${controlName}"]`))
+    : [];
+}
+
+function getTrackCell(track) {
+  const trackId = track?.id;
+  if (!trackId) {
+    return null;
+  }
+
+  return playerPanel?.querySelector(`.video-cell[data-track-id="${trackId}"]`) || null;
+}
+
+function getTrackVideo(track) {
+  const trackId = track?.id;
+  if (!trackId) {
+    return null;
+  }
+
+  return playerPanel?.querySelector(`#video-${trackId}`) || null;
+}
+
+function getBeatLights() {
+  if (UI_NODE_CACHE.beatLights !== null) {
+    return UI_NODE_CACHE.beatLights;
+  }
+
+  UI_NODE_CACHE.beatLights = playerPanel ? Array.from(playerPanel.querySelectorAll(".beat-light")) : [];
+  return UI_NODE_CACHE.beatLights;
+}
+
+function getArrangementCells() {
+  if (UI_NODE_CACHE.arrangementCells !== null) {
+    return UI_NODE_CACHE.arrangementCells;
+  }
+
+  UI_NODE_CACHE.arrangementCells = playerPanel
+    ? Array.from(playerPanel.querySelectorAll(".arrangement-cell"))
+    : [];
+  return UI_NODE_CACHE.arrangementCells;
+}
+
+function getFirstLoadedTrackSource() {
+  const firstLoaded = tracks.find((track) => track.source);
+  return firstLoaded?.source || null;
+}
+
+function getArrangementClearMenu() {
+  return playerPanel?.querySelector("#arrangementClearMenu") || null;
+}
+
+function invalidateUiNodeCache() {
+  UI_NODE_CACHE.beatLights = null;
+  UI_NODE_CACHE.arrangementCells = null;
+}
+
 function normalizeRetriggersPerBar(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -186,21 +312,7 @@ function normalizeRetriggersPerBar(value) {
   return Math.max(1, Math.floor(Math.abs(parsed)) || 1);
 }
 
-  [
-  "selectedSource",
-  "transport",
-  "audioContext",
-  "webAudioDisabled",
-  "masterMuted",
-  "arrangementStepCount",
-  "arrangementCopyMode",
-  "arrangementCopySourceStep",
-  "tracks",
-  "arrangement",
-  "videoLayout",
-  "trackSearchRequestCounter",
-  "userOnboarding",
-].forEach((key) => {
+APP_STATE_PROXY_KEYS.forEach((key) => {
   Object.defineProperty(window, key, {
     configurable: true,
     get() {
@@ -208,7 +320,7 @@ function normalizeRetriggersPerBar(value) {
     },
     set(value) {
       appState[key] = value;
-      if (["arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"].includes(key)) {
+      if (APP_STATE_PROXY_DIRTY_KEYS.has(key)) {
         markAppStateDirty(true);
       }
     },
@@ -255,6 +367,7 @@ function normalizeResults(docs) {
       year: textValue(doc.year),
       description: textValue(doc.description),
       runtime: textValue(doc.runtime),
+      downloads: Number(textValue(doc.downloads)) || 0,
       durationSeconds: parseRuntime(textValue(doc.runtime)),
       thumbnail: `https://archive.org/services/img/${encodeURIComponent(doc.identifier)}`,
       archiveUrl: `https://archive.org/details/${encodeURIComponent(doc.identifier)}`,
@@ -292,6 +405,162 @@ function parseRuntime(runtime) {
   }
 
   return parts[0];
+}
+
+function normalizeSearchInput(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function tokenizeSearchQuery(value) {
+  const normalized = normalizeSearchInput(value);
+  if (!normalized) {
+    return [];
+  }
+
+  const stopWords = new Set(["the", "and", "for", "with", "from", "that", "this", "your", "just", "have", "not"]);
+  return normalized
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length >= SEARCH_QUERY_MIN_LENGTH && !stopWords.has(token));
+}
+
+function escapeArchiveQueryValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/["*?()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[:]/g, "\\:")
+    .replace(/[\\]/g, "\\\\");
+}
+
+function buildArchiveSearchQuery(rawQuery) {
+  const normalized = normalizeSearchInput(rawQuery);
+  if (!normalized) {
+    return "";
+  }
+
+  const safeQuery = escapeArchiveQueryValue(normalized);
+  const tokenQueries = tokenizeSearchQuery(normalized)
+    .map((token) => {
+      const safeToken = escapeArchiveQueryValue(token);
+      return `((title:"${safeToken}") OR (creator:"${safeToken}") OR (description:"${safeToken}") OR (identifier:"${safeToken}"))`;
+    })
+    .join(" OR ");
+
+  const baseQuery = `((title:"${safeQuery}") OR (creator:"${safeQuery}") OR (description:"${safeQuery}") OR "${safeQuery}")`;
+  if (tokenQueries) {
+    return `mediatype:(movies) AND (${baseQuery} OR (${tokenQueries}))`;
+  }
+
+  return `mediatype:(movies) AND ${baseQuery}`;
+}
+
+function searchRelevance(result, rawQuery) {
+  const normalizedQuery = normalizeSearchInput(rawQuery);
+  const tokens = tokenizeSearchQuery(normalizedQuery);
+  const title = String(result.title || "").toLowerCase();
+  const creator = String(result.creator || "").toLowerCase();
+  const identifier = String(result.identifier || "").toLowerCase();
+  const description = String(result.description || "").toLowerCase();
+
+  let score = 0;
+  if (!normalizedQuery) {
+    return score;
+  }
+
+  if (title === normalizedQuery) {
+    score += 140;
+  } else if (title.includes(normalizedQuery)) {
+    score += 95;
+  }
+
+  if (identifier === normalizedQuery) {
+    score += 85;
+  }
+
+  if (creator.includes(normalizedQuery)) {
+    score += 45;
+  }
+
+  for (const token of tokens) {
+    if (!token) {
+      continue;
+    }
+
+    if (title.startsWith(token)) {
+      score += 22;
+    }
+    if (title.includes(token)) {
+      score += 12;
+    }
+    if (creator.includes(token)) {
+      score += 9;
+    }
+    if (identifier.includes(token)) {
+      score += 8;
+    }
+    if (description.includes(token)) {
+      score += 5;
+    }
+  }
+
+  if (Number.isFinite(result.durationSeconds) && result.durationSeconds > 0) {
+    score += Math.min(40, Math.log10(result.durationSeconds));
+  }
+
+  if (Number.isFinite(result.downloads) && result.downloads > 0) {
+    score += Math.min(20, Math.round(Math.log10(result.downloads + 1) * 4));
+  }
+
+  return score;
+}
+
+function diversifyRankedSearchResults(results, limit) {
+  const selected = [];
+  const seen = new Set();
+  const creatorBuckets = new Map();
+
+  const remaining = [...results];
+
+  for (const result of remaining) {
+    if (selected.length >= limit) {
+      break;
+    }
+
+    const creatorKey = (result.creator || result.identifier || "unknown").trim().toLowerCase();
+    const currentCount = creatorBuckets.get(creatorKey) || 0;
+    if (currentCount >= SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR) {
+      continue;
+    }
+
+    seen.add(result.identifier);
+    creatorBuckets.set(creatorKey, currentCount + 1);
+    selected.push(result);
+  }
+
+  if (selected.length >= limit) {
+    return selected;
+  }
+
+  for (const result of remaining) {
+    if (selected.length >= limit) {
+      break;
+    }
+
+    if (seen.has(result.identifier)) {
+      continue;
+    }
+
+    selected.push(result);
+  }
+
+  return selected;
 }
 
 async function performArchiveSearch(params) {
@@ -377,12 +646,12 @@ function renderWorkstation() {
     : "Search inside any track to swap its video";
 
   playerPanel.innerHTML = `
-    <section class="workstation" aria-label="Four track video looper">
+    <section class="workstation" aria-label="Track video looper">
       <div class="source-strip">
         <div class="source-copy">
           <span class="panel-label">Sources</span>
           <h2>${escapeHtml(sourceLabel)}</h2>
-          <p>${escapeHtml(sourceMeta || "Four independent Internet Archive tracks")}</p>
+          <p>${escapeHtml(sourceMeta || `${tracks.length} track slot${tracks.length === 1 ? "" : "s"} open`)}</p>
         </div>
         ${
           allSameSource
@@ -425,15 +694,27 @@ function renderWorkstation() {
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
-        ${renderArrangementPanel()}
-      </div>
-
-  <div class="control-bank" aria-label="Track controls">
-        ${tracks.map((track) => renderTrackControlRow(track)).join("")}
+        <div class="arrangement-track-inline">
+          ${renderArrangementPanel()}
+          <div class="control-bank" aria-label="Track controls">
+            <div class="track-add-row">
+              <button
+                id="addTrackButton"
+                class="track-add-button"
+                type="button"
+                ${tracks.length >= MAX_TRACK_COUNT ? "disabled" : ""}
+              >
+                Add Track (${tracks.length}/${MAX_TRACK_COUNT})
+              </button>
+            </div>
+            ${tracks.map((track) => renderTrackControlRow(track)).join("")}
+          </div>
+        </div>
       </div>
     </section>
   `;
 
+  invalidateUiNodeCache();
   bindWorkstationControls();
   tracks.forEach(applyTrackControlVisibility);
   window.freemixRender?.updateTransportRow?.();
@@ -444,7 +725,7 @@ function renderWorkstation() {
 }
 
 function applyTrackControlVisibility(track) {
-  const trackRow = playerPanel.querySelector(`article.track-row[data-track-row-id="${track.id}"]`);
+  const trackRow = getTrackRowElement(track);
   if (!trackRow) {
     return;
   }
@@ -545,8 +826,10 @@ function renderArrangementStepLabel(stepIndex) {
 }
 
 function renderArrangementRow(track) {
+  const trackLabelMatch = /^Track\s+(\d+)/i.exec(track.name);
+  const arrangementTrackLabel = trackLabelMatch ? `T${trackLabelMatch[1]}` : track.name.slice(0, 2).toUpperCase();
   return `
-    <div class="arrangement-track-label ${track.color}">${escapeHtml(track.name.slice(0, 1))}</div>
+    <div class="arrangement-track-label ${track.color}">${escapeHtml(arrangementTrackLabel)}</div>
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
@@ -831,7 +1114,7 @@ function bindWorkstationControls() {
 
 function handleTrackControl(event) {
   const control = event.currentTarget;
-  const track = tracks.find((item) => item.id === control.dataset.trackControl);
+  const track = getTrackById(control.dataset.trackControl);
   if (!track) {
     return;
   }
@@ -845,9 +1128,7 @@ function handleTrackControl(event) {
 
   if (controlName === "durationFilter") {
     track.durationFilter = control.value;
-    const sourceSearch = document.querySelector(
-      `[data-track-control="${track.id}"][data-control="sourceSearch"]`,
-    );
+    const [sourceSearch] = getTrackControls(track, "sourceSearch");
     queueTrackSearch(track, sourceSearch?.value.trim() ?? "");
     return;
   }
@@ -886,9 +1167,28 @@ function handleTrackControl(event) {
   }
 
   if (controlName === "startTime" || controlName === "startNumber") {
-    track.startTime = Math.max(0, Number(control.value) || 0);
+    const video = getTrackVideo(track);
+    const nextStartTime = normalizeStartTimeInput(control.value, track, video);
+    if (!Number.isFinite(nextStartTime)) {
+      return;
+    }
+
+    track.startTime = nextStartTime;
+    if (track.arrangementClip) {
+      track.arrangementClip.startTime = nextStartTime;
+    }
+
     syncStartControls(track);
-    previewTrack(track);
+    if (video) {
+      safeSetCurrentTime(video, track.arrangementClip ?? track);
+    }
+
+    if (!transport?.active && event?.type !== "input") {
+      previewTrack(track);
+    }
+
+    markAppStateDirty();
+    return;
   }
 
   if (controlName === "retriggersPerBar") {
@@ -938,7 +1238,11 @@ function handleTrackControl(event) {
 
 function startTransport() {
   if (startTransport.runningPromise) {
-    return;
+    if (transport?.active) {
+      return;
+    }
+
+    startTransport.runningPromise = null;
   }
 
   if (!tracks.some((track) => track.source)) {
@@ -949,7 +1253,7 @@ function startTransport() {
   const bootToken = (startTransport.bootToken ?? 0) + 1;
   startTransport.bootToken = bootToken;
 
-  stopTransport(false);
+  stopTransport(false, false);
   let contextStart;
   try {
     contextStart = ensureAudioContext();
@@ -959,18 +1263,17 @@ function startTransport() {
   }
 
   if (contextStart && typeof contextStart.then === "function") {
+    const startToken = bootToken;
     startTransport.runningPromise = contextStart
       .catch(() => {
         webAudioDisabled = true;
       })
       .finally(() => {
-        if (startTransport.bootToken !== bootToken) {
+        if (startTransport.bootToken !== startToken) {
           return;
         }
-        startTransportWithState();
         startTransport.runningPromise = null;
       });
-    return;
   }
 
   // Start transport scheduling in the click stack to keep browser autoplay context
@@ -981,18 +1284,74 @@ function startTransport() {
   startTransportWithState();
 }
 
+const pendingAnchorSeeks = new Set();
+
+function normalizeStartTimeInput(rawValue, track, video) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return Number.isFinite(track?.startTime) ? track.startTime : 0;
+  }
+
+  const clampedMinimum = Math.max(0, parsed);
+  if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+    return clampedMinimum;
+  }
+
+  return Math.min(clampedMinimum, Math.max(video.duration - 0.2, 0));
+}
+
+function queueStartTimeSeek(video, track) {
+  const trackId = track?.id;
+  if (!video || !trackId) {
+    return;
+  }
+
+  if (pendingAnchorSeeks.has(trackId)) {
+    return;
+  }
+
+  pendingAnchorSeeks.add(trackId);
+  const clearPending = () => {
+    pendingAnchorSeeks.delete(trackId);
+  };
+
+  const applySeek = () => {
+    clearPending();
+    const currentTrack = getTrackById(trackId);
+    if (!currentTrack) {
+      return;
+    }
+
+    safeSetCurrentTime(video, currentTrack.arrangementClip ?? currentTrack);
+  };
+
+  video.addEventListener("loadedmetadata", applySeek, { once: true });
+  video.addEventListener("error", clearPending, { once: true });
+  if (video.networkState !== 0) {
+    video.load();
+  }
+}
+
 function safeSetCurrentTime(video, track) {
+  if (!video || !track) {
+    return;
+  }
+
   const nextTime = safeStartTime(track, video);
+  if (!Number.isFinite(nextTime)) {
+    return;
+  }
+
+  if (video.readyState < 1) {
+    queueStartTimeSeek(video, track);
+    return;
+  }
+
   try {
     video.currentTime = nextTime;
     return;
   } catch (error) {
-    // Browser may throw if metadata isn't ready yet.
-    try {
-      video.currentTime = 0;
-    } catch {
-      // Give up silently; playback helpers below will still handle the state.
-    }
+    queueStartTimeSeek(video, track);
   }
 }
 
@@ -1116,6 +1475,7 @@ function attemptVideoPlay(video, track, clipState) {
       return true;
     })
     .catch((error) => {
+      const hasName = error instanceof DOMException ? error.name : "";
       if (error instanceof DOMException) {
         setStatus(`Playback failed: ${error.name}`, true);
         if (error.name === "NotSupportedError") {
@@ -1125,7 +1485,7 @@ function attemptVideoPlay(video, track, clipState) {
         setStatus("Playback failed", true);
       }
 
-      if (!shouldBeMuted) {
+      if (!shouldBeMuted && hasName === "NotAllowedError") {
         setStatus("Tap play again", true);
       }
       return false;
@@ -1182,10 +1542,11 @@ function startTransportWithState() {
   tickTransport();
 }
 
-function stopTransport(resetVideos = true) {
-  if (Number.isFinite(startTransport.bootToken)) {
+function stopTransport(resetVideos = true, bumpToken = true) {
+  if (bumpToken && Number.isFinite(startTransport.bootToken)) {
     startTransport.bootToken += 1;
   }
+  startTransport.runningPromise = null;
 
   if (transport?.frameId) {
     cancelAnimationFrame(transport.frameId);
@@ -1193,7 +1554,7 @@ function stopTransport(resetVideos = true) {
 
   transport = null;
   window.freemixRender?.updateTransportRow?.();
-  document.querySelectorAll(".beat-light").forEach((light) => light.classList.remove("active"));
+  getBeatLights().forEach((light) => light.classList.remove("active"));
 
   if (resetVideos) {
     tracks.forEach((track) => {
@@ -1271,7 +1632,7 @@ function tickTransport() {
 
 function triggerTrack(track, clip = track) {
   const video = getTrackVideo(track);
-  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  const cell = getTrackCell(track);
   if (!video || !cell) {
     return;
   }
@@ -1310,7 +1671,7 @@ function previewTrack(track) {
 }
 
 function renderBeat(beat) {
-  document.querySelectorAll(".beat-light").forEach((light, index) => {
+  getBeatLights().forEach((light, index) => {
     light.classList.toggle("active", index === beat);
   });
 }
@@ -1370,31 +1731,43 @@ function updateTrackDuration(video) {
   }
 
   const trackId = video.id.replace("video-", "");
-  document
-    .querySelectorAll(`[data-track-control="${trackId}"][data-control="startTime"]`)
-    .forEach((range) => {
-      range.max = String(Math.max(1, video.duration - 1));
-    });
+  const track = getTrackById(trackId);
+  getTrackControls({ id: trackId }, "startTime").forEach((range) => {
+    range.max = String(Math.max(1, video.duration - 1));
+  });
 
-  document
-    .querySelectorAll(`[data-track-control="${trackId}"][data-control="startNumber"]`)
-    .forEach((number) => {
-      number.max = String(Math.max(1, video.duration - 1));
-    });
+  getTrackControls({ id: trackId }, "startNumber").forEach((number) => {
+    number.max = String(Math.max(1, video.duration - 1));
+  });
+
+  if (!track) {
+    return;
+  }
+
+  const safeStart = safeStartTime(track, video);
+  if (!Number.isFinite(safeStart)) {
+    return;
+  }
+
+  if (track.startTime !== safeStart) {
+    track.startTime = safeStart;
+    if (track.arrangementClip) {
+      track.arrangementClip.startTime = safeStart;
+    }
+    syncStartControls(track);
+  }
+
+  safeSetCurrentTime(video, track.arrangementClip ?? track);
 }
 
 function syncStartControls(track) {
-  document
-    .querySelectorAll(`[data-track-control="${track.id}"][data-control="startTime"]`)
-    .forEach((range) => {
-      range.value = String(track.startTime);
-    });
+  getTrackControls(track, "startTime").forEach((range) => {
+    range.value = String(track.startTime);
+  });
 
-  document
-    .querySelectorAll(`[data-track-control="${track.id}"][data-control="startNumber"]`)
-    .forEach((number) => {
-      number.value = track.startTime.toFixed(1);
-    });
+  getTrackControls(track, "startNumber").forEach((number) => {
+    number.value = track.startTime.toFixed(1);
+  });
 }
 
 function applyTrackVolume(track, state = track) {
@@ -1455,7 +1828,7 @@ function setupTrackAudio(track, video) {
     high.frequency.value = 3600;
     dryGain.gain.value = 1;
     delay.delayTime.value = 0.25;
-    reverb.buffer = createReverbImpulse(audioContext);
+    reverb.buffer = getReverbImpulse(audioContext);
 
     source.connect(low).connect(mid).connect(high).connect(drive);
     drive.connect(dryGain).connect(output);
@@ -1498,7 +1871,7 @@ function applyTrackFx(track, state = track) {
   audio.low.gain.value = state.fx.eqLow;
   audio.mid.gain.value = state.fx.eqMid;
   audio.high.gain.value = state.fx.eqHigh;
-  audio.drive.curve = createTubeCurve(state.fx.tube);
+  audio.drive.curve = getTubeCurve(state.fx.tube);
   audio.drive.oversample = "4x";
   audio.delay.delayTime.value = 0.12 + state.fx.delay * 0.5;
   audio.delayGain.gain.value = state.fx.delay * 0.42;
@@ -1506,7 +1879,7 @@ function applyTrackFx(track, state = track) {
 }
 
 function applyVideoFx(track, state = track) {
-  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  const cell = getTrackCell(track);
   if (!cell) {
     return;
   }
@@ -1534,7 +1907,7 @@ function applyVideoFx(track, state = track) {
 }
 
 function applyTrackOpacity(track, state = track) {
-  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  const cell = getTrackCell(track);
   if (!cell) {
     return;
   }
@@ -1556,7 +1929,7 @@ function applyTrackPitchAndSpeed(track, state = track) {
 }
 
 function applyTrackBlend(track, state = track) {
-  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  const cell = getTrackCell(track);
   if (!cell) {
     return;
   }
@@ -1596,6 +1969,19 @@ function createTubeCurve(amount) {
   return curve;
 }
 
+function getTubeCurve(amount) {
+  const normalized = Number.isFinite(Number(amount)) ? Number(amount) : 0;
+  const key = normalized.toFixed(3);
+  const cached = TUBE_CURVE_CACHE.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const nextCurve = createTubeCurve(clamp(normalized, 0, 1));
+  TUBE_CURVE_CACHE.set(key, nextCurve);
+  return nextCurve;
+}
+
 function createReverbImpulse(context) {
   const seconds = 1.6;
   const length = context.sampleRate * seconds;
@@ -1611,16 +1997,31 @@ function createReverbImpulse(context) {
   return impulse;
 }
 
+function getReverbImpulse(context) {
+  if (!context) {
+    return null;
+  }
+
+  const cached = REVERB_BUFFER_CACHE.get(context);
+  if (cached) {
+    return cached;
+  }
+
+  const impulse = createReverbImpulse(context);
+  REVERB_BUFFER_CACHE.set(context, impulse);
+  return impulse;
+}
+
 function safeStartTime(track, video) {
+  if (!Number.isFinite(track.startTime)) {
+    return 0;
+  }
+
   if (!Number.isFinite(video.duration) || video.duration <= 0) {
-    return track.startTime;
+    return Math.max(0, track.startTime);
   }
 
   return Math.min(track.startTime, Math.max(video.duration - 0.2, 0));
-}
-
-function getTrackVideo(track) {
-  return document.querySelector(`#video-${track.id}`);
 }
 
 function updateTrackTriggerGrid(startAt = performance.now()) {
@@ -1639,7 +2040,7 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
 
 function handleArrangementCell(event) {
   const cell = event.currentTarget;
-  const track = tracks.find((item) => item.id === cell.dataset.arrTrack);
+    const track = getTrackById(cell.dataset.arrTrack);
   const stepIndex = Number(cell.dataset.arrStep);
   if (!track || !Number.isInteger(stepIndex)) {
     return;
@@ -1774,7 +2175,7 @@ function clearArrangement() {
 }
 
 function openArrangementClearMenu() {
-  const clearMenu = document.querySelector("#arrangementClearMenu");
+  const clearMenu = getArrangementClearMenu();
   if (!clearMenu) {
     return;
   }
@@ -1784,7 +2185,7 @@ function openArrangementClearMenu() {
 }
 
 function closeArrangementClearMenu() {
-  const clearMenu = document.querySelector("#arrangementClearMenu");
+  const clearMenu = getArrangementClearMenu();
   if (!clearMenu) {
     return;
   }
@@ -1799,7 +2200,7 @@ function confirmClearArrangement() {
 }
 
 function isArrangementClearMenuOpen() {
-  const clearMenu = document.querySelector("#arrangementClearMenu");
+  const clearMenu = getArrangementClearMenu();
   return clearMenu?.getAttribute("data-open") === "true" && clearMenu?.hidden === false;
 }
 
@@ -1885,7 +2286,7 @@ function selectArrangementStep(stepIndex) {
 }
 
 function renderArrangementPlayhead() {
-  document.querySelectorAll(".arrangement-cell").forEach((cell) => {
+  getArrangementCells().forEach((cell) => {
     cell.classList.toggle("playing", Number(cell.dataset.arrStep) === arrangement.step);
   });
 }
@@ -1924,13 +2325,66 @@ function cloneArrangementStep(step) {
 
 function queueTrackSearch(track, query) {
   window.clearTimeout(track.searchTimer);
+  const normalizedQuery = normalizeSearchInput(query);
 
-  if (query.length < 2) {
+  if (normalizedQuery.length < SEARCH_QUERY_MIN_LENGTH) {
     renderTrackResults(track, []);
     return;
   }
 
-  track.searchTimer = window.setTimeout(() => searchTrackSource(track, query), SEARCH_DELAY_MS);
+  track.searchTimer = window.setTimeout(() => searchTrackSource(track, normalizedQuery), SEARCH_DELAY_MS);
+}
+
+function buildTrackSearchParams(rawQuery) {
+  const params = new URLSearchParams({
+    q: rawQuery,
+    sort: "downloads desc",
+    rows: String(SEARCH_ROWS_PER_REQUEST),
+    page: "1",
+    output: "json",
+  });
+
+  SEARCH_RESULT_FIELDS.forEach((field) => {
+    params.append("fl[]", field);
+  });
+
+  return params;
+}
+
+function makeSearchCacheKey(rawQuery) {
+  return normalizeSearchInput(rawQuery) || rawQuery;
+}
+
+function pruneSearchResultCache() {
+  if (searchResultCache.size <= SEARCH_RESULT_CACHE_MAX_SIZE) {
+    return;
+  }
+
+  const oldest = [...searchResultCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
+  const excess = searchResultCache.size - SEARCH_RESULT_CACHE_MAX_SIZE;
+  for (let index = 0; index < excess; index += 1) {
+    const keyToDelete = oldest[index]?.[0];
+    if (keyToDelete) {
+      searchResultCache.delete(keyToDelete);
+    }
+  }
+}
+
+async function fetchSearchResults(rawQuery) {
+  const key = makeSearchCacheKey(rawQuery);
+  const now = performance.now();
+  const cached = searchResultCache.get(key);
+  if (cached && now - cached.fetchedAt < SEARCH_RESULT_CACHE_TTL_MS) {
+    return cached.docs;
+  }
+
+  const docs = await performArchiveSearch(buildTrackSearchParams(rawQuery));
+  searchResultCache.set(key, {
+    fetchedAt: now,
+    docs: Array.isArray(docs) ? docs : [],
+  });
+  pruneSearchResultCache();
+  return docs;
 }
 
 async function searchTrackSource(track, query) {
@@ -1938,30 +2392,35 @@ async function searchTrackSource(track, query) {
   track.searchRequestId = requestId;
   renderTrackResultsMessage(track, "Searching...");
 
-  const params = new URLSearchParams({
-    q: `mediatype:(movies) AND (${query})`,
-    sort: "downloads desc",
-    rows: "24",
-    page: "1",
-    output: "json",
-  });
-
-  ["identifier", "title", "creator", "year", "description", "runtime"].forEach((field) => {
-    params.append("fl[]", field);
-  });
+  const searchQuery = buildArchiveSearchQuery(query);
+  const queryToUse = searchQuery || query;
 
   try {
-    const docs = await performArchiveSearch(params);
+    const docs = await fetchSearchResults(queryToUse);
     if (track.searchRequestId !== requestId) {
       return;
     }
 
-    const results = rankAndFilterResults(normalizeResults(docs), track.durationFilter);
+    const results = rankAndFilterResults(normalizeResults(docs), track.durationFilter, query);
     if (results.length) {
       renderTrackResults(track, results);
-    } else {
-      renderTrackResultsMessage(track, "No matches");
+      return;
     }
+
+    if (searchQuery && queryToUse !== `mediatype:(movies) AND (${query})`) {
+      const fallbackDocs = await fetchSearchResults(`mediatype:(movies) AND (${query})`);
+      if (track.searchRequestId !== requestId) {
+        return;
+      }
+
+      const fallbackResults = rankAndFilterResults(normalizeResults(fallbackDocs), track.durationFilter, query);
+      if (fallbackResults.length) {
+        renderTrackResults(track, fallbackResults);
+        return;
+      }
+    }
+
+    renderTrackResultsMessage(track, "No matches");
   } catch (error) {
     if (track.searchRequestId !== requestId) {
       return;
@@ -1972,10 +2431,14 @@ async function searchTrackSource(track, query) {
   }
 }
 
-function rankAndFilterResults(results, filterKey = "any") {
+function rankAndFilterResults(results, filterKey = "any", query = "") {
   const filter = DURATION_FILTERS[filterKey] ?? DURATION_FILTERS.any;
 
-  return results
+  const sorted = results
+    .map((result) => ({
+      ...result,
+      _searchScore: searchRelevance(result, query),
+    }))
     .filter((result) => {
       if (filterKey === "any") {
         return true;
@@ -1983,12 +2446,24 @@ function rankAndFilterResults(results, filterKey = "any") {
 
       return result.durationSeconds >= filter.min && result.durationSeconds < filter.max;
     })
-    .sort((a, b) => a.durationSeconds - b.durationSeconds || a.title.localeCompare(b.title))
-    .slice(0, 6);
+    .sort((a, b) => {
+      if (b._searchScore !== a._searchScore) {
+        return b._searchScore - a._searchScore;
+      }
+
+      if (b.downloads !== a.downloads) {
+        return b.downloads - a.downloads;
+      }
+
+      return a.durationSeconds - b.durationSeconds || a.title.localeCompare(b.title);
+    })
+    .map(({ _searchScore, ...result }) => result);
+
+  return diversifyRankedSearchResults(sorted, SEARCH_RESULTS_LIMIT);
 }
 
 function renderTrackResults(track, results) {
-  const resultsEl = document.querySelector(`#results-${track.id}`);
+  const resultsEl = playerPanel?.querySelector(`#results-${track.id}`);
   if (!resultsEl) {
     return;
   }
@@ -2028,7 +2503,7 @@ function formatResultMeta(result) {
 }
 
 function renderTrackResultsMessage(track, message) {
-  const resultsEl = document.querySelector(`#results-${track.id}`);
+  const resultsEl = playerPanel?.querySelector(`#results-${track.id}`);
   if (!resultsEl) {
     return;
   }
@@ -2048,7 +2523,7 @@ async function loadTrackSource(track, result) {
     track.source = source;
     track.startTime = 0;
     track.lastStep = -1;
-    selectedSource = tracks.find((item) => item.source)?.source ?? source;
+    selectedSource = getFirstLoadedTrackSource() || source;
     if (window.freemixRender?.updateTrackRow) {
       window.freemixRender.updateTrackRow(track);
       window.freemixRender.updateSourceStrip?.();
@@ -2068,22 +2543,31 @@ function handleTrackSearchKeydown(event) {
     return;
   }
 
-  const track = tracks.find((item) => item.id === event.currentTarget.dataset.trackControl);
+  const track = getTrackById(event.currentTarget.dataset.trackControl);
   if (track) {
     renderTrackResults(track, []);
   }
 }
 
-function createInitialTracks() {
-  return TRACKS.map((track, index) => ({
-    ...track,
-    id: `track-${index + 1}`,
+function createInitialTracks(count = DEFAULT_TRACK_COUNT) {
+  const desired = Number.isFinite(count) ? Math.floor(count) : DEFAULT_TRACK_COUNT;
+  const trackCount = Math.max(1, Math.min(desired, MAX_TRACK_COUNT));
+  return Array.from({ length: trackCount }, (_, index) => createTrackTemplate(index));
+}
+
+function createTrackTemplate(index) {
+  const paletteIndex = Math.max(0, Math.floor(index || 0));
+  return {
+    name: `Track ${paletteIndex + 1}`,
+    role: "Track",
+    color: TRACK_COLORS[paletteIndex % TRACK_COLORS.length],
+    id: `track-${paletteIndex + 1}`,
     showAdvanced: false,
     startTime: 0,
-    retriggersPerBar: [1, 2, 4, 8][index],
+    retriggersPerBar: TRACK_RETRIGGER_DEFAULTS[paletteIndex % TRACK_RETRIGGER_DEFAULTS.length],
     volume: 0.55,
     muted: false,
-    blendMode: ["normal", "screen", "difference", "add"][index],
+    blendMode: TRACK_BLEND_DEFAULTS[paletteIndex % TRACK_BLEND_DEFAULTS.length],
     opacity: 1,
     speed: 1,
     pitch: 0,
@@ -2104,8 +2588,38 @@ function createInitialTracks() {
     durationFilter: "quick",
     searchTimer: null,
     searchRequestId: 0,
-  }));
+  };
 }
+
+function canAddTrack() {
+  return tracks.length < MAX_TRACK_COUNT;
+}
+
+function addTrack() {
+  if (!canAddTrack()) {
+    setStatus("Max 4 tracks reached", true);
+    return false;
+  }
+
+  if (transport?.active) {
+    stopTransport(false);
+  }
+
+  const nextTrack = createTrackTemplate(tracks.length);
+  tracks.push(nextTrack);
+  refreshTrackLookup();
+  if (window.freemixTrackSourceCache && nextTrack.id) {
+    window.freemixTrackSourceCache[nextTrack.id] = {};
+  }
+
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${nextTrack.name} added`);
+  return true;
+}
+
+window.addTrack = addTrack;
+window.canAddTrack = canAddTrack;
 
 function createInitialArrangement(steps = arrangementStepCount) {
   return {

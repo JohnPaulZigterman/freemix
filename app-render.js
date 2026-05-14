@@ -120,7 +120,7 @@
       <div class="source-copy">
         <span class="panel-label">Sources</span>
         <h2>${escapeHtml(sourceLabel)}</h2>
-        <p>${escapeHtml(sourceMeta || "Four independent Internet Archive tracks")}</p>
+        <p>${escapeHtml(sourceMeta || `${tracks.length} track slot${tracks.length === 1 ? "" : "s"} open`)}</p>
       </div>
       ${archiveLink}
     `;
