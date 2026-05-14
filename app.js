@@ -1,7 +1,3 @@
-const searchInput = document.querySelector("#searchInput");
-const searchBox = document.querySelector(".search-box");
-const resultsPopover = document.querySelector("#resultsPopover");
-const resultsList = document.querySelector("#resultsList");
 const playerPanel = document.querySelector("#playerPanel");
 const statusPill = document.querySelector("#statusPill");
 
@@ -9,7 +5,6 @@ const IA_SEARCH_URL = "https://archive.org/advancedsearch.php";
 const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
-const RESULT_LIMIT = 12;
 const DEFAULT_BPM = 92;
 const TRACKS = [
   { name: "Perc", role: "Impact", color: "green" },
@@ -27,11 +22,14 @@ const RETRIGGER_LABELS = {
   7: "7 - spark",
   8: "8 - rush",
 };
+const DURATION_FILTERS = {
+  any: { label: "Any", min: 0, max: Infinity },
+  quick: { label: "< 5m", min: 0, max: 5 * 60 },
+  short: { label: "< 15m", min: 0, max: 15 * 60 },
+  medium: { label: "15-30m", min: 15 * 60, max: 30 * 60 },
+  long: { label: "30m+", min: 30 * 60, max: Infinity },
+};
 
-let debounceTimer = null;
-let activeIndex = -1;
-let currentResults = [];
-let requestCounter = 0;
 let selectedSource = null;
 let transport = null;
 let audioContext = null;
@@ -39,90 +37,14 @@ let masterMuted = false;
 let tracks = createInitialTracks();
 let trackSearchRequestCounter = 0;
 
-searchInput.addEventListener("input", () => {
-  window.clearTimeout(debounceTimer);
-  const query = searchInput.value.trim();
-
-  if (query.length < 2) {
-    currentResults = [];
-    hideResults();
-    setStatus(selectedSource ? "Loaded" : "Ready");
-    return;
-  }
-
-  setStatus("Typing...");
-  debounceTimer = window.setTimeout(() => searchArchive(query), SEARCH_DELAY_MS);
-});
-
-searchInput.addEventListener("keydown", (event) => {
-  if (resultsPopover.hidden || currentResults.length === 0) {
-    return;
-  }
-
-  if (event.key === "ArrowDown") {
-    event.preventDefault();
-    setActiveIndex(Math.min(activeIndex + 1, currentResults.length - 1));
-  }
-
-  if (event.key === "ArrowUp") {
-    event.preventDefault();
-    setActiveIndex(Math.max(activeIndex - 1, 0));
-  }
-
-  if (event.key === "Enter" && activeIndex >= 0) {
-    event.preventDefault();
-    selectResult(currentResults[activeIndex]);
-  }
-
-  if (event.key === "Escape") {
-    hideResults();
-  }
-});
+renderWorkstation();
+setStatus("Ready");
 
 document.addEventListener("click", (event) => {
-  if (!event.target.closest(".search-panel")) {
-    hideResults();
+  if (!event.target.closest(".track-source")) {
+    tracks.forEach((track) => renderTrackResults(track, []));
   }
 });
-
-async function searchArchive(query) {
-  const requestId = ++requestCounter;
-  setStatus("Searching...");
-  showMessage("Searching Internet Archive...");
-
-  const params = new URLSearchParams({
-    q: `mediatype:(movies) AND (${query})`,
-    sort: "downloads desc",
-    rows: String(RESULT_LIMIT),
-    page: "1",
-    output: "json",
-  });
-
-  ["identifier", "title", "creator", "year", "description"].forEach((field) => {
-    params.append("fl[]", field);
-  });
-
-  try {
-    const docs = await performArchiveSearch(params);
-    if (requestId !== requestCounter) {
-      return;
-    }
-
-    currentResults = normalizeResults(docs);
-    activeIndex = currentResults.length ? 0 : -1;
-    renderResults(currentResults);
-    setStatus(currentResults.length ? `${currentResults.length} found` : "No matches");
-  } catch (error) {
-    if (requestId !== requestCounter) {
-      return;
-    }
-
-    currentResults = [];
-    showMessage("Search is unavailable right now. Try again in a moment.");
-    setStatus("Search error", true);
-    console.error(error);
-  }
-}
 
 function normalizeResults(docs) {
   return docs
@@ -133,6 +55,8 @@ function normalizeResults(docs) {
       creator: textValue(doc.creator),
       year: textValue(doc.year),
       description: textValue(doc.description),
+      runtime: textValue(doc.runtime),
+      durationSeconds: parseRuntime(textValue(doc.runtime)),
       thumbnail: `https://archive.org/services/img/${encodeURIComponent(doc.identifier)}`,
       archiveUrl: `https://archive.org/details/${encodeURIComponent(doc.identifier)}`,
     }));
@@ -146,69 +70,29 @@ function textValue(value) {
   return value ?? "";
 }
 
-function renderResults(results) {
-  resultsList.innerHTML = "";
-
-  if (!results.length) {
-    showMessage("No videos found. Try a broader search.");
-    return;
+function parseRuntime(runtime) {
+  if (!runtime) {
+    return Infinity;
   }
 
-  const fragment = document.createDocumentFragment();
+  const parts = String(runtime)
+    .trim()
+    .split(":")
+    .map((part) => Number(part));
 
-  results.forEach((result, index) => {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.className = "result-button";
-    button.type = "button";
-    button.role = "option";
-    button.setAttribute("aria-selected", index === activeIndex ? "true" : "false");
-    button.addEventListener("click", () => selectResult(result));
-    button.addEventListener("mouseenter", () => setActiveIndex(index));
-
-    const meta = [result.creator, result.year].filter(Boolean).join(" - ");
-
-    button.innerHTML = `
-      <span class="thumb"><img src="${result.thumbnail}" alt="" loading="lazy"></span>
-      <span>
-        <span class="result-title">${escapeHtml(result.title)}</span>
-        <span class="result-meta">${escapeHtml(meta || result.identifier)}</span>
-        ${
-          result.description
-            ? `<span class="result-description">${escapeHtml(result.description)}</span>`
-            : ""
-        }
-      </span>
-    `;
-
-    item.append(button);
-    fragment.append(item);
-  });
-
-  resultsList.append(fragment);
-  showResults();
-  setActiveIndex(activeIndex);
-}
-
-async function selectResult(result) {
-  stopTransport();
-  searchInput.value = result.title;
-  hideResults();
-  setStatus("Loading media...");
-  renderLoadingSource(result);
-
-  try {
-    const source = await fetchPlayableSource(result);
-    selectedSource = source;
-    tracks = createInitialTracks().map((track) => ({ ...track, source }));
-    renderWorkstation();
-    setStatus("4 tracks loaded");
-  } catch (error) {
-    selectedSource = null;
-    setStatus("No media file", true);
-    renderSourceError(result);
-    console.warn(error);
+  if (parts.some((part) => Number.isNaN(part))) {
+    return Infinity;
   }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  return parts[0];
 }
 
 async function performArchiveSearch(params) {
@@ -281,31 +165,6 @@ function scorePlayableFile(file) {
   return score;
 }
 
-function renderLoadingSource(result) {
-  playerPanel.innerHTML = `
-    <div class="empty-state compact-state">
-      <div class="play-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10h-3a7 7 0 1 1-7-7V2Z" /></svg>
-      </div>
-      <h2>Loading Source</h2>
-      <p>${escapeHtml(result.title)}</p>
-    </div>
-  `;
-}
-
-function renderSourceError(result) {
-  playerPanel.innerHTML = `
-    <div class="empty-state compact-state">
-      <div class="play-mark warning" aria-hidden="true">!</div>
-      <h2>Try Another Video</h2>
-      <p>${escapeHtml(result.title)} does not expose a direct browser-playable video file.</p>
-      <a class="archive-link" href="${result.archiveUrl}" target="_blank" rel="noreferrer">
-        View archive page
-      </a>
-    </div>
-  `;
-}
-
 function renderWorkstation() {
   const loadedTracks = tracks.filter((track) => track.source);
   const allSameSource =
@@ -351,8 +210,12 @@ function renderWorkstation() {
         </div>
       </div>
 
-      <div class="track-grid">
-        ${tracks.map((track) => renderTrack(track)).join("")}
+      <div class="video-matrix" aria-label="Video sources">
+        ${tracks.map((track) => renderVideoCell(track)).join("")}
+      </div>
+
+      <div class="control-bank" aria-label="Track controls">
+        ${tracks.map((track) => renderTrackControlRow(track)).join("")}
       </div>
     </section>
   `;
@@ -360,31 +223,40 @@ function renderWorkstation() {
   bindWorkstationControls();
 }
 
-function renderTrack(track) {
-  const sourceTitle = track.source?.title ?? "No source loaded";
+function renderVideoCell(track) {
+  return `
+    <div class="video-cell ${track.color}" data-track-id="${track.id}">
+      ${
+        track.source
+          ? `<video
+              class="track-video"
+              id="video-${track.id}"
+              src="${track.source.mediaUrl}"
+              preload="metadata"
+              playsinline
+            ></video>`
+          : `<div class="track-empty-video">Ready</div>`
+      }
+      <div class="track-badge">
+        <strong>${escapeHtml(track.name)}</strong>
+        <span>${escapeHtml(track.role)}</span>
+      </div>
+      <div class="trigger-flash" aria-hidden="true"></div>
+    </div>
+  `;
+}
+
+function renderTrackControlRow(track) {
+  const sourceTitle = track.source?.title ?? "Empty slot";
   const sourceMeta = track.source
     ? [track.source.creator, track.source.year].filter(Boolean).join(" - ") || track.source.mediaFormat
-    : "Search this track";
+    : "Search to load video";
 
   return `
-    <article class="track-card ${track.color}" data-track-id="${track.id}">
-      <div class="track-video-shell">
-        ${
-          track.source
-            ? `<video
-                class="track-video"
-                id="video-${track.id}"
-                src="${track.source.mediaUrl}"
-                preload="metadata"
-                playsinline
-              ></video>`
-            : `<div class="track-empty-video">Search source</div>`
-        }
-        <div class="track-badge">
-          <strong>${escapeHtml(track.name)}</strong>
-          <span>${escapeHtml(track.role)}</span>
-        </div>
-        <div class="trigger-flash" aria-hidden="true"></div>
+    <article class="track-row ${track.color}" data-track-row-id="${track.id}">
+      <div class="track-row-label">
+        <strong>${escapeHtml(track.name)}</strong>
+        <span>${escapeHtml(track.role)}</span>
       </div>
       <div class="track-source">
         <label class="control-field track-source-search">
@@ -399,69 +271,78 @@ function renderTrack(track) {
             data-control="sourceSearch"
           >
         </label>
+        <label class="control-field duration-filter">
+          <span>Length</span>
+          <select data-track-control="${track.id}" data-control="durationFilter">
+            ${Object.entries(DURATION_FILTERS)
+              .map(
+                ([value, filter]) =>
+                  `<option value="${value}" ${value === track.durationFilter ? "selected" : ""}>${filter.label}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
         <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
           <strong>${escapeHtml(sourceTitle)}</strong>
           <span>${escapeHtml(sourceMeta)}</span>
         </div>
         <div class="track-results" id="results-${track.id}" hidden></div>
       </div>
-      <div class="track-controls">
-        <label class="control-field start-field">
-          <span>Find Moment</span>
-          <input
-            type="range"
-            min="0"
-            max="120"
-            step="0.1"
-            value="${track.startTime}"
-            data-track-control="${track.id}"
-            data-control="startTime"
-          >
-        </label>
-        <label class="control-field compact-number">
-          <span>Sec</span>
-          <input
-            type="number"
-            min="0"
-            step="0.1"
-            value="${track.startTime}"
-            data-track-control="${track.id}"
-            data-control="startNumber"
-          >
-        </label>
-        <label class="control-field">
-          <span>Energy</span>
-          <select data-track-control="${track.id}" data-control="retriggersPerBar">
-            ${Object.entries(RETRIGGER_LABELS)
-              .map(
-                ([value, label]) =>
-                  `<option value="${value}" ${Number(value) === track.retriggersPerBar ? "selected" : ""}>${label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
-        <label class="control-field">
-          <span>Vol</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value="${track.volume}"
-            data-track-control="${track.id}"
-            data-control="volume"
-          >
-        </label>
-        <button
-          class="track-toggle"
-          type="button"
+      <label class="control-field start-field">
+        <span>Moment</span>
+        <input
+          type="range"
+          min="0"
+          max="120"
+          step="0.1"
+          value="${track.startTime}"
           data-track-control="${track.id}"
-          data-control="muted"
-          aria-pressed="${track.muted}"
+          data-control="startTime"
         >
-          ${track.muted ? "Muted" : "On"}
-        </button>
-      </div>
+      </label>
+      <label class="control-field compact-number">
+        <span>Sec</span>
+        <input
+          type="number"
+          min="0"
+          step="0.1"
+          value="${track.startTime}"
+          data-track-control="${track.id}"
+          data-control="startNumber"
+        >
+      </label>
+      <label class="control-field energy-field">
+        <span>Energy</span>
+        <select data-track-control="${track.id}" data-control="retriggersPerBar">
+          ${Object.entries(RETRIGGER_LABELS)
+            .map(
+              ([value, label]) =>
+                `<option value="${value}" ${Number(value) === track.retriggersPerBar ? "selected" : ""}>${label}</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+      <label class="control-field volume-field">
+        <span>Vol</span>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value="${track.volume}"
+          data-track-control="${track.id}"
+          data-control="volume"
+        >
+      </label>
+      <button
+        class="track-toggle"
+        type="button"
+        data-track-control="${track.id}"
+        data-control="muted"
+        aria-pressed="${track.muted}"
+      >
+        ${track.muted ? "Muted" : "On"}
+      </button>
     </article>
   `;
 }
@@ -509,6 +390,15 @@ function handleTrackControl(event) {
 
   if (controlName === "sourceSearch") {
     queueTrackSearch(track, control.value.trim());
+    return;
+  }
+
+  if (controlName === "durationFilter") {
+    track.durationFilter = control.value;
+    const sourceSearch = document.querySelector(
+      `[data-track-control="${track.id}"][data-control="sourceSearch"]`,
+    );
+    queueTrackSearch(track, sourceSearch?.value.trim() ?? "");
     return;
   }
 
@@ -625,8 +515,8 @@ function tickTransport() {
 
 function triggerTrack(track) {
   const video = getTrackVideo(track);
-  const card = document.querySelector(`[data-track-id="${track.id}"]`);
-  if (!video || !card) {
+  const cell = document.querySelector(`[data-track-id="${track.id}"]`);
+  if (!video || !cell) {
     return;
   }
 
@@ -636,8 +526,8 @@ function triggerTrack(track) {
     setStatus("Tap play again", true);
   });
 
-  card.classList.remove("triggered");
-  window.requestAnimationFrame(() => card.classList.add("triggered"));
+  cell.classList.remove("triggered");
+  window.requestAnimationFrame(() => cell.classList.add("triggered"));
 }
 
 function previewTrack(track) {
@@ -774,12 +664,12 @@ async function searchTrackSource(track, query) {
   const params = new URLSearchParams({
     q: `mediatype:(movies) AND (${query})`,
     sort: "downloads desc",
-    rows: "6",
+    rows: "24",
     page: "1",
     output: "json",
   });
 
-  ["identifier", "title", "creator", "year", "description"].forEach((field) => {
+  ["identifier", "title", "creator", "year", "description", "runtime"].forEach((field) => {
     params.append("fl[]", field);
   });
 
@@ -789,7 +679,12 @@ async function searchTrackSource(track, query) {
       return;
     }
 
-    renderTrackResults(track, normalizeResults(docs));
+    const results = rankAndFilterResults(normalizeResults(docs), track.durationFilter);
+    if (results.length) {
+      renderTrackResults(track, results);
+    } else {
+      renderTrackResultsMessage(track, "No matches");
+    }
   } catch (error) {
     if (track.searchRequestId !== requestId) {
       return;
@@ -798,6 +693,21 @@ async function searchTrackSource(track, query) {
     renderTrackResultsMessage(track, "Search failed");
     console.error(error);
   }
+}
+
+function rankAndFilterResults(results, filterKey = "any") {
+  const filter = DURATION_FILTERS[filterKey] ?? DURATION_FILTERS.any;
+
+  return results
+    .filter((result) => {
+      if (filterKey === "any") {
+        return true;
+      }
+
+      return result.durationSeconds >= filter.min && result.durationSeconds < filter.max;
+    })
+    .sort((a, b) => a.durationSeconds - b.durationSeconds || a.title.localeCompare(b.title))
+    .slice(0, 6);
 }
 
 function renderTrackResults(track, results) {
@@ -820,7 +730,7 @@ function renderTrackResults(track, results) {
           <img src="${result.thumbnail}" alt="" loading="lazy">
           <span>
             <strong>${escapeHtml(result.title)}</strong>
-            <small>${escapeHtml([result.creator, result.year].filter(Boolean).join(" - ") || result.identifier)}</small>
+            <small>${escapeHtml(formatResultMeta(result))}</small>
           </span>
         </button>
       `,
@@ -835,6 +745,11 @@ function renderTrackResults(track, results) {
       }
     });
   });
+}
+
+function formatResultMeta(result) {
+  const credit = [result.creator, result.year].filter(Boolean).join(" - ") || result.identifier;
+  return [result.runtime, credit].filter(Boolean).join(" | ");
 }
 
 function renderTrackResultsMessage(track, message) {
@@ -890,38 +805,10 @@ function createInitialTracks() {
     nextTriggerAt: 0,
     stepMs: 0,
     source: null,
+    durationFilter: "any",
     searchTimer: null,
     searchRequestId: 0,
   }));
-}
-
-function setActiveIndex(index) {
-  activeIndex = index;
-
-  [...resultsList.querySelectorAll(".result-button")].forEach((button, buttonIndex) => {
-    const isActive = buttonIndex === activeIndex;
-    button.classList.toggle("active", isActive);
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
-
-    if (isActive) {
-      button.scrollIntoView({ block: "nearest" });
-    }
-  });
-}
-
-function showMessage(message) {
-  resultsList.innerHTML = `<li class="message-row">${escapeHtml(message)}</li>`;
-  showResults();
-}
-
-function showResults() {
-  resultsPopover.hidden = false;
-  searchBox.setAttribute("aria-expanded", "true");
-}
-
-function hideResults() {
-  resultsPopover.hidden = true;
-  searchBox.setAttribute("aria-expanded", "false");
 }
 
 function setStatus(message, isError = false) {

@@ -2,21 +2,23 @@
 
 Freemix is a video remixer for people who want to make music before they know how to make music.
 
-The core promise is simple: search the Internet Archive, choose a video, pull playable sounds out of it, and turn those sounds into a song. The video remains alive while the music is being made. It is not just a sample source. It is the instrument, the visualizer, and the raw material of the performance.
+The core promise is simple: search the Internet Archive, choose source videos, pull playable sounds out of them, and turn those sounds into a song that already has an accompanying music video. The video remains alive while the music is being made. It is not just a sample source. It is the instrument, the visualizer, and the raw material of the performance.
 
 Freemix should feel like finding a secret instrument inside a film.
 
+The final product goal is not merely to help users make loops. It is to help people make a complete audiovisual idea quickly: a song and a music video born from the same playful actions, without needing prior technical knowledge of music production, video editing, sampling, codecs, timelines, or export workflows.
+
 ## Product North Star
 
-Freemix turns archived video into playable musical instruments.
+Freemix turns archived video into playable musical instruments that produce music and visuals together.
 
 A user should be able to:
 
-1. Search the Internet Archive for a video.
+1. Search the Internet Archive for source material.
 2. Load it without thinking about formats, downloads, or setup.
-3. Let Freemix help them find four useful musical parts.
-4. Play, refine, arrange, and perform those parts.
-5. Watch the video respond as naturally as the sound.
+3. Let Freemix help them find useful musical and visual moments.
+4. Play, refine, arrange, and perform those moments.
+5. Finish with a song that already has a matching music video.
 
 The first successful session should happen in minutes, not hours.
 
@@ -41,6 +43,8 @@ Every visible control should earn its place. If a button is visible, it should d
 
 Advanced features are welcome, but they should live behind gentle doors: expandable panels, secondary modes, contextual controls, and progressive disclosure. A beginner should never feel punished for not knowing what to touch. A pro should never feel trapped by training wheels.
 
+The product should actively encourage experimentation. Trying a different source, moving a start point, changing a retrigger rate, muting a track, or swapping a visual should feel safe, fast, and reversible. The user should feel invited to play around rather than worry about doing it correctly.
+
 ## Magic, Not Mystery
 
 Freemix should feel magical because the result arrives quickly, not because the interface hides what is happening.
@@ -52,6 +56,7 @@ Good magic in Freemix looks like:
 - The user can accept, preview, nudge, or replace those suggestions.
 - The sound and video stay linked in ways that are delightful and legible.
 - The system teaches through doing instead of stopping the flow for explanation.
+- The user accidentally discovers combinations that feel like finished audiovisual ideas.
 
 Tutorial mode should feel like a friendly collaborator sitting beside the user. It should guide the user through the first remix with tiny, timely prompts, then quietly step back as confidence grows.
 
@@ -97,6 +102,24 @@ Future layouts can include:
 
 The video system should make the song visible without turning the app into a video editor.
 
+## Song Plus Music Video
+
+Freemix should eventually make it normal for a user to create a song and its music video in the same flow.
+
+The user should not have to finish the music, open a separate visual tool, sync clips by hand, and learn another workflow. If they perform a track, arrange a scene, delay a sound, distort a sample, filter a loop, or mute a part, the visual side should already know how to respond. The music video should emerge from the musical decisions.
+
+The best version of Freemix makes audiovisual creation feel casual and quick:
+
+- Pick a few sources.
+- Find a few moments.
+- Press play.
+- Change the energy.
+- Save the best accidents.
+- Arrange the moments into a song.
+- Export a video that reflects what happened musically.
+
+This should be approachable for people with hardly any prior technical know-how. The app should do the boring translation work between music and video, leaving the user with the fun part: experimenting until something clicks.
+
 ## Arrangement
 
 Arrangement should be hyper simple.
@@ -121,6 +144,7 @@ Freemix should feel:
 - Minimal, but never empty.
 - Powerful, but never crowded.
 - Playful, but not unserious.
+- Experimental without being confusing.
 - Fast enough to keep creative momentum alive.
 - Safe enough that beginners are willing to explore.
 

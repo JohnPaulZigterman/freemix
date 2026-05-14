@@ -32,16 +32,14 @@ body {
 }
 
 .app-shell {
-  width: min(920px, calc(100vw - 24px));
+  width: min(1040px, calc(100vw - 16px));
   margin: 0 auto;
-  padding: 18px 0;
+  padding: 8px 0;
 }
 
 .search-panel {
-  position: sticky;
-  top: 10px;
   z-index: 10;
-  padding: 12px;
+  padding: 9px;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
   border-radius: 6px;
@@ -56,8 +54,8 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
+  margin-bottom: 7px;
+  padding-bottom: 7px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -78,7 +76,7 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 1.5rem;
+  font-size: 1.28rem;
   line-height: 1;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -106,29 +104,10 @@ h1 {
   color: var(--danger);
 }
 
-.search-box {
-  position: relative;
-}
-
-.search-icon {
-  position: absolute;
-  top: 50%;
-  left: 12px;
-  width: 18px;
-  height: 18px;
-  transform: translateY(-50%);
-  fill: none;
-  stroke: var(--muted);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2.1;
-  pointer-events: none;
-}
-
 input[type="search"] {
   width: 100%;
-  height: 44px;
-  padding: 0 12px 0 38px;
+  height: 38px;
+  padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 4px;
   outline: none;
@@ -147,99 +126,8 @@ input[type="search"]:focus {
   box-shadow: 0 0 0 2px rgba(22, 199, 132, 0.3);
 }
 
-.results-popover {
-  position: absolute;
-  right: 12px;
-  left: 12px;
-  margin-top: 6px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: #181b1e;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
-}
-
-#resultsList {
-  max-height: min(470px, 58vh);
-  margin: 0;
-  padding: 4px;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.result-button {
-  display: grid;
-  width: 100%;
-  grid-template-columns: 86px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 6px;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.result-button:hover,
-.result-button.active,
-.result-button:focus-visible {
-  outline: none;
-  background: #26362f;
-}
-
-.thumb {
-  width: 86px;
-  aspect-ratio: 16 / 10;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: #0c0d0e;
-}
-
-.thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.result-title {
-  display: -webkit-box;
-  margin: 0 0 5px;
-  overflow: hidden;
-  font-weight: 800;
-  line-height: 1.18;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.result-meta,
-.result-description {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.25;
-}
-
-.result-description {
-  display: -webkit-box;
-  margin-top: 4px;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.message-row {
-  padding: 12px;
-  color: var(--muted);
-  font-weight: 700;
-}
-
 .player-panel {
-  margin-top: 12px;
+  margin-top: 8px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
@@ -249,15 +137,15 @@ input[type="search"]:focus {
 }
 
 .workstation {
-  padding: 10px;
+  padding: 8px;
 }
 
 .source-strip {
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #191c1f;
@@ -302,8 +190,8 @@ input[type="search"]:focus {
   grid-template-columns: auto auto 110px auto minmax(96px, 1fr);
   gap: 8px;
   align-items: stretch;
-  margin-top: 8px;
-  padding: 8px;
+  margin-top: 0;
+  padding: 6px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #17191c;
@@ -382,51 +270,60 @@ input[type="number"]:focus {
   box-shadow: 0 0 18px rgba(255, 176, 32, 0.45);
 }
 
-.track-grid {
+.video-matrix {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.track-card {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  width: min(100%, calc((100vh - 480px) * 16 / 9));
+  min-width: min(100%, 420px);
+  aspect-ratio: 16 / 9;
+  margin-inline: auto;
+  margin-top: 6px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-top-color: var(--line-hot);
+  border: 1px solid var(--line-hot);
   border-radius: 5px;
-  background: #181b1e;
+  background: #030405;
 }
 
-.track-card.green {
+.video-cell.green,
+.track-row.green {
   --track-color: var(--accent);
 }
 
-.track-card.amber {
+.video-cell.amber,
+.track-row.amber {
   --track-color: var(--amber);
 }
 
-.track-card.blue {
+.video-cell.blue,
+.track-row.blue {
   --track-color: #55a8ff;
 }
 
-.track-card.red {
+.video-cell.red,
+.track-row.red {
   --track-color: #ff625a;
 }
 
-.track-card.triggered {
-  border-color: color-mix(in srgb, var(--track-color) 70%, var(--line));
-}
-
-.track-card.triggered .trigger-flash {
-  animation: triggerPulse 220ms ease-out;
-}
-
-.track-video-shell {
+.video-cell {
   position: relative;
-  aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-bottom: 1px solid var(--line);
+  border-right: 1px solid #050607;
+  border-bottom: 1px solid #050607;
   background: #050607;
+}
+
+.video-cell:nth-child(2n) {
+  border-right: 0;
+}
+
+.video-cell:nth-child(n + 3) {
+  border-bottom: 0;
+}
+
+.video-cell.triggered .trigger-flash {
+  animation: triggerPulse 220ms ease-out;
 }
 
 .track-video {
@@ -438,8 +335,8 @@ input[type="number"]:focus {
 
 .track-badge {
   position: absolute;
-  top: 6px;
-  left: 6px;
+  top: 5px;
+  left: 5px;
   display: flex;
   gap: 6px;
   align-items: center;
@@ -479,23 +376,110 @@ input[type="number"]:focus {
   pointer-events: none;
 }
 
-.track-source {
+.control-bank {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.track-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.1fr);
-  gap: 6px;
-  padding: 7px 7px 0;
+  grid-template-columns: 58px minmax(0, 1fr) 52px minmax(92px, 0.62fr) 58px;
+  grid-template-areas:
+    "label source source source source"
+    "label moment sec energy toggle"
+    "label volume volume volume toggle";
+  gap: 4px;
+  align-items: end;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--track-color);
+  border-radius: 4px;
+  background: #17191c;
+}
+
+.track-row-label {
+  grid-area: label;
+  align-self: stretch;
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid color-mix(in srgb, var(--track-color) 55%, #111);
+  border-radius: 3px;
+  background: #0f1113;
+  text-transform: uppercase;
+}
+
+.track-row-label strong,
+.track-row-label span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-row-label strong {
+  color: var(--track-color);
+  font-size: 0.72rem;
+  line-height: 1.1;
+}
+
+.track-row-label span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+
+.track-source {
+  grid-area: source;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(84px, 0.75fr) 70px minmax(0, 1.15fr);
+  gap: 5px;
+  padding: 0;
+}
+
+.start-field {
+  grid-area: moment;
+}
+
+.compact-number {
+  grid-area: sec;
+}
+
+.energy-field {
+  grid-area: energy;
+}
+
+.volume-field {
+  grid-area: volume;
+}
+
+.track-toggle {
+  grid-area: toggle;
+  align-self: stretch;
 }
 
 .track-source-search input[type="search"] {
-  height: 32px;
+  height: 24px;
   padding: 0 8px;
   font-size: 0.78rem;
 }
 
+.duration-filter select {
+  min-height: 24px;
+  padding: 0 5px;
+  font-size: 0.72rem;
+}
+
 .track-source-name {
   min-width: 0;
-  padding: 4px 6px;
+  height: 24px;
+  padding: 2px 6px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #111315;
@@ -511,7 +495,7 @@ input[type="number"]:focus {
 
 .track-source-name strong {
   color: var(--ink);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   line-height: 1.15;
   text-transform: uppercase;
 }
@@ -519,7 +503,7 @@ input[type="number"]:focus {
 .track-source-name span {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.61rem;
   font-weight: 800;
 }
 
@@ -527,8 +511,8 @@ input[type="number"]:focus {
   position: absolute;
   z-index: 8;
   top: calc(100% + 4px);
-  right: 7px;
-  left: 7px;
+  right: 0;
+  left: 0;
   max-height: 260px;
   overflow-y: auto;
   border: 1px solid var(--line-hot);
@@ -599,19 +583,15 @@ input[type="number"]:focus {
 }
 
 .track-controls {
-  display: grid;
-  grid-template-columns: minmax(150px, 1.6fr) 66px minmax(112px, 0.9fr) minmax(90px, 0.8fr) 64px;
-  gap: 6px;
-  align-items: end;
-  padding: 7px;
+  display: contents;
 }
 
 .control-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 4px;
+  gap: 2px;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.62rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -635,9 +615,15 @@ select {
 
 input[type="range"] {
   width: 100%;
-  height: 34px;
+  height: 22px;
   margin: 0;
   accent-color: var(--track-color, var(--accent));
+}
+
+.track-row .track-toggle,
+.track-row select,
+.track-row input[type="number"] {
+  min-height: 26px;
 }
 
 .track-toggle[aria-pressed="true"] {
@@ -762,7 +748,7 @@ input[type="range"] {
 
 @media (max-width: 640px) {
   .app-shell {
-    width: min(100% - 12px, 920px);
+    width: min(100% - 10px, 1120px);
     padding: 6px 0;
   }
 
@@ -790,53 +776,34 @@ input[type="range"] {
     font-size: 0.92rem;
   }
 
-  .results-popover {
-    right: 12px;
-    left: 12px;
-  }
-
-  .result-button {
-    grid-template-columns: 68px minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  .thumb {
-    width: 68px;
-  }
-
-  .result-description {
-    display: none;
-  }
-
   .video-details {
     display: block;
   }
 
-  .source-strip,
   .transport {
     grid-template-columns: 1fr;
   }
 
-  .source-strip {
-    display: grid;
+  .video-matrix {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    min-width: 0;
   }
 
-  .track-grid {
+  .control-bank {
     grid-template-columns: 1fr;
   }
 
-  .track-controls {
-    grid-template-columns: 1fr 64px;
+  .track-row {
+    grid-template-columns: 58px minmax(0, 1fr) 54px;
+    grid-template-areas:
+      "label source source"
+      "label moment sec"
+      "energy volume toggle";
   }
 
   .track-source {
     grid-template-columns: 1fr;
-  }
-
-  .track-controls .control-field:nth-child(3),
-  .track-controls .control-field:nth-child(4),
-  .track-toggle {
-    grid-column: span 2;
   }
 
   .archive-link {

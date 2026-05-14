@@ -2,13 +2,17 @@
 
 This plan keeps the first versions narrow, playable, and friendly. The guiding rule is that every milestone should make the app more usable for a first-time visitor, not merely more technically complete.
 
+Freemix's long-term product goal is to let people make a song and an accompanying music video at the same time. The user should not need prior technical knowledge of music production, sampling, video editing, timelines, codecs, or rendering to get a satisfying result. The product should feel fun, intuitive, and highly experimental: a place where swapping sources, moving moments, changing pulse density, and trying odd combinations is the main creative path.
+
 ## Guiding Principles
 
 - Start with the shortest path from search to sound.
+- Treat sound and video as one creative output.
 - Keep the workspace minimal and self-explanatory.
 - Make every default musically useful.
 - Add power through progressive disclosure.
 - Preserve the bond between audio and video.
+- Make experimentation fast, safe, and reversible.
 - Verify the app with real beginner-style flows, not only technical tests.
 - Use a compact hardware-inspired UI: high contrast, short labels, dense layout, and obvious state.
 
@@ -41,6 +45,8 @@ Core features:
 
 - Internet Archive search focused on video media.
 - Result thumbnails, titles, creators, dates, and short descriptions.
+- Duration-aware results that prioritize shorter, more remixable videos by default.
+- Per-track duration filters so users can search for quick clips, short videos, medium videos, or longer source material.
 - Keyboard and mouse result selection.
 - Source video preview.
 - Clear loading and error states.
@@ -55,13 +61,13 @@ Usability requirements:
 
 ## Phase 2: Four-Track Workspace
 
-Goal: turn one Internet Archive video into four simple, synchronized video-instrument tracks.
+Goal: turn Internet Archive material into four simple, synchronized video-instrument tracks.
 
-This phase should be a usable song-and-music-video sketchpad, not a full production environment. The user chooses a source video, sees four track cells in a square, sets a tempo, chooses a start moment for each track, and decides how many times each track retriggers per bar.
+This phase should be a usable song-and-music-video sketchpad, not a full production environment. The user chooses source videos, sees four track cells in a square, sets a tempo, chooses a start moment for each track, and decides how many times each track retriggers per bar.
 
 User flow:
 
-1. User selects a source video.
+1. User searches for source material in one or more track rows.
 2. The app transforms into a four-cell square, one cell per track.
 3. User presses play on a shared metronome clock.
 4. User adjusts the project BPM.
@@ -73,6 +79,8 @@ Core features:
 
 - Four-track 2x2 video grid.
 - Suggested track roles: percussion, bass, rhythm, lead.
+- Per-track Internet Archive source search.
+- Per-track duration filters that favor short, remixable videos.
 - Shared transport: play, stop, bar position, and beat position.
 - Adjustable BPM.
 - Metronome with clear visual pulse and optional audio click.
@@ -106,6 +114,7 @@ Usability requirements:
 - Track controls should be compact and obvious.
 - Advanced controls should not appear until the user needs them.
 - The user should be able to make a recognizable loop within one minute of selecting a video.
+- The user should understand that they are creating both music and a music video without needing a separate visual workflow.
 
 Suggested first interface:
 
@@ -122,6 +131,8 @@ Visual direction:
 - Keep labels short enough to scan during playback.
 - Make active tracks and metronome pulses visually unmistakable.
 - Avoid decorative surfaces that do not help performance.
+- Keep the default video canvas at standard 16:9 so the combined 2x2 output is suitable for YouTube and other streaming platforms.
+- Preserve the default control layout as a matching 2x2 grid, mapped to the video quadrants, even when future video layouts are added.
 
 Non-goals for this phase:
 
@@ -211,6 +222,8 @@ Usability requirements:
 
 Goal: make video react to the musical treatment of each track.
 
+This phase is where Freemix moves from "video looper" toward "automatic music video maker." Every meaningful musical action should have a visual consequence by default, while still letting the user override or simplify it.
+
 Core features:
 
 - Each track has an associated video cell.
@@ -254,13 +267,14 @@ Usability requirements:
 
 ## Phase 7: Export And Sharing
 
-Goal: let users keep and share what they made.
+Goal: let users keep and share the song and its generated music video.
 
 Core features:
 
 - Save project locally.
 - Export audio.
 - Export video with the same track-based visual behavior.
+- Export a combined audiovisual render suitable for common streaming platforms.
 - Shareable project link or project file.
 - Source attribution for Internet Archive media.
 
@@ -269,6 +283,7 @@ Usability requirements:
 - Export should use plain language.
 - The app should explain licensing/source limits without sounding legalistic.
 - Users should always know whether they are saving a project or rendering a finished piece.
+- Export should preserve the relationship between musical arrangement and visual behavior.
 
 ## Technical Direction
 
@@ -310,7 +325,9 @@ Use these as product tests as much as technical tests:
 - A first-time user can search and load a video without help.
 - A first-time user can make sound within one minute of loading a video.
 - A first-time user can create four tracks without understanding sampling terminology.
+- A first-time user can make a simple song and understand that a matching video is being created with it.
 - A user can recover from every empty or error state.
 - The interface never shows more controls than the current step needs.
 - A user can ignore tutorial mode and still understand the main path.
 - A user can make something surprising before they understand why it worked.
+- A user feels encouraged to try multiple sources, start points, and energy settings without fear of breaking the project.
