@@ -277,6 +277,39 @@ tracks.forEach((track) => {
   }
 });
 
+function normalizeTrackPreferences(track) {
+  if (!track || typeof track !== "object") {
+    return;
+  }
+
+  track.showAdvanced = !!track.showAdvanced;
+  track.solo = !!track.solo;
+  track.muted = !!track.muted;
+
+  track.startTime = Number.isFinite(Number(track.startTime)) ? Number(track.startTime) : 0;
+  track.volume = Number.isFinite(Number(track.volume)) ? Number(track.volume) : 0.55;
+  track.opacity = Number.isFinite(Number(track.opacity)) ? clamp(track.opacity, 0, 1) : 1;
+  track.speed = Number.isFinite(Number(track.speed)) ? clamp(track.speed, 0.5, 2) : 1;
+  track.pitch = Number.isFinite(Number(track.pitch)) ? clamp(track.pitch, -12, 12) : 0;
+
+  track.retriggersPerBar = normalizeRetriggersPerBar(track.retriggersPerBar);
+  track.blendMode = TRACK_BLEND_DEFAULTS.includes(track.blendMode)
+    ? track.blendMode
+    : TRACK_BLEND_DEFAULTS[0];
+  track.durationFilter = DURATION_FILTERS[track.durationFilter] ? track.durationFilter : "quick";
+
+  track.fx = track.fx || {};
+  FX_CONTROLS.forEach((control) => {
+    const currentValue = track.fx[control.key];
+    track.fx[control.key] = Number.isFinite(Number(currentValue)) ? Number(currentValue) : control.min;
+  });
+
+  track.searchTimer = null;
+  track.searchRequestId = Number.isFinite(Number(track.searchRequestId)) ? Number(track.searchRequestId) : 0;
+}
+
+tracks.forEach(normalizeTrackPreferences);
+
 function markAppStateDirty(force = false) {
   if (typeof appState.__markStateDirty === "function") {
     appState.__markStateDirty(appState.tracks, force);
@@ -2099,6 +2132,10 @@ function handleTrackControl(event) {
 }
 
 async function startTransport() {
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
   if (startTransport.runningPromise) {
     if (transport?.active) {
       return;
@@ -3137,7 +3174,11 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
 
 function handleArrangementCell(event) {
   const cell = event.currentTarget;
-    const track = getTrackById(cell.dataset.arrTrack);
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
+  const track = getTrackById(cell.dataset.arrTrack);
   const stepIndex = Number(cell.dataset.arrStep);
   if (!track || !Number.isInteger(stepIndex)) {
     return;
@@ -3167,6 +3208,10 @@ function handleArrangementCell(event) {
 }
 
 function handleArrangementStepLabel(event) {
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
   const stepIndex = Number(event.currentTarget.dataset.arrStep);
   if (!Number.isInteger(stepIndex)) {
     return;
@@ -3903,6 +3948,10 @@ function canAddTrack() {
 }
 
 function addTrack() {
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
   if (!canAddTrack()) {
     setStatus("Max 4 tracks reached", true);
     return false;
