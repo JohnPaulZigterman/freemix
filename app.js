@@ -40,6 +40,12 @@ const UI_NODE_CACHE = {
 const SEARCH_ROWS_PER_REQUEST = 24;
 const SEARCH_RESULTS_LIMIT = 6;
 const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 2;
+const SEARCH_RESULT_CACHE_STORAGE_KEY = "freemix.searchResultCache.v1";
+const SEARCH_RESULT_CACHE_PERSIST_TTL_MS = 6 * 60 * 60 * 1000;
+const SOURCE_METADATA_CACHE_STORAGE_KEY = "freemix.sourceMetadataCache.v1";
+const SOURCE_METADATA_CACHE_PERSIST_TTL_MS = 8 * 60 * 60 * 1000;
+const SOURCE_METADATA_CACHE_PERSIST_MAX_ENTRIES = 40;
+const SEARCH_NETWORK_TIMEOUT_MS = 9000;
 const APP_STATE_PROXY_KEYS = Object.freeze([
   "selectedSource",
   "transport",
@@ -283,6 +289,197 @@ let arrangementPlayheadStep = -1;
 let activeBeatLightIndex = -1;
 let liveControlPersistTimer = null;
 let arrangementPlayheadUpdateFrame = null;
+let searchResultCachePersistTimer = null;
+let sourceMetadataCachePersistTimer = null;
+
+function readJsonFromStorage(storageKey, fallback) {
+  if (typeof localStorage === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) {
+      return fallback;
+    }
+
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonToStorage(storageKey, payload) {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(payload));
+  } catch {
+    // Storage may be blocked or full.
+  }
+}
+
+function sanitizeSearchResultCachePayload(rawPayload) {
+  const now = Date.now();
+  const payloadAge = Number(rawPayload?.at);
+  if (Number.isFinite(payloadAge) && now - payloadAge > SEARCH_RESULT_CACHE_PERSIST_TTL_MS) {
+    return;
+  }
+
+  const input = rawPayload && typeof rawPayload === "object" ? rawPayload : null;
+  const rawEntries = Array.isArray(input?.entries) ? input.entries : [];
+
+  rawEntries.forEach((entry) => {
+    const key = entry?.[0];
+    const value = entry?.[1];
+    if (typeof key !== "string" || !value || typeof value !== "object") {
+      return;
+    }
+
+    const fetchedAt = Number(value.fetchedAt);
+    const docs = Array.isArray(value.docs) ? value.docs : [];
+    if (!Number.isFinite(fetchedAt) || now - fetchedAt > SEARCH_RESULT_CACHE_TTL_MS) {
+      return;
+    }
+
+    searchResultCache.set(key, { fetchedAt, docs });
+  });
+}
+
+function sanitizeSourceMetadataCachePayload(rawPayload) {
+  const now = Date.now();
+  const payloadAge = Number(rawPayload?.at);
+  if (Number.isFinite(payloadAge) && now - payloadAge > SOURCE_METADATA_CACHE_PERSIST_TTL_MS) {
+    return;
+  }
+
+  const input = rawPayload && typeof rawPayload === "object" ? rawPayload : null;
+  const rawEntries = Array.isArray(input?.entries) ? input.entries : [];
+
+  rawEntries.forEach((entry) => {
+    const key = entry?.[0];
+    const value = entry?.[1];
+    if (typeof key !== "string" || !value || typeof value !== "object") {
+      return;
+    }
+
+    const fetchedAt = Number(value.fetchedAt);
+    const source = value.source;
+    if (!Number.isFinite(fetchedAt) || !source || now - fetchedAt > SOURCE_METADATA_CACHE_TTL_MS) {
+      return;
+    }
+
+    sourceMetadataCache.set(key, { fetchedAt, source });
+  });
+}
+
+function queueSearchResultCachePersist() {
+  if (searchResultCachePersistTimer !== null) {
+    clearTimeout(searchResultCachePersistTimer);
+  }
+
+  searchResultCachePersistTimer = window.setTimeout(() => {
+    searchResultCachePersistTimer = null;
+    const entries = Array.from(searchResultCache.entries()).slice(-SEARCH_RESULT_CACHE_MAX_SIZE);
+    const payload = {
+      v: 1,
+      at: Date.now(),
+      entries,
+    };
+    writeJsonToStorage(SEARCH_RESULT_CACHE_STORAGE_KEY, payload);
+  }, 150);
+}
+
+function queueSourceMetadataCachePersist() {
+  if (sourceMetadataCachePersistTimer !== null) {
+    clearTimeout(sourceMetadataCachePersistTimer);
+  }
+
+  sourceMetadataCachePersistTimer = window.setTimeout(() => {
+    sourceMetadataCachePersistTimer = null;
+    const persistLimit = Math.min(SOURCE_METADATA_CACHE_MAX_SIZE, SOURCE_METADATA_CACHE_PERSIST_MAX_ENTRIES);
+    const entries = Array.from(sourceMetadataCache.entries())
+      .slice(-persistLimit)
+      .map(([identifier, item]) => [identifier, item]);
+    const payload = {
+      v: 1,
+      at: Date.now(),
+      entries,
+    };
+    writeJsonToStorage(SOURCE_METADATA_CACHE_STORAGE_KEY, payload);
+  }, 250);
+}
+
+function hydrateSearchCacheFromStorage() {
+  const payload = readJsonFromStorage(SEARCH_RESULT_CACHE_STORAGE_KEY, null);
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  sanitizeSearchResultCachePayload(payload);
+  pruneSearchResultCache();
+
+  if (searchResultCache.size > SEARCH_RESULT_CACHE_MAX_SIZE) {
+    pruneSearchResultCache();
+  }
+}
+
+function hydrateSourceMetadataCacheFromStorage() {
+  const payload = readJsonFromStorage(SOURCE_METADATA_CACHE_STORAGE_KEY, null);
+  if (!payload || typeof payload !== "object") {
+    return;
+  }
+
+  sanitizeSourceMetadataCachePayload(payload);
+  if (sourceMetadataCache.size > SOURCE_METADATA_CACHE_MAX_SIZE) {
+    pruneSourceMetadataCache();
+  }
+}
+
+function trimPersistentCachesIfStale() {
+  const now = Date.now();
+  const resultEntries = Array.from(searchResultCache.entries()).filter(([, value]) => {
+    if (!value || !Number.isFinite(value.fetchedAt)) {
+      return false;
+    }
+    if (now - value.fetchedAt > SEARCH_RESULT_CACHE_TTL_MS) {
+      return false;
+    }
+    return true;
+  });
+  searchResultCache.clear();
+  resultEntries.forEach(([key, value]) => searchResultCache.set(key, value));
+
+  const sourceEntries = Array.from(sourceMetadataCache.entries()).filter(([, value]) => {
+    if (!value || !Number.isFinite(value.fetchedAt)) {
+      return false;
+    }
+    if (now - value.fetchedAt > SOURCE_METADATA_CACHE_TTL_MS) {
+      return false;
+    }
+    return true;
+  });
+  sourceMetadataCache.clear();
+  sourceEntries.forEach(([key, value]) => sourceMetadataCache.set(key, value));
+}
+
+function prunePersistentCaches() {
+  trimPersistentCachesIfStale();
+  if (searchResultCache.size > SEARCH_RESULT_CACHE_MAX_SIZE) {
+    pruneSearchResultCache();
+  }
+  if (sourceMetadataCache.size > SOURCE_METADATA_CACHE_MAX_SIZE) {
+    pruneSourceMetadataCache();
+  }
+  queueSearchResultCachePersist();
+  queueSourceMetadataCachePersist();
+}
+
+hydrateSearchCacheFromStorage();
+hydrateSourceMetadataCacheFromStorage();
+trimPersistentCachesIfStale();
 
 function getTrackById(trackId) {
   if (!trackId) {
@@ -941,20 +1138,80 @@ function diversifyRankedSearchResults(results, limit) {
   return selected;
 }
 
-async function performArchiveSearch(params) {
-  const response = await fetch(`${IA_SEARCH_URL}?${params.toString()}`);
+function isAbortError(error) {
+  const name = error?.name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = SEARCH_NETWORK_TIMEOUT_MS) {
+  const externalSignal = options.signal;
+  const controller = new AbortController();
+  const onAbort = () => {
+    controller.abort(externalSignal?.reason || new DOMException("Request aborted", "AbortError"));
+  };
+
+  if (externalSignal?.aborted) {
+    onAbort();
+  } else if (externalSignal) {
+    externalSignal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new DOMException("Request timed out", "TimeoutError"));
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
+async function awaitWithAbort(promise, signal) {
+  if (!signal) {
+    return promise;
+  }
+
+  if (signal.aborted) {
+    throw signal.reason || new DOMException("Request aborted", "AbortError");
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason || new DOMException("Request aborted", "AbortError"));
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise
+      .then((value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      })
+      .catch((error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      });
+  });
+}
+
+async function performArchiveSearch(params, signal) {
+  const response = await fetchWithTimeout(`${IA_SEARCH_URL}?${params.toString()}`, { signal });
   if (!response.ok) {
     throw new Error(`Search failed with status ${response.status}`);
   }
 
-  const payload = await response.json();
+  const payload = signal ? await awaitWithAbort(response.json(), signal) : await response.json();
   return payload.response?.docs ?? [];
 }
 
-async function fetchPlayableSource(result) {
+async function fetchPlayableSource(result, signal) {
   const identifier = String(result?.identifier || "").trim();
   const normalizedIdentifier = identifier.toLowerCase();
-  const now = performance.now();
+  const now = Date.now();
   if (normalizedIdentifier) {
     const cached = sourceMetadataCache.get(normalizedIdentifier);
     if (cached && now - cached.fetchedAt < SOURCE_METADATA_CACHE_TTL_MS) {
@@ -965,17 +1222,17 @@ async function fetchPlayableSource(result) {
   if (normalizedIdentifier) {
     const inFlight = sourceMetadataInflight.get(normalizedIdentifier);
     if (inFlight && now - inFlight.startedAt < SOURCE_METADATA_REQUEST_TTL_MS) {
-      return inFlight.promise;
+      return await awaitWithAbort(inFlight.promise, signal);
     }
   }
 
   const request = (async () => {
-    const response = await fetch(`${IA_METADATA_URL}/${encodeURIComponent(result.identifier)}`);
+    const response = await fetchWithTimeout(`${IA_METADATA_URL}/${encodeURIComponent(result.identifier)}`, { signal });
     if (!response.ok) {
       throw new Error(`Metadata failed with status ${response.status}`);
     }
 
-    const metadata = await response.json();
+    const metadata = signal ? await awaitWithAbort(response.json(), signal) : await response.json();
     const file = choosePlayableFile(metadata.files ?? []);
     if (!file) {
       throw new Error("No playable video file found.");
@@ -998,13 +1255,14 @@ async function fetchPlayableSource(result) {
   }
 
   try {
-    const playableSource = await request;
+    const playableSource = signal ? await awaitWithAbort(request, signal) : await request;
     if (normalizedIdentifier) {
       sourceMetadataCache.set(normalizedIdentifier, {
-        fetchedAt: now,
+        fetchedAt: Date.now(),
         source: playableSource,
       });
       pruneSourceMetadataCache();
+      queueSourceMetadataCachePersist();
     }
 
     return playableSource;
@@ -2943,12 +3201,23 @@ function queueTrackSearch(track, query) {
   window.clearTimeout(track.searchTimer);
   const normalizedQuery = normalizeSearchInput(query);
 
+  if (track.searchAbortController) {
+    try {
+      track.searchAbortController.abort(new DOMException("Search superseded", "AbortError"));
+    } catch {
+      // best effort.
+    }
+  }
+
   if (normalizedQuery.length < SEARCH_QUERY_MIN_LENGTH) {
     renderTrackResults(track, []);
+    track.searchRequestId = (track.searchRequestId ?? 0) + 1;
     return;
   }
 
-  track.searchTimer = window.setTimeout(() => searchTrackSource(track, normalizedQuery), SEARCH_DELAY_MS);
+  track.searchTimer = window.setTimeout(() => {
+    searchTrackSource(track, normalizedQuery);
+  }, SEARCH_DELAY_MS);
 }
 
 function buildTrackSearchParams(rawQuery) {
@@ -2986,9 +3255,9 @@ function pruneSearchResultCache() {
   }
 }
 
-async function fetchSearchResults(rawQuery) {
+async function fetchSearchResults(rawQuery, signal) {
   const key = makeSearchCacheKey(rawQuery);
-  const now = performance.now();
+  const now = Date.now();
   const cached = searchResultCache.get(key);
   if (cached && now - cached.fetchedAt < SEARCH_RESULT_CACHE_TTL_MS) {
     return cached.docs;
@@ -2996,11 +3265,11 @@ async function fetchSearchResults(rawQuery) {
 
   const inFlight = searchRequestInflight.get(key);
   if (inFlight && now - inFlight.startedAt < SEARCH_REQUEST_IN_FLIGHT_TTL_MS) {
-    return inFlight.promise;
+    return signal ? await awaitWithAbort(inFlight.promise, signal) : inFlight.promise;
   }
 
   const request = (async () => {
-    const docs = await performArchiveSearch(buildTrackSearchParams(rawQuery));
+    const docs = await performArchiveSearch(buildTrackSearchParams(rawQuery), signal);
     return Array.isArray(docs) ? docs : [];
   })();
 
@@ -3010,11 +3279,12 @@ async function fetchSearchResults(rawQuery) {
   });
 
   try {
-    const docs = await request;
+    const docs = signal ? await awaitWithAbort(request, signal) : await request;
     searchResultCache.set(key, {
-      fetchedAt: now,
+      fetchedAt: Date.now(),
       docs,
     });
+    queueSearchResultCachePersist();
     pruneSearchResultCache();
     return docs;
   } finally {
@@ -3023,6 +3293,11 @@ async function fetchSearchResults(rawQuery) {
 }
 
 async function searchTrackSource(track, query) {
+  const signal = (() => {
+    const controller = new AbortController();
+    track.searchAbortController = controller;
+    return controller.signal;
+  })();
   const requestId = ++trackSearchRequestCounter;
   track.searchRequestId = requestId;
   renderTrackResultsMessage(track, "Searching...");
@@ -3031,7 +3306,7 @@ async function searchTrackSource(track, query) {
   const queryToUse = searchQuery || query;
 
   try {
-    const docs = await fetchSearchResults(queryToUse);
+    const docs = await fetchSearchResults(queryToUse, signal);
     if (track.searchRequestId !== requestId) {
       return;
     }
@@ -3043,7 +3318,7 @@ async function searchTrackSource(track, query) {
     }
 
     if (searchQuery && queryToUse !== `mediatype:(movies) AND (${query})`) {
-      const fallbackDocs = await fetchSearchResults(`mediatype:(movies) AND (${query})`);
+      const fallbackDocs = await fetchSearchResults(`mediatype:(movies) AND (${query})`, signal);
       if (track.searchRequestId !== requestId) {
         return;
       }
@@ -3061,8 +3336,18 @@ async function searchTrackSource(track, query) {
       return;
     }
 
+    if (isAbortError(error)) {
+      return;
+    }
+
     renderTrackResultsMessage(track, "Search failed");
     console.error(error);
+  } finally {
+    if (track.searchAbortController?.aborted || track.searchAbortController?.signal) {
+      if (track.searchAbortController?.signal === signal && track.searchRequestId === requestId) {
+        track.searchAbortController = null;
+      }
+    }
   }
 }
 
