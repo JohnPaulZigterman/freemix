@@ -594,16 +594,54 @@ input[type="number"]:focus {
   justify-self: center;
   border: 1px solid var(--line-hot);
   border-radius: var(--radius-panel);
-  background: #000;
+  background: linear-gradient(145deg, #07090c 0%, #000 48%, #050606 100%);
   position: relative;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
-    0 1px 0 rgba(0, 0, 0, 0.44);
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.56),
+    0 2px 10px rgba(0, 0, 0, 0.56);
+  margin-top: 4px;
 }
 
 .video-matrix.layout-stack {
   position: relative;
   display: block;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.54),
+    inset 1px -1px 0 rgba(0, 0, 0, 0.36),
+    inset 2px 2px 0 rgba(255, 255, 255, 0.05),
+    0 2px 10px rgba(0, 0, 0, 0.58);
+}
+
+.video-matrix::before,
+.video-matrix::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.video-matrix::before {
+  inset: 3px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.19),
+    rgba(255, 255, 255, 0) 40%,
+    rgba(0, 0, 0, 0.24) 72%,
+    rgba(0, 0, 0, 0.36)
+  );
+  opacity: 0.25;
+}
+
+.video-matrix::after {
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--silver) 22%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.36),
+    0 0 0 1px rgba(0, 0, 0, 0.36);
+  mask: none;
 }
 
 .video-matrix.layout-stack .video-cell {
