@@ -1499,7 +1499,7 @@ function createInitialTracks() {
     stepMs: 0,
     arrangementClip: null,
     source: null,
-    durationFilter: "any",
+    durationFilter: "quick",
     searchTimer: null,
     searchRequestId: 0,
   }));

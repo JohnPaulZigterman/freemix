@@ -453,6 +453,7 @@ input[type="number"]:focus {
 }
 
 .arrangement-toggle,
+.arrangement-copy,
 .arrangement-clear {
   min-height: 20px;
   border: 1px solid var(--line);
@@ -467,6 +468,12 @@ input[type="number"]:focus {
 }
 
 .arrangement-toggle.active {
+  border-color: rgba(22, 199, 132, 0.55);
+  background: #143525;
+  color: var(--accent);
+}
+
+.arrangement-copy.active {
   border-color: rgba(22, 199, 132, 0.55);
   background: #143525;
   color: var(--accent);
@@ -488,6 +495,26 @@ input[type="number"]:focus {
   font-size: 0.56rem;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.arrangement-step-label {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: #111315;
+  color: inherit;
+  font: inherit;
+  appearance: none;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  cursor: pointer;
+}
+
+.arrangement-step-label.copy-source {
+  border-color: rgba(22, 199, 132, 0.65);
+  background: #143525;
+  color: var(--accent);
 }
 
 .arrangement-track-label.green,
