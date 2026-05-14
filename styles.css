@@ -207,7 +207,7 @@ input[type="search"]:focus {
 
 .transport {
   display: grid;
-  grid-template-columns: auto auto 110px auto minmax(96px, 1fr);
+  grid-template-columns: auto auto 86px auto 72px 76px minmax(96px, 1fr);
   gap: 4px;
   align-items: stretch;
   margin-top: 0;
@@ -258,13 +258,18 @@ input[type="number"]:focus {
 }
 
 .bpm-field {
-  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
 }
 
 .bpm-field input {
   width: 100%;
   padding: 0 6px;
   text-align: center;
+}
+
+.layout-field,
+.alpha-field {
+  min-width: 0;
 }
 
 .meter {
@@ -312,6 +317,92 @@ input[type="number"]:focus {
   border: 1px solid var(--line-hot);
   border-radius: var(--radius-panel);
   background: #030405;
+}
+
+.video-matrix.layout-stack {
+  position: relative;
+  display: block;
+}
+
+.video-matrix.layout-stack .video-cell {
+  position: absolute;
+  inset: 0;
+  z-index: var(--layer-index);
+  border: 0;
+}
+
+.video-matrix.layout-stack .video-cell:nth-child(2n),
+.video-matrix.layout-stack .video-cell:nth-child(n + 3) {
+  border: 0;
+}
+
+.video-matrix.layout-stack.alpha-blend .video-cell {
+  opacity: 0.56;
+  mix-blend-mode: screen;
+}
+
+.video-matrix.layout-stack.alpha-blend .video-cell:nth-child(1) {
+  opacity: 1;
+  mix-blend-mode: normal;
+}
+
+.video-matrix.layout-stack.alpha-glass .video-cell {
+  opacity: 0.72;
+  mix-blend-mode: lighten;
+}
+
+.video-matrix.layout-stack.alpha-glass .video-cell:nth-child(1) {
+  opacity: 1;
+  mix-blend-mode: normal;
+}
+
+.video-matrix.layout-stack.alpha-ghost .video-cell {
+  opacity: 0.38;
+  mix-blend-mode: screen;
+}
+
+.video-matrix.layout-stack.alpha-ghost .video-cell:nth-child(1) {
+  opacity: 1;
+  mix-blend-mode: normal;
+}
+
+.video-matrix.layout-stack.alpha-solid .video-cell {
+  opacity: 1;
+  mix-blend-mode: normal;
+}
+
+.video-matrix.layout-stack .video-cell:nth-child(1) .track-badge {
+  top: 4px;
+  bottom: auto;
+  left: 4px;
+}
+
+.video-matrix.layout-stack .video-cell:nth-child(2) .track-badge {
+  top: 4px;
+  bottom: auto;
+  right: 4px;
+  left: auto;
+}
+
+.video-matrix.layout-stack .video-cell:nth-child(3) .track-badge {
+  top: auto;
+  bottom: 4px;
+  left: 4px;
+}
+
+.video-matrix.layout-stack .video-cell:nth-child(4) .track-badge {
+  top: auto;
+  bottom: 4px;
+  right: 4px;
+  left: auto;
+}
+
+.video-matrix.layout-stack .track-empty-video {
+  opacity: 0.35;
+}
+
+.video-matrix.layout-stack .video-cell:not(:last-child) .track-empty-video {
+  opacity: 0;
 }
 
 .arrangement-panel {

@@ -7,6 +7,16 @@ const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
 const DEFAULT_BPM = 92;
 const ARRANGEMENT_STEPS = 8;
+const VIDEO_LAYOUTS = {
+  stack: "Stack",
+  grid: "Grid",
+};
+const TRANSPARENCY_MODES = {
+  blend: "Blend",
+  glass: "Glass",
+  ghost: "Ghost",
+  solid: "Solid",
+};
 const TRACKS = [
   { name: "Perc", role: "Impact", color: "green" },
   { name: "Bass", role: "Weight", color: "amber" },
@@ -45,6 +55,8 @@ let audioContext = null;
 let masterMuted = false;
 let tracks = createInitialTracks();
 let arrangement = createInitialArrangement();
+let videoLayout = "stack";
+let transparencyMode = "blend";
 let trackSearchRequestCounter = 0;
 
 renderWorkstation();
@@ -212,6 +224,28 @@ function renderWorkstation() {
         <button class="transport-button metronome-button active" id="metroButton" type="button">
           Click
         </button>
+        <label class="control-field layout-field">
+          <span>View</span>
+          <select id="layoutSelect">
+            ${Object.entries(VIDEO_LAYOUTS)
+              .map(
+                ([value, label]) =>
+                  `<option value="${value}" ${value === videoLayout ? "selected" : ""}>${label}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <label class="control-field alpha-field">
+          <span>Alpha</span>
+          <select id="alphaSelect">
+            ${Object.entries(TRANSPARENCY_MODES)
+              .map(
+                ([value, label]) =>
+                  `<option value="${value}" ${value === transparencyMode ? "selected" : ""}>${label}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
         <div class="meter" aria-label="Bar position">
           <span class="beat-light" data-beat="0"></span>
           <span class="beat-light" data-beat="1"></span>
@@ -221,8 +255,8 @@ function renderWorkstation() {
       </div>
 
       <div class="performance-grid">
-        <div class="video-matrix" aria-label="Video sources">
-          ${tracks.map((track) => renderVideoCell(track)).join("")}
+        <div class="video-matrix layout-${videoLayout} alpha-${transparencyMode}" aria-label="Video sources">
+          ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
         ${renderArrangementPanel()}
@@ -283,9 +317,9 @@ function renderArrangementRow(track) {
   `;
 }
 
-function renderVideoCell(track) {
+function renderVideoCell(track, index) {
   return `
-    <div class="video-cell ${track.color}" data-track-id="${track.id}">
+    <div class="video-cell ${track.color}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
       ${
         track.source
           ? `<video
@@ -450,6 +484,18 @@ function bindWorkstationControls() {
   document.querySelector("#metroButton").addEventListener("click", () => {
     masterMuted = !masterMuted;
     document.querySelector("#metroButton").classList.toggle("active", !masterMuted);
+  });
+  document.querySelector("#layoutSelect").addEventListener("change", (event) => {
+    videoLayout = event.target.value;
+    stopTransport(false);
+    tracks.forEach((track) => disposeTrackAudio(track));
+    renderWorkstation();
+  });
+  document.querySelector("#alphaSelect").addEventListener("change", (event) => {
+    transparencyMode = event.target.value;
+    stopTransport(false);
+    tracks.forEach((track) => disposeTrackAudio(track));
+    renderWorkstation();
   });
   document.querySelector("#arrangementToggle").addEventListener("click", toggleArrangement);
   document.querySelector("#arrangementClear").addEventListener("click", clearArrangement);

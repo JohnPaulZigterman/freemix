@@ -98,8 +98,8 @@ In this grid, the song and the music video are the same object. When a track ret
 Future layouts can include:
 
 - Full-screen single-track focus.
-- Stacked performance views.
-- Transparency and blend modes.
+- Stacked performance views, with track 1 on the bottom and later tracks layered above it.
+- Transparency and blend modes that let multiple videos occupy the same full-frame canvas.
 - Picture-in-picture emphasis.
 - Scene-based arrangements.
 - Layouts that follow the currently active track.
