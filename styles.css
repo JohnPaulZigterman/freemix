@@ -431,6 +431,97 @@ input[type="number"]:focus {
   min-width: 66px;
 }
 
+.launch-pad {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--panel-alt) 70%, var(--panel));
+  position: relative;
+  overflow: hidden;
+}
+
+.launch-pad::before,
+.launch-pad::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.launch-pad::before {
+  border: 1px solid color-mix(in srgb, var(--silver) 15%, transparent);
+  opacity: 0.22;
+}
+
+.launch-pad::after {
+  inset: 3px;
+  border: 1px dashed color-mix(in srgb, var(--silver) 24%, transparent);
+  opacity: 0.22;
+}
+
+.launch-pad .panel-label {
+  margin-bottom: 2px;
+  font-size: 0.58rem;
+}
+
+.launch-pad-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.launch-button {
+  min-height: 17px;
+  border: 1px solid var(--mech-edge);
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 18%, var(--control) 82%) 0, var(--control) 56%, var(--panel-alt) 100%);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.6rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    transform 120ms ease;
+  position: relative;
+}
+
+.launch-button:hover {
+  border-color: var(--mech-accent);
+  transform: translateY(-1px);
+}
+
+.launch-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.launch-button-primary {
+  border-color: rgba(22, 199, 132, 0.7);
+  color: var(--accent);
+}
+
+.launch-button-primary::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 3px;
+  height: 3px;
+  border: 1px solid var(--silver-deep);
+  border-radius: 50%;
+  background: var(--rivet);
+  opacity: 0.72;
+}
+
 .bpm-field {
   grid-template-columns: 28px minmax(0, 1fr);
 }
@@ -1814,6 +1905,10 @@ input[type="range"]::-moz-range-thumb {
     display: inline-block;
     margin-top: 14px;
   }
+
+  .launch-pad-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-height: 740px) {
@@ -1969,6 +2064,11 @@ input[type="range"]::-moz-range-thumb {
   input[type="range"]::-moz-range-thumb {
     width: 11px;
     height: 10px;
+  }
+
+  .launch-button {
+    min-height: 15px;
+    font-size: 0.56rem;
   }
 }
 

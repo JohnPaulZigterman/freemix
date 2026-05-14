@@ -91,6 +91,7 @@ const DURATION_FILTERS = {
   medium: { label: "15-30m", min: 15 * 60, max: 30 * 60 },
   long: { label: "30m+", min: 30 * 60, max: Infinity },
 };
+const QUICKSTART_SAMPLE_QUERY = "lo-fi loop";
 const AV_READY_TIMEOUT_MS = 1200;
 const FX_CONTROLS = [
   { key: "eqLow", label: "EQ Low", min: -12, max: 12, step: 1 },
@@ -439,6 +440,106 @@ function clearGuidanceHint() {
     markAppStateDirty(true);
   }
 }
+
+window.showGuidance = showGuidance;
+window.clearGuidanceHint = clearGuidanceHint;
+
+function getLaunchPadTrack() {
+  return tracks[0] || null;
+}
+
+function normalizeLaunchActionQuery(rawQuery) {
+  return String(rawQuery || "").trim() || QUICKSTART_SAMPLE_QUERY;
+}
+
+async function seedStarterSample(track, rawQuery = QUICKSTART_SAMPLE_QUERY) {
+  const targetTrack = track || getLaunchPadTrack();
+  if (!targetTrack) {
+    setStatus("Track missing", true);
+    return false;
+  }
+
+  const query = normalizeLaunchActionQuery(rawQuery);
+  const archiveQuery = buildArchiveSearchQuery(query) || query;
+  clearGuidanceHint();
+  setStatus(`${targetTrack.name}: loading starter`);
+  renderTrackResultsMessage(targetTrack, "Loading starter...");
+
+  try {
+    const docs = await fetchSearchResults(archiveQuery);
+    const ranked = rankAndFilterResults(normalizeResults(docs), targetTrack.durationFilter, query);
+    const best = ranked[0];
+    if (!best) {
+      renderTrackResultsMessage(targetTrack, "No samples found");
+      setStatus("No starter sample found", true);
+      return false;
+    }
+
+    await loadTrackSource(targetTrack, best);
+    return true;
+  } catch (error) {
+    renderTrackResultsMessage(targetTrack, "No playable file");
+    setStatus("Starter sample failed", true);
+    console.warn(error);
+    return false;
+  }
+}
+
+function placeLaunchPadTrackInActiveSection(track = getLaunchPadTrack()) {
+  if (!track) {
+    setStatus("Track missing", true);
+    return false;
+  }
+
+  if (!track.source) {
+    setStatus("Load a source first", true);
+    return false;
+  }
+
+  const activeStep = Number.isFinite(arrangement?.step) ? arrangement.step : 0;
+  const safeStep = Math.max(0, Math.min(activeStep, arrangementStepCount - 1));
+  arrangement.clips[safeStep] = arrangement.clips[safeStep] || {};
+  arrangement.clips[safeStep][track.id] = captureTrackClip(track);
+
+  if (window.freemixRender?.updateArrangementCell) {
+    window.freemixRender.updateArrangementCell(track, safeStep);
+    window.freemixRender.updateArrangementPlayhead?.();
+    markAppStateDirty();
+    setStatus(`${track.name}: placed in bar ${safeStep + 1}`);
+    return true;
+  }
+
+  renderWorkstation();
+  markAppStateDirty();
+  setStatus(`${track.name}: placed in bar ${safeStep + 1}`);
+  return true;
+}
+
+async function handleLaunchPadAction(action) {
+  clearGuidanceHint();
+
+  if (action === "load-sample") {
+    await seedStarterSample(getLaunchPadTrack(), QUICKSTART_SAMPLE_QUERY);
+    return;
+  }
+
+  if (action === "place-bar") {
+    placeLaunchPadTrackInActiveSection();
+    return;
+  }
+
+  if (action === "add-track") {
+    addTrack();
+    return;
+  }
+
+  if (action === "play") {
+    startTransport();
+    return;
+  }
+}
+
+window.freemixHandleLaunchPadAction = handleLaunchPadAction;
 
 window.addEventListener("pagehide", () => {
   hardStopPlayback("page hidden");
@@ -802,6 +903,22 @@ function renderWorkstation() {
 
   playerPanel.innerHTML = `
     <section class="workstation" aria-label="Track video looper">
+      ${
+        appState.userOnboarding?.needsHint
+          ? `
+        <section class="launch-pad">
+          <span class="panel-label">Quick launch</span>
+          <div class="launch-pad-actions">
+            <button class="launch-button" type="button" data-launch-action="load-sample">Load sample</button>
+            <button class="launch-button" type="button" data-launch-action="place-bar">Seed bar</button>
+            <button class="launch-button" type="button" data-launch-action="add-track">Add layer</button>
+            <button class="launch-button launch-button-primary" type="button" data-launch-action="play">Play</button>
+          </div>
+        </section>
+      `
+          : ""
+      }
+
       <div class="source-strip">
         <div class="source-copy">
           <span class="panel-label">Sources</span>
@@ -869,7 +986,7 @@ function renderWorkstation() {
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
   if (appState.userOnboarding?.needsHint) {
-    showGuidance("What now: load a source, hit More for advanced controls, then press Play");
+    showGuidance("Quick launch: load sample, seed bar, then press Play");
   }
 }
 

@@ -6,6 +6,7 @@
   const RESULT_SELECTOR = ".track-result-button[data-track-id][data-source-id]";
   const DEBUG_ACTION_SELECTOR = "[data-debug-action]";
   const ARRANGEMENT_CLEAR_MENU_SELECTOR = "#arrangementClearMenu";
+  const LAUNCH_ACTION_SELECTOR = "[data-launch-action]";
 
   function getTrackFromControl(control) {
     if (!control) {
@@ -42,6 +43,12 @@
 
   function clearResults() {
     tracks.forEach((track) => renderTrackResults(track, []));
+  }
+
+  function consumeLaunchHint() {
+    if (typeof window.clearGuidanceHint === "function") {
+      window.clearGuidanceHint();
+    }
   }
 
   function handleBpmInput(event) {
@@ -140,6 +147,7 @@
   }
 
   function handleSearchResultClick(target) {
+    consumeLaunchHint();
     const trackId = target.getAttribute("data-track-id");
     const sourceId = target.getAttribute("data-source-id");
 
@@ -156,6 +164,17 @@
   function onClick(event) {
     const target = event.target;
     if (!target) {
+      return;
+    }
+
+    consumeLaunchHint();
+
+    const launchAction = target.closest(LAUNCH_ACTION_SELECTOR);
+    if (launchAction) {
+      const action = launchAction.getAttribute("data-launch-action");
+      if (action && typeof window.freemixHandleLaunchPadAction === "function") {
+        window.freemixHandleLaunchPadAction(action);
+      }
       return;
     }
 
@@ -226,6 +245,8 @@
       return;
     }
 
+    consumeLaunchHint();
+
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
       if (typeof window.freemixQueueTrackControlUpdate === "function") {
@@ -248,6 +269,8 @@
     if (!control) {
       return;
     }
+
+    consumeLaunchHint();
 
     if (control.id === "arrangementStepsSelect") {
       handleArrangementLengthChange(event);
