@@ -6,7 +6,8 @@ const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
 const DEFAULT_BPM = 92;
-const ARRANGEMENT_STEPS = 8;
+const DEFAULT_ARRANGEMENT_STEPS = 8;
+const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
 const VIDEO_LAYOUTS = {
   stack: "Stack",
   grid: "Grid",
@@ -59,8 +60,9 @@ let audioContext = null;
 let webAudioDisabled = false;
 let masterMuted = false;
 let simpleMode = true;
+let arrangementStepCount = DEFAULT_ARRANGEMENT_STEPS;
 let tracks = createInitialTracks();
-let arrangement = createInitialArrangement();
+let arrangement = createInitialArrangement(arrangementStepCount);
 let videoLayout = "stack";
 let trackSearchRequestCounter = 0;
 
@@ -288,21 +290,29 @@ function renderWorkstation() {
 
 function renderArrangementPanel() {
   return `
-    <aside class="arrangement-panel" aria-label="Arrangement">
-      <div class="arrangement-header">
-        <span>Arr</span>
-        <button
-          class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
-          type="button"
-          id="arrangementToggle"
+      <aside class="arrangement-panel" aria-label="Arrangement">
+        <div class="arrangement-header">
+          <span>Arr</span>
+          <label class="control-field arrangement-length-field">
+            <span>Bars</span>
+            <select id="arrangementStepsSelect">
+              ${ARRANGEMENT_STEP_OPTIONS.map(
+                (count) => `<option value="${count}" ${count === arrangementStepCount ? "selected" : ""}>${count}</option>`,
+              ).join("")}
+            </select>
+          </label>
+          <button
+            class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
+            type="button"
+            id="arrangementToggle"
           aria-pressed="${arrangement.enabled}"
         >
           ${arrangement.enabled ? "On" : "Off"}
         </button>
       </div>
-      <div class="arrangement-grid" style="--arrangement-steps: ${ARRANGEMENT_STEPS}">
-        <div class="arrangement-corner">Trk</div>
-        ${Array.from({ length: ARRANGEMENT_STEPS }, (_, index) => `<div class="arrangement-step-label">${index + 1}</div>`).join("")}
+        <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}">
+          <div class="arrangement-corner">Trk</div>
+          ${Array.from({ length: arrangementStepCount }, (_, index) => `<div class="arrangement-step-label">${index + 1}</div>`).join("")}
         ${tracks.map((track) => renderArrangementRow(track)).join("")}
       </div>
       <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
@@ -528,6 +538,9 @@ function bindWorkstationControls() {
   });
   document.querySelector("#arrangementToggle").addEventListener("click", toggleArrangement);
   document.querySelector("#arrangementClear").addEventListener("click", clearArrangement);
+  document
+    .querySelector("#arrangementStepsSelect")
+    ?.addEventListener("change", updateArrangementStepCount);
 
   document.querySelectorAll("[data-track-control]").forEach((control) => {
     control.addEventListener("input", handleTrackControl);
@@ -745,7 +758,8 @@ function tickTransport() {
 
   if (arrangement.enabled && hasArrangementClips()) {
     const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
-    const currentStep = (transport.arrangementStartStep + elapsedBars) % ARRANGEMENT_STEPS;
+    const arrangementLength = arrangement.clips.length || 1;
+    const currentStep = (transport.arrangementStartStep + elapsedBars) % arrangementLength;
     updateArrangementStep(currentStep, transport.startedAt + elapsedBars * barMs);
   }
 
@@ -1126,6 +1140,19 @@ function clearArrangement() {
   setStatus("Arrangement cleared");
 }
 
+function updateArrangementStepCount(event) {
+  const nextLength = Number(event.target.value);
+  if (!Number.isInteger(nextLength) || !ARRANGEMENT_STEP_OPTIONS.includes(nextLength)) {
+    return;
+  }
+
+  stopTransport(false);
+  arrangementStepCount = nextLength;
+  arrangement = createInitialArrangement(nextLength);
+  renderWorkstation();
+  setStatus(`Arrangement: ${nextLength} bars`);
+}
+
 function updateArrangementStep(stepIndex, barStartAt, force = false) {
   if (!transport || (!force && transport.arrangementStep === stepIndex)) {
     return;
@@ -1367,11 +1394,12 @@ function createInitialTracks() {
   }));
 }
 
-function createInitialArrangement() {
+function createInitialArrangement(steps = arrangementStepCount) {
   return {
     enabled: false,
     step: 0,
-    clips: Array.from({ length: ARRANGEMENT_STEPS }, () => ({})),
+    steps,
+    clips: Array.from({ length: steps }, () => ({})),
   };
 }
 

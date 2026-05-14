@@ -442,6 +442,16 @@ input[type="number"]:focus {
   text-transform: uppercase;
 }
 
+.arrangement-length-field {
+  width: 74px;
+}
+
+.arrangement-length-field select {
+  min-height: 18px;
+  padding: 0 3px;
+  font-size: 0.66rem;
+}
+
 .arrangement-toggle,
 .arrangement-clear {
   min-height: 20px;
