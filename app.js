@@ -222,6 +222,7 @@ const TRACK_CONTROL_SECTIONS = {
 const appState = window.freemixState || {};
 const appStateManager = window.freemixStateManager || {};
 const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
+let arrangementHasClips = false;
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -356,7 +357,6 @@ let liveControlPersistTimer = null;
 let arrangementPlayheadUpdateFrame = null;
 let searchResultCachePersistTimer = null;
 let sourceMetadataCachePersistTimer = null;
-let arrangementHasClips = false;
 
 function readJsonFromStorage(storageKey, fallback) {
   if (typeof localStorage === "undefined") {
