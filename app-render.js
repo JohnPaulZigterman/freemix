@@ -18,6 +18,7 @@
     const playButton = player.querySelector("#playButton");
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
+    const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const bpmInput = player.querySelector("#bpmInput");
 
@@ -33,6 +34,15 @@
       arrangementToggle.textContent = arrangement.enabled ? "On" : "Off";
       arrangementToggle.classList.toggle("active", arrangement.enabled);
       arrangementToggle.setAttribute("aria-pressed", String(arrangement.enabled));
+    }
+
+    if (arrangementCopyButton) {
+      arrangementCopyButton.textContent = arrangementCopyMode ? "Copying" : "Copy";
+      arrangementCopyButton.classList.toggle("active", !!arrangementCopyMode);
+      arrangementCopyButton.setAttribute("aria-pressed", String(!!arrangementCopyMode));
+      arrangementCopyButton.title = arrangementCopyMode
+        ? "Copying section; click destination sections to paste"
+        : "Copy current section";
     }
 
     if (arrangementLengthSelect) {

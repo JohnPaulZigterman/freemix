@@ -155,32 +155,6 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-.catalogue-link {
-  margin-left: auto;
-  padding: 3px 6px;
-  border: 1px solid color-mix(in srgb, var(--silver) 55%, var(--line) 45%);
-  border-radius: 1px 3px 1px 1px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--silver) 15%, transparent) 0, transparent 100%);
-  color: var(--ink-soft);
-  font-size: 0.68rem;
-  font-weight: 900;
-  text-decoration: none;
-  text-transform: uppercase;
-  transition:
-    border-color 120ms ease,
-    background 120ms ease,
-    transform 120ms ease;
-}
-
-.catalogue-link:hover,
-.catalogue-link:focus-visible {
-  background: color-mix(in srgb, var(--silver) 28%, var(--panel));
-  color: var(--bg);
-  outline: none;
-  transform: translate(-0.5px, -0.5px);
-  box-shadow: inset 0 0 0 1px var(--silver-glow);
-}
-
 .eyebrow {
   margin: 0 0 2px;
   color: var(--silver);
@@ -865,6 +839,25 @@ input[type="number"]:focus {
   background:
     linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
   color: var(--accent);
+}
+
+.arrangement-copy[aria-pressed="true"] {
+  border-color: rgba(22, 199, 132, 0.75);
+  background:
+    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
+  color: var(--accent);
+}
+
+.arrangement-toggle:focus-visible,
+.arrangement-copy:focus-visible,
+.arrangement-clear:focus-visible,
+.arrangement-clear-action:focus-visible,
+.arrangement-action:focus-visible,
+.transport-button:focus-visible,
+.track-toggle:focus-visible,
+.track-advanced-toggle:focus-visible {
+  outline: 2px solid var(--silver);
+  outline-offset: 1px;
 }
 
 .arrangement-grid {

@@ -3201,6 +3201,7 @@ function toggleArrangementCopyMode() {
     } else {
       window.freemixRender.updateArrangementGrid();
     }
+    window.freemixRender?.updateTransportRow?.();
     markAppStateDirty();
     return;
   }
@@ -3339,6 +3340,7 @@ function clearArrangement() {
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    window.freemixRender?.updateTransportRow?.();
   } else {
     renderWorkstation();
   }
