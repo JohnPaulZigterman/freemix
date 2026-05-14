@@ -61,7 +61,7 @@ const TRACK_CONTROL_SECTIONS = {
     {
       control: "sourceSearch",
       type: "search",
-      label: "Source",
+      label: "Find",
       attrs: {
         type: "search",
         placeholder: "Search video",
@@ -83,7 +83,7 @@ const TRACK_CONTROL_SECTIONS = {
     {
       control: "startTime",
       type: "range",
-      label: "Moment",
+      label: "Anchor",
       fieldClass: "start-field",
       inputProps: {
         min: "0",
@@ -104,7 +104,7 @@ const TRACK_CONTROL_SECTIONS = {
     {
       control: "retriggersPerBar",
       type: "select",
-      label: "Energy",
+      label: "Density",
       fieldClass: "energy-field",
       options: Object.entries(RETRIGGER_LABELS).map(([value, label]) => ({
         value,
@@ -114,7 +114,7 @@ const TRACK_CONTROL_SECTIONS = {
     {
       control: "volume",
       type: "range",
-      label: "Vol",
+      label: "Level",
       fieldClass: "volume-field",
       inputProps: {
         min: "0",
@@ -170,6 +170,10 @@ function markAppStateDirty(force = false) {
   if (typeof persistState === "function") {
     persistState();
   }
+}
+
+function resolvePreferredBpm() {
+  return clamp(Number(appState.preferredBpm), 40, 220);
 }
 
   [
@@ -380,9 +384,9 @@ function renderWorkstation() {
       <div class="transport" aria-label="Transport controls">
         <button class="transport-button play-button" id="playButton" type="button">Play</button>
         <button class="transport-button" id="stopButton" type="button">Stop</button>
-        <label class="control-field bpm-field">
+          <label class="control-field bpm-field">
           <span>BPM</span>
-          <input id="bpmInput" type="number" min="40" max="220" step="1" value="${DEFAULT_BPM}">
+          <input id="bpmInput" type="number" min="40" max="220" step="1" value="${resolvePreferredBpm()}">
         </label>
         <button class="transport-button metronome-button active" id="metroButton" type="button">
           Click
@@ -425,7 +429,7 @@ function renderWorkstation() {
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
   if (appState.userOnboarding?.needsHint) {
-    showGuidance("What now: load one source per track, then press Play");
+    showGuidance("What now: load a source, hit More for advanced controls, then press Play");
   }
 }
 
@@ -554,7 +558,7 @@ function renderVideoCell(track, index) {
               preload="metadata"
               playsinline
             ></video>`
-          : `<div class="track-empty-video">Ready</div>`
+          : `<div class="track-empty-video" aria-hidden="true"></div>`
       }
       <div class="track-badge">
         <strong>${escapeHtml(track.name)}</strong>
@@ -602,7 +606,7 @@ function renderTrackControlRow(track) {
         data-control="advanced"
         aria-pressed="${!!track.showAdvanced}"
       >
-        ${track.showAdvanced ? "Advanced" : "Adv"}
+        ${track.showAdvanced ? "Now" : "More"}
       </button>
       <button
         class="track-toggle"
@@ -847,7 +851,7 @@ function handleTrackControl(event) {
 
   if (controlName === "advanced") {
     track.showAdvanced = !track.showAdvanced;
-    control.textContent = track.showAdvanced ? "Advanced" : "Adv";
+    control.textContent = track.showAdvanced ? "Now" : "More";
     control.setAttribute("aria-pressed", String(track.showAdvanced));
     applyTrackControlVisibility(track);
   }
@@ -896,7 +900,7 @@ function startTransportWithState() {
   const startAt = now + 80;
   transport = {
     active: true,
-    bpm: clamp(Number(document.querySelector("#bpmInput").value), 40, 220),
+    bpm: resolvePreferredBpm(),
     startedAt: startAt,
     nextBeatAt: startAt,
     beatIndex: 0,
@@ -1728,7 +1732,7 @@ function createInitialTracks() {
     ...track,
     id: `track-${index + 1}`,
     showAdvanced: false,
-    startTime: index * 2,
+    startTime: 0,
     retriggersPerBar: [1, 2, 4, 8][index],
     volume: 0.55,
     muted: false,

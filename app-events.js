@@ -35,11 +35,15 @@
   }
 
   function handleBpmInput(event) {
+    const nextBpm = clamp(Number(event.target.value), 40, 220);
+    appState.preferredBpm = Number.isFinite(nextBpm) ? nextBpm : resolvePreferredBpm();
+    window.freemixRender?.updateTransportRow?.();
+
     if (!transport) {
       return;
     }
 
-    transport.bpm = clamp(Number(event.target.value), 40, 220);
+    transport.bpm = resolvePreferredBpm();
     const now = performance.now();
     transport.nextBeatAt = now;
     transport.beatIndex = 0;

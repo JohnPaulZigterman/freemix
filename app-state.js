@@ -1,10 +1,11 @@
 (function initFreemixState() {
   const STORAGE_KEY = "freemix.preferences.v2";
-  const DEFAULTS = {
+const DEFAULTS = {
     selectedSource: null,
     transport: null,
     audioContext: null,
     webAudioDisabled: false,
+    preferredBpm: 92,
     masterMuted: false,
     arrangementStepCount: 8,
     arrangementCopyMode: false,
@@ -40,6 +41,7 @@
   state.transport = state.transport ?? defaultsFromSaved.transport;
   state.audioContext = state.audioContext ?? defaultsFromSaved.audioContext;
   state.webAudioDisabled = state.webAudioDisabled ?? defaultsFromSaved.webAudioDisabled;
+  state.preferredBpm = Number(state.preferredBpm) || Number(defaultsFromSaved.preferredBpm) || 92;
   state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
   state.arrangementStepCount = state.arrangementStepCount ?? defaultsFromSaved.arrangementStepCount;
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
@@ -54,6 +56,7 @@
   state.trackSourceCache = state.trackSourceCache ?? {};
 
   const persistableScalarKeys = new Set([
+    "preferredBpm",
     "arrangementStepCount",
     "masterMuted",
     "arrangementCopyMode",
@@ -151,6 +154,7 @@
       const payload = JSON.stringify({
         version: 2,
         state: {
+          preferredBpm: Number(state.preferredBpm) || 92,
           arrangementStepCount: state.arrangementStepCount || 8,
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
@@ -211,6 +215,7 @@
     "transport",
     "audioContext",
     "webAudioDisabled",
+    "preferredBpm",
     "masterMuted",
     "arrangementStepCount",
     "arrangementCopyMode",
