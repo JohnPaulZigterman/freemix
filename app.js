@@ -439,6 +439,32 @@ function queueControlStatePersist(delayMs = LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_
   }, delayMs);
 }
 
+async function primeTrackForTransport(track) {
+  if (!track?.source) {
+    return;
+  }
+
+  const video = getTrackVideo(track);
+  if (!video) {
+    return;
+  }
+
+  if (track.source?.mediaUrl && video.src !== track.source.mediaUrl) {
+    video.src = track.source.mediaUrl;
+    video.load();
+  }
+
+  if (video.networkState !== 0) {
+    video.load();
+  }
+
+  await waitForTrackReady(video);
+  safeSetCurrentTime(video, track);
+  setupTrackAudio(track, video);
+  applyTrackVolume(track, track);
+  applyTrackPitchAndSpeed(track, track);
+}
+
 function resyncTrackTiming(track) {
   if (!track || !transport?.active) {
     return;
@@ -1537,13 +1563,13 @@ function handleTrackControl(event) {
   }
 }
 
-function startTransport() {
+async function startTransport() {
   if (startTransport.runningPromise) {
     if (transport?.active) {
       return;
     }
 
-    startTransport.runningPromise = null;
+    return startTransport.runningPromise;
   }
 
   if (!tracks.some((track) => track.source)) {
@@ -1555,34 +1581,44 @@ function startTransport() {
   startTransport.bootToken = bootToken;
 
   stopTransport(false, false);
-  let contextStart;
-  try {
-    contextStart = ensureAudioContext();
-  } catch (error) {
-    console.warn(error);
-    webAudioDisabled = true;
-  }
+  const startToken = bootToken;
+  startTransport.runningPromise = (async () => {
+    try {
+      if (typeof ensureAudioContext === "function") {
+        await ensureAudioContext();
+      }
 
-  if (contextStart && typeof contextStart.then === "function") {
-    const startToken = bootToken;
-    startTransport.runningPromise = contextStart
-      .catch(() => {
-        webAudioDisabled = true;
-      })
-      .finally(() => {
-        if (startTransport.bootToken !== startToken) {
-          return;
-        }
+      await Promise.all(
+        tracks
+          .filter((track) => track.source)
+          .map((track) =>
+            primeTrackForTransport(track).catch((error) => {
+              console.warn(error);
+            }),
+          ),
+      );
+
+      if (startTransport.bootToken !== startToken) {
+        return;
+      }
+
+      // Start transport scheduling in the click stack to keep browser autoplay context
+      // aligned with the user gesture that initiated playback.
+      if (startTransport.bootToken !== bootToken) {
+        return;
+      }
+
+      startTransportWithState();
+    } catch (error) {
+      webAudioDisabled = true;
+      console.warn(error);
+      setStatus("Audio unavailable, trying again natively", true);
+    } finally {
+      if (startTransport.bootToken === startToken) {
         startTransport.runningPromise = null;
-      });
-  }
-
-  // Start transport scheduling in the click stack to keep browser autoplay context
-  // aligned with the user gesture that initiated playback.
-  if (startTransport.bootToken !== bootToken) {
-    return;
-  }
-  startTransportWithState();
+      }
+    }
+  })();
 }
 
 const pendingAnchorSeeks = new Set();
@@ -1682,8 +1718,6 @@ function attemptVideoPlay(video, track, clipState) {
   const shouldBeMuted = !!clipState?.muted || !!track.muted;
   const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
   const clip = clipState || track;
-  const hasLiveAudioGraph =
-    !!track.audio && !webAudioDisabled && audioContext?.state === "running";
   const clipVolume = clamp(targetVolume, 0, 1);
 
   if (clip?.source?.mediaUrl && clip.source.mediaUrl !== video.src) {
@@ -1696,6 +1730,8 @@ function attemptVideoPlay(video, track, clipState) {
   }
 
   const playWithState = async (muted) => {
+    const hasLiveAudioGraph =
+      !!track.audio && !webAudioDisabled && audioContext?.state === "running" && track.audio.mediaElement;
     video.muted = muted;
     if (hasLiveAudioGraph && track.audio?.output?.gain) {
       track.audio.output.gain.value = muted ? 0 : clipVolume;
@@ -1743,6 +1779,14 @@ function attemptVideoPlay(video, track, clipState) {
         if (wasMuted) {
           video.muted = false;
           applyTrackVolume(track, clipState);
+
+          try {
+            await waitForTrackReady(video);
+            await video.play();
+            return false;
+          } catch {
+            // Fall through to native retry path.
+          }
         }
 
         return wasMuted;
