@@ -815,23 +815,46 @@ input[type="number"]:focus {
 .fx-chain {
   grid-area: fx;
   display: grid;
-  grid-template-columns: auto repeat(6, minmax(0, 1fr));
-  gap: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
   align-items: end;
-  padding-top: 1px;
+  padding-top: 3px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .fx-title {
+  grid-column: 1 / -1;
   align-self: center;
   color: var(--track-color);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 900;
+  letter-spacing: 0.01em;
   text-transform: uppercase;
+  padding-bottom: 1px;
+}
+
+.fx-field {
+  min-height: 33px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px;
+  align-items: center;
+}
+
+.fx-field .fx-value {
+  color: var(--ink);
+  font-size: 0.58rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fx-field span {
+  text-transform: none;
 }
 
 .fx-field input[type="range"] {
-  height: 12px;
+  grid-column: 1 / -1;
+  height: 14px;
+  margin-bottom: 1px;
 }
 
 .track-source-search input[type="search"] {
@@ -1208,6 +1231,14 @@ input[type="range"] {
 
   .track-source {
     grid-template-columns: 1fr;
+  }
+
+  .fx-chain {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fx-field {
+    min-height: 30px;
   }
 
   .archive-link {

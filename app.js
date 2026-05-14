@@ -46,13 +46,14 @@ const DURATION_FILTERS = {
   long: { label: "30m+", min: 30 * 60, max: Infinity },
 };
 const FX_CONTROLS = [
-  { key: "eqLow", label: "Low", min: -12, max: 12, step: 1 },
-  { key: "eqMid", label: "Mid", min: -12, max: 12, step: 1 },
-  { key: "eqHigh", label: "High", min: -12, max: 12, step: 1 },
+  { key: "eqLow", label: "EQ Low", min: -12, max: 12, step: 1 },
+  { key: "eqMid", label: "EQ Mid", min: -12, max: 12, step: 1 },
+  { key: "eqHigh", label: "EQ High", min: -12, max: 12, step: 1 },
   { key: "tube", label: "Tube", min: 0, max: 1, step: 0.01 },
-  { key: "delay", label: "Dly", min: 0, max: 1, step: 0.01 },
-  { key: "reverb", label: "Verb", min: 0, max: 1, step: 0.01 },
+  { key: "delay", label: "Delay", min: 0, max: 1, step: 0.01 },
+  { key: "reverb", label: "Reverb", min: 0, max: 1, step: 0.01 },
 ];
+const FX_CONTROL_INDEX = Object.freeze(Object.fromEntries(FX_CONTROLS.map((entry) => [entry.key, entry])));
 
 const TRACK_CONTROL_SECTIONS = {
   source: [
@@ -698,10 +699,17 @@ function renderTrackFxChain(track) {
 }
 
 function renderFxControl(track, fxControl) {
+  const fxValue = Number(track.fx[fxControl.key] ?? 0);
+  const fxDisplay = Number.isInteger(fxControl.step)
+    ? Math.round(fxValue)
+    : fxValue.toFixed(2).replace(/\.?0+$/, "");
+
   return `
     <label class="control-field fx-field control-advanced">
       <span>${fxControl.label}</span>
+      <output class="fx-value" for="${fxControl.key}-${track.id}" aria-hidden="true">${escapeHtml(fxDisplay)}</output>
       <input
+        id="${fxControl.key}-${track.id}"
         type="range"
         min="${fxControl.min}"
         max="${fxControl.max}"
@@ -709,6 +717,7 @@ function renderFxControl(track, fxControl) {
         value="${track.fx[fxControl.key]}"
         data-track-control="${track.id}"
         data-control="${fxControl.key}"
+        aria-label="${escapeHtml(`${track.name} ${fxControl.label}`)}"
       >
     </label>
   `;
@@ -782,6 +791,15 @@ function handleTrackControl(event) {
 
   if (controlName in track.fx) {
     track.fx[controlName] = Number(control.value);
+    const valueEl = control.parentElement?.querySelector(".fx-value");
+    const fxDefinition = FX_CONTROL_INDEX[controlName];
+    if (valueEl && fxDefinition) {
+      const value =
+        Number.isInteger(fxDefinition.step) || fxDefinition.step >= 1
+          ? Math.round(track.fx[controlName])
+          : track.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
+      valueEl.textContent = String(value);
+    }
     applyTrackFx(track);
     applyVideoFx(track);
   }
