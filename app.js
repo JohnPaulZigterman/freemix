@@ -51,18 +51,13 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
   "arrangementCopySourceStep",
   "tracks",
   "arrangement",
-  "videoLayout",
   "trackSearchRequestCounter",
   "userOnboarding",
 ]);
-const APP_STATE_PROXY_DIRTY_KEYS = new Set(["arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"]);
+const APP_STATE_PROXY_DIRTY_KEYS = new Set(["arrangementStepCount", "masterMuted", "userOnboarding"]);
 const DEFAULT_BPM = 92;
 const DEFAULT_ARRANGEMENT_STEPS = 8;
 const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
-const VIDEO_LAYOUTS = {
-  stack: "Stack",
-  grid: "Grid",
-};
 const BLEND_MODES = {
   normal: "Normal",
   screen: "Screen",
@@ -795,17 +790,6 @@ function renderWorkstation() {
         <button class="transport-button metronome-button active" id="metroButton" type="button">
           Click
         </button>
-        <label class="control-field layout-field">
-          <span>View</span>
-          <select id="layoutSelect">
-            ${Object.entries(VIDEO_LAYOUTS)
-              .map(
-                ([value, label]) =>
-                  `<option value="${value}" ${value === videoLayout ? "selected" : ""}>${label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
         <div class="meter" aria-label="Bar position">
           <span class="beat-light" data-beat="0"></span>
           <span class="beat-light" data-beat="1"></span>
@@ -815,12 +799,16 @@ function renderWorkstation() {
       </div>
 
       <div class="performance-grid">
-        <div class="video-matrix layout-${videoLayout} ${loadedTracks.length ? "has-sources" : "no-sources"}" aria-label="Video sources">
+        <div class="video-matrix layout-stack ${loadedTracks.length ? "has-sources" : "no-sources"}" aria-label="Video sources">
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
       <div class="arrangement-track-inline">
-          <div class="control-bank" aria-label="Track controls">
+          <section class="arrangement-column" aria-label="Arrangement panel">
+            ${renderArrangementPanel()}
+          </section>
+          <div class="control-column">
+            <div class="control-bank" aria-label="Track controls">
             <div class="track-add-row">
               <button
                 id="addTrackButton"
@@ -831,8 +819,8 @@ function renderWorkstation() {
                 Add Track (${tracks.length}/${MAX_TRACK_COUNT})
               </button>
             </div>
-            ${renderArrangementPanel()}
             ${tracks.map((track) => renderTrackControlRow(track)).join("")}
+          </div>
           </div>
         </div>
       </div>
@@ -914,6 +902,7 @@ function renderArrangementPanel() {
         <div class="arrangement-step-labels" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement steps">
           ${renderArrangementStepLabels()}
         </div>
+        ${renderArrangementGrid()}
         ${renderDebugPanel()}
       </aside>
   `;
@@ -966,10 +955,19 @@ function renderArrangementRow(track) {
   `;
 }
 
-function renderTrackArrangementStrip(track) {
+function renderArrangementGrid() {
   return `
-    <div class="track-arrangement-strip" style="--arrangement-steps: ${arrangementStepCount}" data-track-arrangement="${escapeHtml(track.id)}">
-      ${renderArrangementRow(track)}
+    <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement lanes">
+      ${tracks
+        .map(
+          (track) => `
+            <div class="arrangement-track-label ${track.color}" title="${escapeHtml(track.name)}">
+              ${escapeHtml(track.name)}
+            </div>
+            ${renderArrangementRow(track)}
+          `,
+        )
+        .join("")}
     </div>
   `;
 }
@@ -1005,10 +1003,8 @@ function renderTrackControlRow(track) {
   const sourceControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.source);
   const basicControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.basic);
   const advancedControls = TRACK_CONTROL_SECTIONS.advanced
-    .filter((control) => control.type !== "fx-chain")
     .map((control) => renderTrackControlField(track, control))
     .join("");
-  const fxChain = renderTrackFxChain(track);
 
   return `
     <article class="track-row ${track.color}" data-track-row-id="${track.id}">
@@ -1024,10 +1020,8 @@ function renderTrackControlRow(track) {
         </div>
         <div class="track-results" id="results-${track.id}" hidden></div>
       </div>
-      ${basicControls}
+    ${basicControls}
       ${advancedControls}
-      ${fxChain}
-      ${renderTrackArrangementStrip(track)}
       <button
         class="track-toggle"
         type="button"
@@ -1104,88 +1098,88 @@ function renderTrackControlField(track, control) {
     `;
   }
 
-  return "";
-}
+  if (control.type === "fx-chain") {
+    const speedValue = Number.isFinite(track.speed) ? track.speed : 1;
+    const pitchValue = Number.isFinite(track.pitch) ? track.pitch : 0;
 
-function renderTrackFxChain(track) {
-  const speedValue = Number.isFinite(track.speed) ? track.speed : 1;
-  const pitchValue = Number.isFinite(track.pitch) ? track.pitch : 0;
-
-  return `
-    <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
-      <div class="fx-header">
-        <span class="fx-title">FX</span>
-        <div class="fx-top-controls">
-          <label class="control-field fx-blend">
-            <span>Blend</span>
-            <select
-              class="track-blend-select"
+    return `
+      <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
+        <div class="fx-header">
+          <span class="fx-title">FX</span>
+          <div class="fx-top-controls">
+            <label class="control-field fx-blend">
+              <span>Blend</span>
+              <select
+                class="track-blend-select"
+                data-track-control="${track.id}"
+                data-control="blendMode"
+              >
+                ${BLEND_MODE_OPTIONS.map(
+                  (option) => `<option value="${option.value}" ${String(option.value) === String(track.blendMode) ? "selected" : ""}>${option.label}</option>`,
+                ).join("")}
+              </select>
+            </label>
+            <label class="control-field fx-opacity">
+              <span>Opacity</span>
+              <input
+                id="opacity-${track.id}"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
+                data-track-control="${track.id}"
+                data-control="opacity"
+                aria-label="${escapeHtml(`${track.name} Opacity`)}"
+              >
+            </label>
+            <label class="control-field fx-top-control control-advanced">
+              <span>Pitch</span>
+              <output class="fx-mini-value" for="pitch-${track.id}" aria-hidden="true">${pitchValue > 0 ? "+" : ""}${pitchValue}</output>
+              <input
+                id="pitch-${track.id}"
+                type="range"
+                min="-12"
+                max="12"
+                step="1"
+                value="${pitchValue}"
+                data-track-control="${track.id}"
+                data-control="pitch"
+                aria-label="${escapeHtml(`${track.name} Pitch`)}"
+              >
+            </label>
+            <label class="control-field fx-top-control control-advanced">
+              <span>Speed</span>
+              <output class="fx-mini-value" for="speed-${track.id}" aria-hidden="true">${speedValue.toFixed(2)}x</output>
+              <input
+                id="speed-${track.id}"
+                type="range"
+                min="0.5"
+                max="2"
+                step="0.05"
+                value="${speedValue}"
+                data-track-control="${track.id}"
+                data-control="speed"
+                aria-label="${escapeHtml(`${track.name} Speed`)}"
+              >
+            </label>
+            <button
+              class="track-advanced-toggle fx-advanced-toggle"
+              type="button"
               data-track-control="${track.id}"
-              data-control="blendMode"
+              data-control="advanced"
+              aria-pressed="${!!track.showAdvanced}"
             >
-              ${BLEND_MODE_OPTIONS.map(
-                (option) => `<option value="${option.value}" ${String(option.value) === String(track.blendMode) ? "selected" : ""}>${option.label}</option>`,
-              ).join("")}
-            </select>
-          </label>
-          <label class="control-field fx-opacity">
-            <span>Opacity</span>
-            <input
-              id="opacity-${track.id}"
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
-              data-track-control="${track.id}"
-              data-control="opacity"
-              aria-label="${escapeHtml(`${track.name} Opacity`)}"
-            >
-          </label>
-          <label class="control-field fx-top-control control-advanced">
-            <span>Pitch</span>
-            <output class="fx-mini-value" for="pitch-${track.id}" aria-hidden="true">${pitchValue > 0 ? "+" : ""}${pitchValue}</output>
-            <input
-              id="pitch-${track.id}"
-              type="range"
-              min="-12"
-              max="12"
-              step="1"
-              value="${pitchValue}"
-              data-track-control="${track.id}"
-              data-control="pitch"
-              aria-label="${escapeHtml(`${track.name} Pitch`)}"
-            >
-          </label>
-          <label class="control-field fx-top-control control-advanced">
-            <span>Speed</span>
-            <output class="fx-mini-value" for="speed-${track.id}" aria-hidden="true">${speedValue.toFixed(2)}x</output>
-            <input
-              id="speed-${track.id}"
-              type="range"
-              min="0.5"
-              max="2"
-              step="0.05"
-              value="${speedValue}"
-              data-track-control="${track.id}"
-              data-control="speed"
-              aria-label="${escapeHtml(`${track.name} Speed`)}"
-            >
-          </label>
-          <button
-          class="track-advanced-toggle fx-advanced-toggle"
-          type="button"
-          data-track-control="${track.id}"
-          data-control="advanced"
-          aria-pressed="${!!track.showAdvanced}"
-        >
-          ${track.showAdvanced ? "Less" : "More"}
-        </button>
+              ${track.showAdvanced ? "Less" : "More"}
+            </button>
+          </div>
         </div>
+        ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
       </div>
-      ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
-    </div>
-  `;
+    `;
+  }
+
+  return "";
 }
 
 function renderFxControl(track, fxControl) {
@@ -2347,6 +2341,7 @@ window.confirmClearArrangement = confirmClearArrangement;
 window.closeArrangementClearMenu = closeArrangementClearMenu;
 window.openArrangementClearMenu = openArrangementClearMenu;
 window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
+window.renderArrangementGrid = renderArrangementGrid;
 
 function updateArrangementStepCount(event) {
   const nextLength = Number(event.target.value);
@@ -2820,7 +2815,11 @@ function encodePath(path) {
 }
 
 function clamp(value, min, max) {
-  return Math.min(Math.max(value || min, min), max);
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return min;
+  }
+  return Math.min(Math.max(next, min), max);
 }
 
 function escapeHtml(value) {

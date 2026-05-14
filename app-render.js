@@ -18,7 +18,6 @@
     const playButton = player.querySelector("#playButton");
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
-    const layoutSelect = player.querySelector("#layoutSelect");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const bpmInput = player.querySelector("#bpmInput");
 
@@ -34,10 +33,6 @@
       arrangementToggle.textContent = arrangement.enabled ? "On" : "Off";
       arrangementToggle.classList.toggle("active", arrangement.enabled);
       arrangementToggle.setAttribute("aria-pressed", String(arrangement.enabled));
-    }
-
-    if (layoutSelect) {
-      layoutSelect.value = videoLayout;
     }
 
     if (arrangementLengthSelect) {
@@ -113,30 +108,19 @@
       `;
     }
 
-    const renderStrip = typeof window.renderTrackArrangementStrip === "function" ? window.renderTrackArrangementStrip : null;
-    const fallbackTrackRow = typeof window.renderArrangementRow === "function" ? window.renderArrangementRow : null;
-
-    tracks.forEach((track) => {
-      const trackStrip = document.querySelector(`.track-arrangement-strip[data-track-arrangement="${track.id}"]`);
-      if (!trackStrip || !track?.id) {
+    const arrangementGrid = document.querySelector(".arrangement-grid");
+    const renderGrid = typeof window.renderArrangementGrid === "function" ? window.renderArrangementGrid() : "";
+    if (arrangementGrid) {
+      if (renderGrid) {
+        arrangementGrid.outerHTML = renderGrid;
         return;
       }
 
-      const nextStrip = renderStrip
-        ? renderStrip(track)
-        : fallbackTrackRow
-          ? `<div class="track-arrangement-strip" style="--arrangement-steps: ${arrangementStepCount}" data-track-arrangement="${track.id}">
-              ${fallbackTrackRow(track)}
-            </div>`
-          : "";
+      renderWorkstation();
+      return;
+    }
 
-      if (nextStrip) {
-        trackStrip.outerHTML = nextStrip;
-      }
-    });
-
-    const allStrips = document.querySelectorAll(".track-arrangement-strip");
-    if (!allStrips.length) {
+    if (typeof renderWorkstation === "function") {
       renderWorkstation();
     }
   }

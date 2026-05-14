@@ -1,6 +1,6 @@
 (function initFreemixState() {
   const STORAGE_KEY = "freemix.preferences.v2";
-const DEFAULTS = {
+  const DEFAULTS = {
     selectedSource: null,
     transport: null,
     audioContext: null,
@@ -12,59 +12,20 @@ const DEFAULTS = {
     arrangementCopySourceStep: null,
     tracks: null,
     arrangement: null,
-    videoLayout: "stack",
     trackSearchRequestCounter: 0,
     userOnboarding: {
       phase: "seed",
       needsHint: true,
     },
   };
-
-  let rawSavedState = null;
-  if (typeof localStorage !== "undefined") {
-    try {
-      rawSavedState = localStorage.getItem(STORAGE_KEY);
-      rawSavedState = rawSavedState ? JSON.parse(rawSavedState) : null;
-    } catch {
-      rawSavedState = null;
-    }
-  }
-
-  const saved = rawSavedState || {};
-  const state = window.freemixState || {};
-  const defaultsFromSaved = {
-    ...DEFAULTS,
-    ...saved.state,
-  };
-
-  state.selectedSource = state.selectedSource ?? defaultsFromSaved.selectedSource;
-  state.transport = state.transport ?? defaultsFromSaved.transport;
-  state.audioContext = state.audioContext ?? defaultsFromSaved.audioContext;
-  state.webAudioDisabled = state.webAudioDisabled ?? defaultsFromSaved.webAudioDisabled;
-  state.preferredBpm = Number(state.preferredBpm) || Number(defaultsFromSaved.preferredBpm) || 92;
-  state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
-  state.arrangementStepCount = state.arrangementStepCount ?? defaultsFromSaved.arrangementStepCount;
-  state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
-  state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
-  state.tracks = state.tracks ?? null;
-  state.arrangement = state.arrangement ?? null;
-  state.videoLayout = state.videoLayout ?? defaultsFromSaved.videoLayout;
-  state.trackSearchRequestCounter = state.trackSearchRequestCounter ?? 0;
-  state.userOnboarding = state.userOnboarding ?? defaultsFromSaved.userOnboarding ?? { ...DEFAULTS.userOnboarding };
-  state.trackPreferenceState = state.trackPreferenceState ?? saved.trackPreferenceState ?? {};
-  state.arrangementPreferenceState = state.arrangementPreferenceState ?? saved.arrangementPreferenceState ?? {};
-  state.trackSourceCache = state.trackSourceCache ?? {};
-
-  const persistableScalarKeys = new Set([
+  const PERSISTED_STATE_KEYS = new Set([
     "preferredBpm",
-    "arrangementStepCount",
     "masterMuted",
+    "arrangementStepCount",
     "arrangementCopyMode",
-    "videoLayout",
     "userOnboarding",
   ]);
-
-  const persistableTrackKeys = new Set([
+  const PERSISTED_TRACK_KEYS = new Set([
     "showAdvanced",
     "muted",
     "volume",
@@ -76,7 +37,192 @@ const DEFAULTS = {
     "speed",
     "pitch",
   ]);
+  const TRACK_PREF_VALID_DURATION_FILTERS = new Set(["any", "quick", "short", "medium", "long"]);
+  const TRACK_PREF_VALID_BLEND_MODES = new Set([
+    "normal",
+    "screen",
+    "multiply",
+    "add",
+    "difference",
+    "exclusion",
+    "dodge",
+    "hard",
+  ]);
+  const PERSISTED_STATE_PROXY_KEYS = Object.freeze([
+    "preferredBpm",
+    "masterMuted",
+    "arrangementStepCount",
+    "arrangementCopyMode",
+    "userOnboarding",
+  ]);
+  const PERSISTED_TRACK_FAVORITE_KEYS = Object.freeze([
+    "showAdvanced",
+    "muted",
+    "volume",
+    "startTime",
+    "retriggersPerBar",
+    "blendMode",
+    "opacity",
+    "durationFilter",
+    "speed",
+    "pitch",
+  ]);
+
+  let rawSavedState = null;
+  if (typeof localStorage !== "undefined") {
+    try {
+      rawSavedState = localStorage.getItem(STORAGE_KEY);
+      rawSavedState = rawSavedState ? JSON.parse(rawSavedState) : null;
+    } catch {
+      rawSavedState = null;
+    }
+  }
+
+  const saved = isRecord(rawSavedState) ? rawSavedState : {};
+  const savedState = sanitizeRecord(saved.state);
+  const savedTrackPreferenceState = sanitizeRecord(saved.trackPreferenceState);
+  const savedArrangementPreferenceState = sanitizeRecord(saved.arrangementPreferenceState);
+
+  const state = window.freemixState || {};
+  const defaultsFromSaved = {
+    ...DEFAULTS,
+    ...filterObjectKeys(savedState, PERSISTED_STATE_KEYS),
+  };
+
+  state.selectedSource = state.selectedSource ?? defaultsFromSaved.selectedSource;
+  state.transport = state.transport ?? defaultsFromSaved.transport;
+  state.audioContext = state.audioContext ?? defaultsFromSaved.audioContext;
+  state.webAudioDisabled = state.webAudioDisabled ?? defaultsFromSaved.webAudioDisabled;
+  state.preferredBpm = Number(state.preferredBpm) || Number(defaultsFromSaved.preferredBpm) || 92;
+  state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
+  state.arrangementStepCount = Number(state.arrangementStepCount) || Number(defaultsFromSaved.arrangementStepCount) || 8;
+  state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
+  state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
+  state.tracks = state.tracks ?? null;
+  state.arrangement = state.arrangement ?? null;
+  state.trackSearchRequestCounter = Number(state.trackSearchRequestCounter) || 0;
+  state.userOnboarding = sanitizeUserOnboarding(state.userOnboarding ?? defaultsFromSaved.userOnboarding);
+  state.trackPreferenceState = state.trackPreferenceState ?? sanitizeTrackPreferenceBuckets(savedTrackPreferenceState);
+  state.arrangementPreferenceState = state.arrangementPreferenceState ?? sanitizeArrangementPreferenceState(
+    savedArrangementPreferenceState,
+  );
+  state.trackSourceCache = state.trackSourceCache ?? {};
+
+  const persistableScalarKeys = new Set(PERSISTED_STATE_PROXY_KEYS);
+  const persistableTrackKeys = new Set(PERSISTED_TRACK_FAVORITE_KEYS);
   let persistTimer = null;
+
+  function isRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function sanitizeRecord(value) {
+    return isRecord(value) ? value : {};
+  }
+
+  function filterObjectKeys(value, allowedKeys) {
+    const source = sanitizeRecord(value);
+    const filtered = {};
+    Object.keys(source).forEach((key) => {
+      if (allowedKeys.has(key)) {
+        filtered[key] = source[key];
+      }
+    });
+    return filtered;
+  }
+
+  function sanitizeNumber(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function clamp(value, min, max) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) {
+      return min;
+    }
+    return Math.min(Math.max(next, min), max);
+  }
+
+  function sanitizeUserOnboarding(raw = {}) {
+    const base = DEFAULTS.userOnboarding;
+    if (!isRecord(raw)) {
+      return { ...base };
+    }
+
+    return {
+      phase: typeof raw.phase === "string" ? raw.phase : base.phase,
+      needsHint: typeof raw.needsHint === "boolean" ? raw.needsHint : base.needsHint,
+    };
+  }
+
+  function sanitizeTrackPreferenceBuckets(raw = {}) {
+    return Object.fromEntries(
+      Object.entries(raw)
+        .filter(([trackId]) => typeof trackId === "string" && trackId.trim().length > 0)
+        .map(([trackId, rawTrackPrefs]) => [trackId, sanitizeTrackPreference(rawTrackPrefs)]),
+    );
+  }
+
+  function sanitizeTrackPreference(raw = {}) {
+    const input = sanitizeRecord(raw);
+    const snapshot = {};
+    for (const key of PERSISTED_TRACK_KEYS) {
+      snapshot[key] = null;
+    }
+
+    Object.entries(input).forEach(([key, value]) => {
+      if (!snapshot.hasOwnProperty(key) && !PERSISTED_TRACK_KEYS.has(key)) {
+        return;
+      }
+
+      if (key === "showAdvanced" || key === "muted") {
+        snapshot[key] = !!value;
+        return;
+      }
+
+      if (key === "volume" || key === "startTime" || key === "opacity" || key === "speed" || key === "pitch") {
+        const limits = {
+          volume: [-Infinity, Infinity],
+          startTime: [0, Infinity],
+          opacity: [0, 1],
+          speed: [0.5, 2],
+          pitch: [-12, 12],
+        }[key];
+        snapshot[key] = clamp(sanitizeNumber(value, snapshot[key]), limits[0], limits[1]);
+        return;
+      }
+
+      if (key === "retriggersPerBar") {
+        snapshot[key] = Math.max(1, Math.floor(sanitizeNumber(value, 1)));
+        return;
+      }
+
+      if (key === "durationFilter") {
+        snapshot[key] = TRACK_PREF_VALID_DURATION_FILTERS.has(String(value) || "") ? String(value) : "quick";
+        return;
+      }
+
+      if (key === "blendMode") {
+        snapshot[key] = TRACK_PREF_VALID_BLEND_MODES.has(String(value)) ? String(value) : "normal";
+        return;
+      }
+
+      if (PERSISTED_TRACK_KEYS.has(key)) {
+        snapshot[key] = value;
+      }
+    });
+
+    return Object.fromEntries(Object.entries(snapshot).filter(([, value]) => value !== null));
+  }
+
+  function sanitizeArrangementPreferenceState(raw = {}) {
+    const input = sanitizeRecord(raw);
+    return {
+      step: sanitizeNumber(input.step, 0),
+      enabled: !!input.enabled,
+    };
+  }
 
   function hydrateTracks(trackRows) {
     if (!Array.isArray(trackRows) || !state.trackPreferenceState) {
@@ -169,14 +315,13 @@ const DEFAULTS = {
     }
 
     try {
-      const payload = JSON.stringify({
+        const payload = JSON.stringify({
         version: 2,
         state: {
           preferredBpm: Number(state.preferredBpm) || 92,
           arrangementStepCount: state.arrangementStepCount || 8,
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
-          videoLayout: state.videoLayout || "stack",
           userOnboarding: state.userOnboarding,
         },
         trackPreferenceState: buildTrackSnapshot(state.tracks),
@@ -240,7 +385,6 @@ const DEFAULTS = {
     "arrangementCopySourceStep",
     "tracks",
     "arrangement",
-    "videoLayout",
     "trackSearchRequestCounter",
   ].forEach((key) => {
     if (Object.getOwnPropertyDescriptor(window, key)) {

@@ -64,13 +64,6 @@
     }
   }
 
-  function handleLayoutChange(event) {
-    videoLayout = event.target.value;
-    stopTransport(false);
-    tracks.forEach((trackItem) => disposeTrackAudio(trackItem));
-    renderWorkstation();
-  }
-
   function handleArrangementLengthChange(event) {
     updateArrangementStepCount(event);
   }
@@ -167,7 +160,7 @@
     }
 
     const debugButton = target.closest(DEBUG_ACTION_SELECTOR);
-    if (debugButton) {
+    if (debugButton && window.freemixDebugEnabled) {
       const action = debugButton.getAttribute("data-debug-action");
       if (typeof window.performDebugAction === "function") {
         window.performDebugAction(action);
@@ -253,11 +246,6 @@
   function onChange(event) {
     const control = event.target;
     if (!control) {
-      return;
-    }
-
-    if (control.id === "layoutSelect") {
-      handleLayoutChange(event);
       return;
     }
 
