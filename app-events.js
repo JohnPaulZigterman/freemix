@@ -8,6 +8,8 @@
   const DEBUG_ACTION_SELECTOR = "[data-debug-action]";
   const ARRANGEMENT_CLEAR_MENU_SELECTOR = "#arrangementClearMenu";
   const LAUNCH_ACTION_SELECTOR = "[data-launch-action]";
+  const TRACK_NAME_LABEL_SELECTOR = "[data-track-name-label][data-track-control]";
+  const TRACK_NAME_INPUT_SELECTOR = ".track-row-name-input[data-track-control][data-control='name']";
 
   function getTrackFromControl(control) {
     if (!control) {
@@ -75,21 +77,84 @@
     const nextBpm = clamp(Number(event.target.value), 40, 220);
     appState.preferredBpm = Number.isFinite(nextBpm) ? nextBpm : resolvePreferredBpm();
     window.freemixRender?.updateTransportRow?.();
+  if (typeof window.freemixSyncTransportTiming === "function") {
+    window.freemixSyncTransportTiming({
+      bpm: appState.preferredBpm,
+    });
+    return;
+  }
+
+  markAppStateDirty();
+
+  if (!transport) {
+    return;
+  }
+
+  const safeSignature =
+    typeof resolvePreferredTimeSignature === "function"
+      ? resolvePreferredTimeSignature(appState.preferredTimeSignature)
+      : {
+          value: "4/4",
+          beatsPerBar: 4,
+          noteValue: 4,
+          numerator: 4,
+          denominator: 4,
+        };
+  const nextTiming =
+    typeof getTransportTimingFromState === "function"
+      ? getTransportTimingFromState(appState.preferredBpm, appState.preferredTimeSignature)
+      : {
+          bpm: resolvePreferredBpm(),
+          beatMs: (60000 / resolvePreferredBpm()) * (4 / safeSignature.noteValue),
+          barMs: (60000 / resolvePreferredBpm()) * (4 / safeSignature.noteValue) * safeSignature.beatsPerBar,
+          beatsPerBar: safeSignature.beatsPerBar,
+          timeSignature: safeSignature.value,
+          numerator: safeSignature.numerator,
+          denominator: safeSignature.denominator,
+          noteValue: safeSignature.noteValue,
+        };
+
+  transport.bpm = nextTiming.bpm;
+  transport.beatMs = nextTiming.beatMs;
+  transport.barMs = nextTiming.barMs;
+  transport.beatsPerBar = nextTiming.beatsPerBar;
+  transport.timeSignature = nextTiming.timeSignature || appState.preferredTimeSignature || DEFAULT_TIME_SIGNATURE;
+  transport.timeSignatureNumerator = nextTiming.numerator || resolvePreferredTimeSignature().numerator;
+  transport.timeSignatureDenominator = nextTiming.denominator || resolvePreferredTimeSignature().denominator;
+  transport.timeSignatureNoteValue = nextTiming.noteValue || resolvePreferredTimeSignature().noteValue;
+  const now = performance.now();
+  transport.nextBeatAt = now;
+  transport.beatIndex = 0;
+    if (arrangement.enabled && hasArrangementClips()) {
+      updateArrangementStep(arrangement.step, now, true);
+    } else {
+      updateTrackTriggerGrid(now);
+    }
+  }
+
+  function handleTimeSignatureChange(event) {
+    const nextTimeSignature = event.target.value;
+    appState.preferredTimeSignature = nextTimeSignature;
+    window.freemixRender?.updateTransportRow?.();
+    markAppStateDirty();
+    if (typeof window.freemixSyncTransportTiming === "function") {
+      window.freemixSyncTransportTiming({
+        timeSignature: nextTimeSignature,
+      });
+      return;
+    }
 
     if (!transport) {
       return;
     }
 
-    transport.bpm = resolvePreferredBpm();
-    transport.beatMs = 60000 / transport.bpm;
-    transport.barMs = transport.beatMs * 4;
-    const now = performance.now();
-    transport.nextBeatAt = now;
+    const nextBeatAt = performance.now();
+    transport.nextBeatAt = nextBeatAt;
     transport.beatIndex = 0;
     if (arrangement.enabled && hasArrangementClips()) {
-      updateArrangementStep(arrangement.step, now, true);
+      updateArrangementStep(arrangement.step, nextBeatAt, true);
     } else {
-      updateTrackTriggerGrid(now);
+      updateTrackTriggerGrid(nextBeatAt);
     }
   }
 
@@ -191,6 +256,12 @@
 
     consumeLaunchHint();
 
+    const trackNameLabel = target.closest(TRACK_NAME_LABEL_SELECTOR);
+    if (trackNameLabel) {
+      beginTrackNameEdit(trackNameLabel);
+      return;
+    }
+
     const launchAction = target.closest(LAUNCH_ACTION_SELECTOR);
     if (launchAction) {
       const action = launchAction.getAttribute("data-launch-action");
@@ -271,6 +342,10 @@
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
+      if (trackControl.dataset?.control === "name") {
+        return;
+      }
+
       if (typeof window.freemixQueueTrackControlUpdate === "function") {
         window.freemixQueueTrackControlUpdate(trackControl, event.type);
         return;
@@ -298,9 +373,17 @@
       handleArrangementLengthChange(event);
       return;
     }
+    if (control.id === "timeSignatureSelect") {
+      handleTimeSignatureChange(event);
+      return;
+    }
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
+      if (trackControl.dataset?.control === "name") {
+        return;
+      }
+
       if (typeof window.freemixQueueTrackControlUpdate === "function") {
         window.freemixQueueTrackControlUpdate(trackControl, event.type);
         return;
@@ -334,6 +417,30 @@
   }
 
   function onKeydown(event) {
+    const activeInput = event.target.closest(TRACK_NAME_INPUT_SELECTOR);
+    if (activeInput) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finishTrackNameEdit(activeInput, true);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finishTrackNameEdit(activeInput, false);
+        return;
+      }
+
+      return;
+    }
+
+    const trackNameLabel = event.target.closest(TRACK_NAME_LABEL_SELECTOR);
+    if (trackNameLabel && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      beginTrackNameEdit(trackNameLabel);
+      return;
+    }
+
     if (event.key !== "Escape") {
       return;
     }
@@ -348,6 +455,81 @@
     }
   }
 
+  function finishTrackNameEdit(nameInput, shouldSave) {
+    if (!nameInput) {
+      return;
+    }
+
+    const controlTrackId = nameInput.dataset?.trackControl;
+    if (!controlTrackId) {
+      return;
+    }
+
+    const track = getTrackFromControl(nameInput);
+    if (!track) {
+      return;
+    }
+
+    const trackRow = nameInput.closest(".track-row");
+    const trackNameLabel = trackRow
+      ? trackRow.querySelector(`.track-row-name[data-track-control="${controlTrackId}"]`)
+      : null;
+    const nameToSave = String(nameInput.value || "").trim();
+
+    if (!nameToSave || !shouldSave) {
+      if (trackNameLabel) {
+        nameInput.value = track.name || trackNameLabel.textContent.trim();
+      }
+    } else if (typeof window.freemixRenameTrack === "function") {
+      window.freemixRenameTrack(controlTrackId, nameToSave);
+    }
+
+    nameInput.hidden = true;
+    if (trackNameLabel) {
+      trackNameLabel.hidden = false;
+      if (trackNameLabel.textContent !== track.name) {
+        trackNameLabel.textContent = track.name;
+      }
+      trackNameLabel.setAttribute("title", track.name);
+    }
+  }
+
+  function onFocusOut(event) {
+    const nameInput = event.target.closest(TRACK_NAME_INPUT_SELECTOR);
+    if (!nameInput) {
+      return;
+    }
+
+    finishTrackNameEdit(nameInput, true);
+  }
+
+  function beginTrackNameEdit(label) {
+    if (!label || !(label instanceof HTMLElement)) {
+      return;
+    }
+
+    const trackId = label.getAttribute("data-track-control");
+    const track = trackId ? getTrackFromControl({ dataset: { trackControl: trackId } }) : null;
+    if (!track) {
+      return;
+    }
+
+    const trackRow = label.closest(".track-row");
+    const trackInput = trackRow
+      ? trackRow.querySelector(`.track-row-name-input[data-track-control="${trackId}"]`)
+      : null;
+
+    if (!(trackInput instanceof HTMLInputElement)) {
+      return;
+    }
+
+    label.hidden = true;
+    trackInput.hidden = false;
+    trackInput.value = track.name;
+    trackInput.focus();
+    trackInput.select();
+  }
+
   function bind() {
     playerPanel = document.querySelector("#playerPanel");
     if (!playerPanel) {
@@ -359,6 +541,7 @@
       playerPanel.addEventListener("input", onInput);
       playerPanel.addEventListener("change", onChange);
       playerPanel.addEventListener("keydown", onKeydown);
+      playerPanel.addEventListener("focusout", onFocusOut);
 
       document.addEventListener("click", (event) => {
         if (!event.target.closest(".track-source")) {

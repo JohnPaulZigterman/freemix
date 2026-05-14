@@ -20,13 +20,13 @@
     const arrangementToggle = player.querySelector("#arrangementToggle");
     const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
+    const timeSignatureSelect = player.querySelector("#timeSignatureSelect");
     const bpmInput = player.querySelector("#bpmInput");
-    const hasLoadedSources = tracks.some((track) => track.source);
-
+    const meter = player.querySelector(".meter");
     if (playButton) {
       playButton.classList.toggle("active", !!transport?.active);
-      playButton.toggleAttribute("disabled", !hasLoadedSources);
-      playButton.title = hasLoadedSources ? "Start transport" : "Load a source first";
+      playButton.removeAttribute("disabled");
+      playButton.title = "Start transport";
     }
 
     if (metroButton) {
@@ -51,9 +51,27 @@
     if (arrangementLengthSelect) {
       arrangementLengthSelect.value = String(arrangementStepCount);
     }
+    if (timeSignatureSelect) {
+      timeSignatureSelect.value = resolvePreferredTimeSignature().value;
+    }
 
     if (bpmInput && transport?.bpm) {
       bpmInput.value = String(transport.bpm);
+    }
+
+    if (meter) {
+      const beats = getTransportBeatsPerBar(transport);
+      const targetCount = Math.max(1, Math.floor(Number(beats) || 1));
+      meter.style.setProperty("--beat-count", String(targetCount));
+      const currentLights = meter.querySelectorAll(".beat-light");
+      if (currentLights.length !== targetCount) {
+        meter.innerHTML = Array.from({ length: targetCount }, (_, index) => `<span class="beat-light" data-beat="${index}"></span>`).join(
+          "",
+        );
+        if (typeof window.freemixInvalidateUiNodeCache === "function") {
+          window.freemixInvalidateUiNodeCache();
+        }
+      }
     }
   }
 

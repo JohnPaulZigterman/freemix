@@ -76,6 +76,19 @@ const APP_STATE_PROXY_DIRTY_KEYS = new Set(["arrangementStepCount", "masterMuted
 const DEFAULT_BPM = 92;
 const DEFAULT_ARRANGEMENT_STEPS = 8;
 const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
+const DEFAULT_TIME_SIGNATURE = "4/4";
+const TIME_SIGNATURE_OPTIONS = Object.freeze([
+  { value: "2/4", label: "2/4", numerator: 2, denominator: 4, beatsPerBar: 2, noteValue: 4 },
+  { value: "3/4", label: "3/4", numerator: 3, denominator: 4, beatsPerBar: 3, noteValue: 4 },
+  { value: "4/4", label: "4/4", numerator: 4, denominator: 4, beatsPerBar: 4, noteValue: 4 },
+  { value: "5/4", label: "5/4", numerator: 5, denominator: 4, beatsPerBar: 5, noteValue: 4 },
+  { value: "6/8", label: "6/8", numerator: 6, denominator: 8, beatsPerBar: 6, noteValue: 8 },
+  { value: "7/8", label: "7/8", numerator: 7, denominator: 8, beatsPerBar: 7, noteValue: 8 },
+]);
+const TIME_SIGNATURE_LOOKUP = Object.freeze(
+  Object.fromEntries(TIME_SIGNATURE_OPTIONS.map((signature) => [signature.value, signature])),
+);
+const TRACK_NAME_MAX_LENGTH = 40;
 const BLEND_MODES = {
   normal: "Normal",
   screen: "Screen",
@@ -298,6 +311,7 @@ function normalizeTrackPreferences(track) {
   }
 
   track.showAdvanced = !!track.showAdvanced;
+  track.collapsed = !!track.collapsed;
   track.solo = !!track.solo;
   track.muted = !!track.muted;
 
@@ -352,6 +366,76 @@ function markAppStateDirty(force = false) {
 
 function resolvePreferredBpm() {
   return clamp(Number(appState.preferredBpm), 40, 220);
+}
+
+function resolvePreferredTimeSignature(rawValue = appState.preferredTimeSignature) {
+  return TIME_SIGNATURE_LOOKUP[String(rawValue || "").trim()] || TIME_SIGNATURE_LOOKUP[DEFAULT_TIME_SIGNATURE];
+}
+
+function getTransportBeatsPerBar(targetTransport = transport) {
+  const transportBeats = Number(targetTransport?.beatsPerBar);
+  if (Number.isFinite(transportBeats)) {
+    return Math.max(1, Math.floor(transportBeats));
+  }
+
+  return Number(resolvePreferredTimeSignature().beatsPerBar);
+}
+
+function getTransportBeatMs(targetTransport = transport) {
+  const transportBeatMs = Number(targetTransport?.beatMs);
+  if (Number.isFinite(transportBeatMs)) {
+    return transportBeatMs;
+  }
+
+  const beatBpm = Number.isFinite(Number(targetTransport?.bpm)) ? Number(targetTransport.bpm) : resolvePreferredBpm();
+  const noteValue = Number.isFinite(Number(targetTransport?.timeSignatureNoteValue))
+    ? Number(targetTransport.timeSignatureNoteValue)
+    : resolvePreferredTimeSignature().noteValue;
+  return (60000 / beatBpm) * (4 / noteValue);
+}
+
+function getTransportTimingFromState(nextBpm = resolvePreferredBpm(), nextTimeSignature = resolvePreferredTimeSignature()) {
+  const safeBpm = clamp(Number(nextBpm), 40, 220);
+  const timeSignature = resolvePreferredTimeSignature(nextTimeSignature?.value || nextTimeSignature);
+  const beatMs = (60000 / safeBpm) * (4 / timeSignature.noteValue);
+  return {
+    bpm: safeBpm,
+    beatsPerBar: timeSignature.beatsPerBar,
+    noteValue: timeSignature.noteValue,
+    timeSignature: timeSignature.value,
+    numerator: timeSignature.numerator,
+    denominator: timeSignature.denominator,
+    beatMs,
+    barMs: beatMs * timeSignature.beatsPerBar,
+  };
+}
+
+function syncTransportTiming(nextState = {}) {
+  if (!transport) {
+    return;
+  }
+
+  const timing = getTransportTimingFromState(nextState?.bpm, nextState?.timeSignature || appState.preferredTimeSignature);
+  transport.bpm = timing.bpm;
+  transport.beatMs = timing.beatMs;
+  transport.barMs = timing.barMs;
+  transport.beatsPerBar = timing.beatsPerBar;
+  transport.timeSignature = timing.timeSignature;
+  transport.timeSignatureNumerator = timing.numerator;
+  transport.timeSignatureDenominator = timing.denominator;
+  transport.timeSignatureNoteValue = timing.noteValue;
+
+  const now = performance.now();
+  transport.nextBeatAt = now;
+  transport.beatIndex = 0;
+  if (arrangement.enabled && hasArrangementClips()) {
+    updateArrangementStep(arrangement.step, now, true);
+  } else {
+    updateTrackTriggerGrid(now);
+  }
+
+  window.freemixRender?.updateTransportRow?.();
+  markAppStateDirty();
 }
 
 const searchResultCache = new Map();
@@ -618,6 +702,85 @@ function updateTrackModeChips(track) {
   }
 }
 
+function getTrackCollapseGlyph(isCollapsed) {
+  return isCollapsed ? "▶" : "▼";
+}
+
+function normalizeTrackName(nameValue, fallback = "Track") {
+  const raw = String(nameValue ?? "").trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  return raw.length <= TRACK_NAME_MAX_LENGTH ? raw : raw.slice(0, TRACK_NAME_MAX_LENGTH).trimEnd();
+}
+
+function syncTrackNameUi(track) {
+  if (!track?.id || !playerPanel) {
+    return;
+  }
+
+  const trackName = normalizeTrackName(track.name, `Track ${track.id}`);
+  if (track.name !== trackName) {
+    track.name = trackName;
+  }
+
+  const trackRow = playerPanel.querySelector(`article.track-row[data-track-row-id="${track.id}"]`);
+  if (trackRow) {
+    const trackNameDisplay = trackRow.querySelector(`.track-row-name[data-track-control="${track.id}"]`);
+    const trackNameInput = trackRow.querySelector(`.track-row-name-input[data-track-control="${track.id}"]`);
+    if (trackNameDisplay) {
+      trackNameDisplay.textContent = trackName;
+      trackNameDisplay.setAttribute("title", trackName);
+    }
+
+    if (trackNameInput instanceof HTMLInputElement) {
+      trackNameInput.value = trackName;
+      trackNameInput.setAttribute("aria-label", `Rename ${trackName}`);
+      trackNameInput.setAttribute("title", trackName);
+    }
+  }
+
+  const arrangementRow = playerPanel.querySelector(`.arrangement-track-row[data-track-id="${track.id}"]`);
+  if (arrangementRow) {
+    const arrangementLabel = arrangementRow.querySelector(".arrangement-track-label");
+    if (arrangementLabel) {
+      arrangementLabel.textContent = trackName;
+      arrangementLabel.setAttribute("title", trackName);
+    }
+  }
+
+  const arrangementCells = Array.from(playerPanel.querySelectorAll(`.arrangement-cell[data-arr-track="${track.id}"]`));
+  arrangementCells.forEach((cell) => {
+    const step = Number(cell.dataset.arrStep);
+    if (!Number.isInteger(step) || step < 0) {
+      return;
+    }
+
+    const hasClip = cell.classList.contains("filled");
+    cell.title = hasClip ? `${trackName} bar ${step + 1}` : `Capture ${trackName}`;
+  });
+}
+
+function renameTrack(trackId, rawName) {
+  const track = getTrackById(trackId);
+  if (!track) {
+    return false;
+  }
+
+  const fallback = String(track.name || `Track ${track.id}`);
+  const nextName = normalizeTrackName(rawName, fallback);
+  if (track.name === nextName) {
+    syncTrackNameUi(track);
+    return false;
+  }
+
+  track.name = nextName;
+  syncTrackNameUi(track);
+  markAppStateDirty(true);
+  return true;
+}
+
 function applyTrackModeChipsToAll() {
   tracks.forEach(updateTrackModeChips);
 }
@@ -766,6 +929,7 @@ function invalidateUiNodeCache() {
 }
 
 window.freemixInvalidateUiNodeCache = invalidateUiNodeCache;
+window.freemixSyncTransportTiming = syncTransportTiming;
 
 function normalizeRetriggersPerBar(value) {
   const parsed = Number(value);
@@ -895,8 +1059,8 @@ function resyncTrackTiming(track) {
     return;
   }
 
-  const beatMs = transport?.beatMs || 60000 / transport.bpm;
-  const barMs = beatMs * 4;
+  const beatMs = getTransportBeatMs(transport);
+  const barMs = beatMs * getTransportBeatsPerBar(transport);
   track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
   track.nextTriggerAt = Math.max(performance.now(), transport.nextBeatAt || performance.now());
   track.lastStep = -1;
@@ -1486,6 +1650,16 @@ function scorePlayableFile(file) {
   return score;
 }
 
+function renderTimeSignatureOptions(selectedTimeSignature = resolvePreferredTimeSignature().value) {
+  return TIME_SIGNATURE_OPTIONS.map(
+    (signature) => `<option value="${signature.value}" ${signature.value === selectedTimeSignature ? "selected" : ""}>${signature.label}</option>`,
+  ).join("");
+}
+
+function renderTransportMeter(beatsPerBar = getTransportBeatsPerBar()) {
+  return Array.from({ length: beatsPerBar }, (_, index) => `<span class="beat-light" data-beat="${index}"></span>`).join("");
+}
+
 function renderWorkstation() {
   const loadedTracks = tracks.filter((track) => track.source);
   const allSameSource =
@@ -1530,20 +1704,23 @@ function renderWorkstation() {
       </div>
 
       <div class="transport" aria-label="Transport controls">
-        <button class="transport-button play-button" id="playButton" type="button" ${loadedTracks.length ? "" : "disabled"}>Play</button>
+        <button class="transport-button play-button" id="playButton" type="button">Play</button>
         <button class="transport-button" id="stopButton" type="button">Stop</button>
-          <label class="control-field bpm-field">
+        <label class="control-field bpm-field">
           <span>BPM</span>
           <input id="bpmInput" type="number" min="40" max="220" step="1" value="${resolvePreferredBpm()}">
+        </label>
+        <label class="control-field">
+          <span>Sig</span>
+          <select id="timeSignatureSelect">
+            ${renderTimeSignatureOptions()}
+          </select>
         </label>
         <button class="transport-button metronome-button active" id="metroButton" type="button">
           Click
         </button>
-        <div class="meter" aria-label="Bar position">
-          <span class="beat-light" data-beat="0"></span>
-          <span class="beat-light" data-beat="1"></span>
-          <span class="beat-light" data-beat="2"></span>
-          <span class="beat-light" data-beat="3"></span>
+        <div class="meter" aria-label="Bar position" style="--beat-count: ${getTransportBeatsPerBar()}">
+          ${renderTransportMeter()}
         </div>
       </div>
 
@@ -1594,10 +1771,21 @@ function applyTrackControlVisibility(track) {
     return;
   }
 
+  const isCollapsed = !!track.collapsed;
+
   trackRow.classList.toggle("is-advanced", !!track.showAdvanced);
+  trackRow.classList.toggle("is-collapsed", isCollapsed);
   trackRow.querySelectorAll(".control-advanced").forEach((control) => {
     control.classList.toggle("is-hidden", !track.showAdvanced);
   });
+
+  const collapseControl = trackRow.querySelector('[data-control="collapsed"]');
+  if (collapseControl) {
+    collapseControl.textContent = isCollapsed ? "Show" : "Hide";
+    collapseControl.setAttribute("aria-expanded", String(!isCollapsed));
+    collapseControl.setAttribute("title", isCollapsed ? "Expand track" : "Collapse track");
+  }
+
   updateTrackModeChips(track);
   syncArrangementTrackHeights();
 }
@@ -1750,7 +1938,7 @@ function renderVideoCell(track, index) {
       }
       <div class="track-badge">
         <strong>${escapeHtml(track.name)}</strong>
-        <span>${escapeHtml(track.role)}</span>
+        ${track.role ? `<span>${escapeHtml(track.role)}</span>` : ""}
       </div>
       <div class="trigger-flash" aria-hidden="true"></div>
     </div>
@@ -1772,11 +1960,44 @@ function renderTrackControlRow(track) {
   const activeChip = track.muted ? "" : " is-on";
 
   return `
-    <article class="track-row ${track.color}" data-track-row-id="${track.id}">
+    <article class="track-row ${track.color}${track.collapsed ? " is-collapsed" : ""}" data-track-row-id="${track.id}">
       <div class="track-row-label">
         <div class="track-row-title">
-          <strong>${escapeHtml(track.name)}</strong>
-          <span>${escapeHtml(track.role)}</span>
+          <button
+            class="track-state-chip track-title-action track-collapse-toggle"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="collapsed"
+            aria-pressed="${!track.collapsed}"
+            aria-expanded="${!track.collapsed}"
+            aria-label="${track.collapsed ? "Expand track" : "Collapse track"}"
+            title="${track.collapsed ? "Expand track" : "Collapse track"}"
+          >
+            ${getTrackCollapseGlyph(track.collapsed)}
+          </button>
+          <span
+            class="track-row-name"
+            data-track-control="${track.id}"
+            data-track-name-label="true"
+            tabindex="0"
+            role="button"
+            aria-label="Rename ${escapeHtml(track.name)}"
+            title="${escapeHtml(track.name)}"
+          >
+            ${escapeHtml(track.name)}
+          </span>
+          <input
+            class="track-row-name-input"
+            type="text"
+            data-track-control="${track.id}"
+            data-control="name"
+            data-track-name-input="true"
+            value="${escapeHtml(track.name)}"
+            maxlength="${TRACK_NAME_MAX_LENGTH}"
+            autocomplete="off"
+            spellcheck="false"
+            hidden
+          />
         </div>
         <div class="track-state-chips" aria-label="Track states">
           <span class="track-state-chip${activeChip}" data-state="active">Active</span>
@@ -1795,32 +2016,34 @@ function renderTrackControlRow(track) {
           </button>
         </div>
       </div>
-      <div class="track-channel-row track-channel-row--top">
-        <div class="track-source">
-          ${sourceControls}
-          <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
-            <strong>${escapeHtml(sourceTitle)}</strong>
-            <span>${escapeHtml(sourceMeta)}</span>
+      <div class="track-row-body">
+        <div class="track-channel-row track-channel-row--top">
+          <div class="track-source">
+            ${sourceControls}
+            <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
+              <strong>${escapeHtml(sourceTitle)}</strong>
+              <span>${escapeHtml(sourceMeta)}</span>
+            </div>
+            <div class="track-results" id="results-${track.id}" hidden></div>
           </div>
-          <div class="track-results" id="results-${track.id}" hidden></div>
+          ${densityControls}
+          <button
+            class="track-toggle"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="muted"
+            aria-pressed="${track.muted}"
+            title="${track.muted ? "Unmute this channel" : "Mute this channel"}"
+          >
+            ${track.muted ? "Mute" : "On"}
+          </button>
         </div>
-        ${densityControls}
-        <button
-          class="track-toggle"
-          type="button"
-          data-track-control="${track.id}"
-          data-control="muted"
-          aria-pressed="${track.muted}"
-          title="${track.muted ? "Unmute this channel" : "Mute this channel"}"
-        >
-          ${track.muted ? "Mute" : "On"}
-        </button>
+        <div class="track-channel-row track-channel-row--bottom">
+          ${timingControls}
+          ${levelControls}
+        </div>
+        ${advancedControls}
       </div>
-      <div class="track-channel-row track-channel-row--bottom">
-        ${timingControls}
-        ${levelControls}
-      </div>
-      ${advancedControls}
     </article>
   `;
 }
@@ -2172,6 +2395,20 @@ function handleTrackControl(event) {
     updateTrackModeChips(track);
   }
 
+  if (controlName === "collapsed") {
+    track.collapsed = !track.collapsed;
+    control.setAttribute("aria-pressed", String(!track.collapsed));
+    control.textContent = getTrackCollapseGlyph(track.collapsed);
+    applyTrackControlVisibility(track);
+    markAppStateDirty();
+  }
+
+  if (controlName === "name") {
+    track.name = normalizeTrackName(control.value, track.name);
+    syncTrackNameUi(track);
+    markAppStateDirty(true);
+  }
+
   if (controlName !== "sourceSearch") {
     if (event?.type === "input") {
       queueControlStatePersist();
@@ -2192,11 +2429,6 @@ async function startTransport() {
     }
 
     return startTransport.runningPromise;
-  }
-
-  if (!tracks.some((track) => track.source)) {
-    setStatus("Load a source", true);
-    return;
   }
 
   const bootToken = (startTransport.bootToken ?? 0) + 1;
@@ -2528,10 +2760,6 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
     return;
   }
 
-  if (!tracks.some((track) => track.source)) {
-    return;
-  }
-
   tracks.forEach((track) => {
     track.lastStep = -1;
     track.nextTriggerAt = 0;
@@ -2555,14 +2783,18 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
 
   const now = performance.now();
   const startAt = now;
-  const beatMs = 60000 / resolvePreferredBpm();
-  const barMs = beatMs * 4;
+  const timing = getTransportTimingFromState();
   syncTransportState({
     active: true,
     sessionToken,
-    bpm: resolvePreferredBpm(),
-    beatMs,
-    barMs,
+    bpm: timing.bpm,
+    beatMs: timing.beatMs,
+    barMs: timing.barMs,
+    beatsPerBar: timing.beatsPerBar,
+    timeSignature: timing.timeSignature,
+    timeSignatureNumerator: timing.numerator,
+    timeSignatureDenominator: timing.denominator,
+    timeSignatureNoteValue: timing.noteValue,
     startedAt: startAt,
     nextBeatAt: startAt,
     beatIndex: 0,
@@ -2701,8 +2933,9 @@ function tickTransport() {
   }
 
   const now = performance.now();
-  const beatMs = transport.beatMs || 60000 / transport.bpm;
-  const barMs = transport.barMs || beatMs * 4;
+  const beatMs = getTransportBeatMs(transport);
+  const beatsPerBar = getTransportBeatsPerBar(transport);
+  const barMs = beatMs * beatsPerBar;
 
   const beatCatchupLimit = Math.max(
     0,
@@ -2713,9 +2946,9 @@ function tickTransport() {
       break;
     }
 
-    const beat = transport.beatIndex % 4;
+    const beat = transport.beatIndex % beatsPerBar;
     renderBeat(beat);
-    playMetronome(beat);
+    playMetronome(beat, beatsPerBar);
     transport.beatIndex += 1;
     transport.nextBeatAt += beatMs;
   }
@@ -2828,7 +3061,8 @@ function previewTrack(track) {
 
 function renderBeat(beat) {
   const beatIndex = Number.isFinite(Number(beat)) ? Math.floor(Number(beat)) : 0;
-  const nextBeatIndex = ((beatIndex % 4) + 4) % 4;
+  const beatsPerBar = getTransportBeatsPerBar(transport);
+  const nextBeatIndex = ((beatIndex % beatsPerBar) + beatsPerBar) % beatsPerBar;
   const lights = getBeatLights();
   if (!lights.length) {
     return;
@@ -2849,7 +3083,7 @@ function renderBeat(beat) {
   }
 }
 
-function playMetronome(beat) {
+function playMetronome(beat, beatsPerBar = getTransportBeatsPerBar(transport)) {
   if (masterMuted || !audioContext) {
     return;
   }
@@ -2863,7 +3097,8 @@ function playMetronome(beat) {
   const envelope = audioContext.createGain();
   const oscillator = audioContext.createOscillator();
   oscillator.type = "square";
-  oscillator.frequency.value = beat === 0 ? 1320 : 880;
+  const downbeat = Number.isFinite(beat) ? Math.round(beat) % beatsPerBar === 0 : beat === 0;
+  oscillator.frequency.value = downbeat ? 1320 : 880;
   envelope.gain.setValueAtTime(0.0001, now);
   envelope.gain.exponentialRampToValueAtTime(0.08, now + 0.004);
   envelope.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
@@ -3314,8 +3549,8 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
     return;
   }
 
-  const beatMs = transport?.beatMs || 60000 / transport.bpm;
-  const barMs = transport?.barMs || beatMs * 4;
+  const beatMs = getTransportBeatMs(transport);
+  const barMs = beatMs * getTransportBeatsPerBar(transport);
   tracks.forEach((track) => {
     track.arrangementClip = null;
     track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
@@ -3517,8 +3752,8 @@ function rebindArrangementClipsForActiveTransport() {
     return;
   }
 
-  const beatMs = transport?.beatMs || 60000 / transport.bpm;
-  const barMs = transport?.barMs || beatMs * 4;
+  const beatMs = getTransportBeatMs(transport);
+  const barMs = beatMs * getTransportBeatsPerBar(transport);
   const nextBeatAt = Number.isFinite(transport.nextBeatAt)
     ? transport.nextBeatAt
     : performance.now();
@@ -3664,8 +3899,8 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     transport.arrangementStartStep = stepIndex;
   }
   arrangement.step = stepIndex;
-  const beatMs = transport?.beatMs || 60000 / transport.bpm;
-  const barMs = beatMs * 4;
+  const beatMs = getTransportBeatMs(transport);
+  const barMs = beatMs * getTransportBeatsPerBar(transport);
   const step = arrangement.clips[stepIndex];
 
   tracks.forEach((track) => {
@@ -4096,10 +4331,11 @@ function createTrackTemplate(index) {
   const paletteIndex = Math.max(0, Math.floor(index || 0));
   return {
     name: `Track ${paletteIndex + 1}`,
-    role: "Track",
+    role: "",
     color: TRACK_COLORS[paletteIndex % TRACK_COLORS.length],
     id: `track-${paletteIndex + 1}`,
     showAdvanced: false,
+    collapsed: false,
     startTime: 0,
     retriggersPerBar: TRACK_RETRIGGER_DEFAULTS[paletteIndex % TRACK_RETRIGGER_DEFAULTS.length],
     volume: 0.55,
@@ -4162,6 +4398,7 @@ function addTrack() {
 
 window.addTrack = addTrack;
 window.canAddTrack = canAddTrack;
+window.freemixRenameTrack = renameTrack;
 
 function createInitialArrangement(steps = arrangementStepCount) {
   return {

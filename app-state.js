@@ -6,6 +6,7 @@
     audioContext: null,
     webAudioDisabled: false,
     preferredBpm: 92,
+    preferredTimeSignature: "4/4",
     masterMuted: false,
     arrangementStepCount: 8,
     arrangementCopyMode: false,
@@ -20,13 +21,16 @@
   };
   const PERSISTED_STATE_KEYS = new Set([
     "preferredBpm",
+    "preferredTimeSignature",
     "masterMuted",
     "arrangementStepCount",
     "arrangementCopyMode",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_KEYS = new Set([
+    "name",
     "showAdvanced",
+    "collapsed",
     "muted",
     "volume",
     "startTime",
@@ -48,15 +52,19 @@
     "dodge",
     "hard",
   ]);
+  const VALID_TIME_SIGNATURES = new Set(["2/4", "3/4", "4/4", "5/4", "6/8", "7/8"]);
   const PERSISTED_STATE_PROXY_KEYS = Object.freeze([
     "preferredBpm",
+    "preferredTimeSignature",
     "masterMuted",
     "arrangementStepCount",
     "arrangementCopyMode",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_FAVORITE_KEYS = Object.freeze([
+    "name",
     "showAdvanced",
+    "collapsed",
     "muted",
     "volume",
     "startTime",
@@ -94,6 +102,9 @@
   state.audioContext = state.audioContext ?? defaultsFromSaved.audioContext;
   state.webAudioDisabled = state.webAudioDisabled ?? defaultsFromSaved.webAudioDisabled;
   state.preferredBpm = Number(state.preferredBpm) || Number(defaultsFromSaved.preferredBpm) || 92;
+  state.preferredTimeSignature = normalizeTimeSignature(
+    state.preferredTimeSignature ?? defaultsFromSaved.preferredTimeSignature,
+  );
   state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
   state.arrangementStepCount = Number(state.arrangementStepCount) || Number(defaultsFromSaved.arrangementStepCount) || 8;
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
@@ -176,8 +187,14 @@
         return;
       }
 
-      if (key === "showAdvanced" || key === "muted") {
+      if (key === "showAdvanced" || key === "muted" || key === "collapsed") {
         snapshot[key] = !!value;
+        return;
+      }
+
+      if (key === "name") {
+        const nextName = typeof value === "string" ? value.trim() : "";
+        snapshot[key] = nextName.length > 0 ? nextName.slice(0, 48) : null;
         return;
       }
 
@@ -214,6 +231,11 @@
     });
 
     return Object.fromEntries(Object.entries(snapshot).filter(([, value]) => value !== null));
+  }
+
+  function normalizeTimeSignature(raw) {
+    const value = String(raw || "").trim();
+    return VALID_TIME_SIGNATURES.has(value) ? value : "4/4";
   }
 
   function sanitizeArrangementPreferenceState(raw = {}) {
@@ -265,6 +287,14 @@
         track.showAdvanced = stored.showAdvanced;
       }
 
+      if (typeof stored.collapsed === "boolean") {
+        track.collapsed = stored.collapsed;
+      }
+
+      if (typeof stored.name === "string" && stored.name.trim()) {
+        track.name = stored.name.trim();
+      }
+
       if (typeof stored.speed === "number") {
         track.speed = stored.speed;
       }
@@ -295,7 +325,9 @@
 
     rows.forEach((track) => {
       snapshot[track.id] = {
+        name: String(track.name || "").trim(),
         showAdvanced: !!track.showAdvanced,
+        collapsed: !!track.collapsed,
         muted: !!track.muted,
         volume: Number(track.volume) || 0,
         startTime: Number(track.startTime) || 0,
@@ -321,6 +353,7 @@
         version: 2,
         state: {
           preferredBpm: Number(state.preferredBpm) || 92,
+          preferredTimeSignature: state.preferredTimeSignature || "4/4",
           arrangementStepCount: state.arrangementStepCount || 8,
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
@@ -381,6 +414,7 @@
     "audioContext",
     "webAudioDisabled",
     "preferredBpm",
+    "preferredTimeSignature",
     "masterMuted",
     "arrangementStepCount",
     "arrangementCopyMode",
