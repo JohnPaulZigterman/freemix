@@ -1184,6 +1184,11 @@ input[type="number"]:focus {
   cursor: not-allowed;
 }
 
+.transport-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .track-row {
   position: relative;
   display: grid;

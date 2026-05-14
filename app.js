@@ -1501,7 +1501,7 @@ function renderWorkstation() {
       </div>
 
       <div class="transport" aria-label="Transport controls">
-        <button class="transport-button play-button" id="playButton" type="button">Play</button>
+        <button class="transport-button play-button" id="playButton" type="button" ${loadedTracks.length ? "" : "disabled"}>Play</button>
         <button class="transport-button" id="stopButton" type="button">Stop</button>
           <label class="control-field bpm-field">
           <span>BPM</span>

@@ -21,9 +21,12 @@
     const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const bpmInput = player.querySelector("#bpmInput");
+    const hasLoadedSources = tracks.some((track) => track.source);
 
     if (playButton) {
       playButton.classList.toggle("active", !!transport?.active);
+      playButton.toggleAttribute("disabled", !hasLoadedSources);
+      playButton.title = hasLoadedSources ? "Start transport" : "Load a source first";
     }
 
     if (metroButton) {
