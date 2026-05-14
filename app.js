@@ -30,8 +30,6 @@ const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
   new Set([
-    "startTime",
-    "startNumber",
     "volume",
     "speed",
     "pitch",
@@ -351,6 +349,7 @@ function resolvePreferredBpm() {
 const searchResultCache = new Map();
 const searchRequestInflight = new Map();
 const liveControlSchedulers = new Map();
+const startTimeControlTrackers = new Map();
 let arrangementPlayheadStep = -1;
 let activeBeatLightIndex = -1;
 let liveControlPersistTimer = null;
@@ -804,6 +803,23 @@ function queueLiveTrackControlUpdate(control, eventType = "change") {
     return;
   }
 
+  if (controlName === "startTime" || controlName === "startNumber") {
+    const schedulerKey = `${trackId}:${controlName}:high-priority`;
+    const existing = startTimeControlTrackers.get(schedulerKey);
+    if (existing) {
+      window.cancelAnimationFrame(existing);
+    }
+
+    startTimeControlTrackers.set(
+      schedulerKey,
+      window.requestAnimationFrame(() => {
+        startTimeControlTrackers.delete(schedulerKey);
+        handleTrackControl({ type: eventType, target: control, currentTarget: control });
+      }),
+    );
+    return;
+  }
+
   if (!isDebouncedLiveControl(controlName) || eventType !== "input") {
     handleTrackControl({ type: eventType, target: control, currentTarget: control });
     return;
@@ -835,7 +851,7 @@ function queueControlStatePersist(delayMs = LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_
   }, delayMs);
 }
 
-async function primeTrackForTransport(track) {
+async function primeTrackForTransport(track, sessionToken = startTransport.bootToken) {
   if (!track?.source) {
     return;
   }
@@ -855,6 +871,11 @@ async function primeTrackForTransport(track) {
   }
 
   await waitForTrackReady(video);
+  if (startTransport.bootToken !== sessionToken) {
+    return;
+  }
+
+  track.__transportPrimedFor = sessionToken;
   safeSetCurrentTime(video, track);
   setupTrackAudio(track, video);
   applyTrackVolume(track, track);
@@ -2175,6 +2196,15 @@ async function startTransport() {
 
   stopTransport(false, false);
   const startToken = bootToken;
+  tracks.forEach((track) => {
+    if (track.__transportPrimedFor === startToken) {
+      return;
+    }
+
+    if (track.__transportPrimedFor) {
+      delete track.__transportPrimedFor;
+    }
+  });
   startTransport.runningPromise = (async () => {
     try {
       if (typeof ensureAudioContext === "function") {
@@ -2185,7 +2215,7 @@ async function startTransport() {
         tracks
           .filter((track) => track.source)
           .map((track) =>
-            primeTrackForTransport(track).catch((error) => {
+            primeTrackForTransport(track, startToken).catch((error) => {
               console.warn(error);
             }),
           ),
@@ -2201,7 +2231,7 @@ async function startTransport() {
         return;
       }
 
-      startTransportWithState();
+      startTransportWithState(startToken);
     } catch (error) {
       webAudioDisabled = true;
       console.warn(error);
@@ -2214,7 +2244,7 @@ async function startTransport() {
   })();
 }
 
-const pendingAnchorSeeks = new Set();
+const pendingAnchorSeeks = new Map();
 
 function normalizeStartTimeInput(rawValue, track, video) {
   const parsed = Number(rawValue);
@@ -2236,17 +2266,36 @@ function queueStartTimeSeek(video, track) {
     return;
   }
 
-  if (pendingAnchorSeeks.has(trackId)) {
-    return;
+  const existing = pendingAnchorSeeks.get(trackId);
+  if (existing) {
+    if (existing.frameId) {
+      window.cancelAnimationFrame(existing.frameId);
+    }
+
+    if (existing.onLoadedMetadata) {
+      video.removeEventListener("loadedmetadata", existing.onLoadedMetadata);
+    }
+    if (existing.onError) {
+      video.removeEventListener("error", existing.onError);
+    }
   }
 
-  pendingAnchorSeeks.add(trackId);
-  const clearPending = () => {
-    pendingAnchorSeeks.delete(trackId);
+  const requestId = (existing?.requestId ?? 0) + 1;
+  const context = {
+    requestId,
+    trackId,
+    frameId: null,
+    onLoadedMetadata: null,
+    onError: null,
   };
 
-  const applySeek = () => {
-    clearPending();
+  context.onLoadedMetadata = () => {
+    const latest = pendingAnchorSeeks.get(trackId);
+    if (!latest || latest.requestId !== requestId) {
+      return;
+    }
+
+    pendingAnchorSeeks.delete(trackId);
     const currentTrack = getTrackById(trackId);
     if (!currentTrack) {
       return;
@@ -2255,8 +2304,24 @@ function queueStartTimeSeek(video, track) {
     safeSetCurrentTime(video, currentTrack.arrangementClip ?? currentTrack);
   };
 
-  video.addEventListener("loadedmetadata", applySeek, { once: true });
-  video.addEventListener("error", clearPending, { once: true });
+  context.onError = () => {
+    const latest = pendingAnchorSeeks.get(trackId);
+    if (!latest || latest.requestId !== requestId) {
+      return;
+    }
+
+    pendingAnchorSeeks.delete(trackId);
+  };
+
+  if (video.readyState >= 1) {
+    context.frameId = window.requestAnimationFrame(context.onLoadedMetadata);
+    pendingAnchorSeeks.set(trackId, context);
+    return;
+  }
+
+  video.addEventListener("loadedmetadata", context.onLoadedMetadata, { once: true });
+  video.addEventListener("error", context.onError, { once: true });
+  pendingAnchorSeeks.set(trackId, context);
   if (video.networkState !== 0) {
     video.load();
   }
@@ -2450,7 +2515,11 @@ function attemptVideoPlay(video, track, clipState) {
     });
 }
 
-function startTransportWithState() {
+function startTransportWithState(sessionToken = startTransport.bootToken) {
+  if (startTransport.bootToken !== sessionToken) {
+    return;
+  }
+
   if (!tracks.some((track) => track.source)) {
     return;
   }
@@ -2482,6 +2551,7 @@ function startTransportWithState() {
   const barMs = beatMs * 4;
   syncTransportState({
     active: true,
+    sessionToken,
     bpm: resolvePreferredBpm(),
     beatMs,
     barMs,
@@ -2509,6 +2579,34 @@ function stopTransport(resetVideos = true, bumpToken = true) {
     startTransport.bootToken += 1;
   }
   startTransport.runningPromise = null;
+
+  if (startTimeControlTrackers.size > 0) {
+    startTimeControlTrackers.forEach((frameId) => {
+      window.cancelAnimationFrame(frameId);
+    });
+    startTimeControlTrackers.clear();
+  }
+
+  if (pendingAnchorSeeks.size > 0) {
+    pendingAnchorSeeks.forEach((entry, trackId) => {
+      const video = getTrackVideo({ id: trackId });
+      if (!video) {
+        return;
+      }
+
+      if (entry?.onLoadedMetadata) {
+        video.removeEventListener("loadedmetadata", entry.onLoadedMetadata);
+      }
+      if (entry?.onError) {
+        video.removeEventListener("error", entry.onError);
+      }
+      if (entry?.frameId) {
+        window.cancelAnimationFrame(entry.frameId);
+      }
+    });
+    pendingAnchorSeeks.clear();
+  }
+
   const shouldResetVideos = !!resetVideos;
 
   if (arrangementPlayheadUpdateFrame !== null) {
@@ -2586,6 +2684,14 @@ function tickTransport() {
     return;
   }
 
+  if (transport.sessionToken !== startTransport.bootToken) {
+    if (transport.frameId) {
+      cancelAnimationFrame(transport.frameId);
+      transport.frameId = null;
+    }
+    return;
+  }
+
   const now = performance.now();
   const beatMs = transport.beatMs || 60000 / transport.bpm;
   const barMs = transport.barMs || beatMs * 4;
@@ -2624,6 +2730,18 @@ function tickTransport() {
     if (!track.source || !track.stepMs) {
       return;
     }
+
+    if (track.__transportPrimedFor !== transport.sessionToken) {
+      track.nextTriggerAt = now;
+      return;
+    }
+
+    const video = getTrackVideo(track);
+    if (!video || video.readyState < 2 || video.networkState === 0) {
+      track.nextTriggerAt += track.stepMs;
+      return;
+    }
+
     const canPlay = isTrackAudibleInMix(track);
     let triggerBudget = MAX_TRACK_TRIGGER_BURST_PER_FRAME;
 
