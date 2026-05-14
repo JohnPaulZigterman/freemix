@@ -56,11 +56,24 @@ const FX_CONTROLS = [
 let selectedSource = null;
 let transport = null;
 let audioContext = null;
+let webAudioDisabled = false;
 let masterMuted = false;
 let tracks = createInitialTracks();
 let arrangement = createInitialArrangement();
 let videoLayout = "stack";
 let trackSearchRequestCounter = 0;
+
+window.addEventListener("pagehide", () => {
+  hardStopPlayback("page hidden");
+});
+window.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hardStopPlayback("tab hidden");
+  }
+});
+window.addEventListener("beforeunload", () => {
+  hardStopPlayback("unloading");
+});
 
 renderWorkstation();
 setStatus("Ready");
@@ -314,10 +327,11 @@ function renderVideoCell(track, index) {
     <div class="video-cell ${track.color} blend-${track.blendMode} ${track.source ? "has-source" : "no-source"}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
       ${
         track.source
-          ? `<video
+        ? `<video
               class="track-video"
               id="video-${track.id}"
               src="${track.source.mediaUrl}"
+              crossorigin="anonymous"
               preload="metadata"
               playsinline
             ></video>`
@@ -578,13 +592,38 @@ function handleTrackControl(event) {
 }
 
 function startTransport() {
+  if (startTransport.runningPromise) {
+    return;
+  }
+
   if (!tracks.some((track) => track.source)) {
     setStatus("Load a source", true);
     return;
   }
 
   stopTransport(false);
-  ensureAudioContext();
+  const contextStart = ensureAudioContext();
+
+  if (contextStart && typeof contextStart.then === "function") {
+    startTransport.runningPromise = contextStart
+      .catch(() => {})
+      .finally(() => {
+        startTransport.runningPromise = null;
+        if (!document.hidden) {
+          startTransportWithState();
+        }
+      });
+    return;
+  }
+
+  startTransportWithState();
+}
+
+function startTransportWithState() {
+  if (!tracks.some((track) => track.source)) {
+    return;
+  }
+
   tracks.forEach((track) => {
     track.lastStep = -1;
     track.nextTriggerAt = 0;
@@ -637,6 +676,30 @@ function stopTransport(resetVideos = true) {
   if (tracks.some((track) => track.source)) {
     setStatus("Source ready");
   }
+}
+
+function hardStopPlayback(reason = "stopped") {
+  if (reason && typeof reason === "string") {
+    console.info(`audio stop: ${reason}`);
+  }
+
+  masterMuted = true;
+  const metroButton = document.querySelector("#metroButton");
+  if (metroButton) {
+    metroButton.classList.remove("active");
+  }
+
+  stopTransport(true);
+  tracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    if (video) {
+      video.muted = true;
+      video.pause();
+      video.currentTime = 0;
+    }
+  });
+
+  setStatus("Audio stopped");
 }
 
 function tickTransport() {
@@ -740,13 +803,19 @@ function playMetronome(beat) {
 }
 
 function ensureAudioContext() {
-  if (!audioContext) {
+  if (webAudioDisabled) {
+    return Promise.resolve();
+  }
+
+  if (!audioContext || audioContext.state === "closed") {
     audioContext = new AudioContext();
   }
 
   if (audioContext.state === "suspended") {
-    audioContext.resume();
+    return audioContext.resume();
   }
+
+  return Promise.resolve();
 }
 
 function updateTrackDuration(video) {
@@ -795,8 +864,15 @@ function applyTrackVolume(track, state = track) {
 }
 
 function setupTrackAudio(track, video) {
-  if (!audioContext || track.audio || !video) {
-    return;
+  if (webAudioDisabled || !audioContext || !video) {
+    return false;
+  }
+
+  if (track.audio && track.audio.mediaElement !== video) {
+    disposeTrackAudio(track);
+  }
+  if (track.audio) {
+    return true;
   }
 
   try {
@@ -830,6 +906,7 @@ function setupTrackAudio(track, video) {
     output.connect(audioContext.destination);
 
     track.audio = {
+      mediaElement: video,
       source,
       low,
       mid,
@@ -841,9 +918,16 @@ function setupTrackAudio(track, video) {
       reverbGain,
       output,
     };
+    return true;
   } catch (error) {
     console.warn(error);
+    webAudioDisabled = true;
+    tracks.forEach((trackItem) => {
+      disposeTrackAudio(trackItem);
+    });
     track.audio = null;
+    setStatus("WebAudio failed; using native clip audio");
+    return false;
   }
 }
 
