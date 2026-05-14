@@ -6,7 +6,7 @@ const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
 const SEARCH_QUERY_MIN_LENGTH = 2;
-const SEARCH_RESULT_FIELDS = Object.freeze(["identifier", "title", "creator", "year", "description", "runtime", "downloads"]);
+const SEARCH_RESULT_FIELDS = Object.freeze(["identifier", "title", "creator", "year", "runtime", "downloads"]);
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -564,7 +564,6 @@ function normalizeResults(docs) {
       title: textValue(doc.title) || doc.identifier,
       creator: textValue(doc.creator),
       year: textValue(doc.year),
-      description: textValue(doc.description),
       runtime: textValue(doc.runtime),
       downloads: Number(textValue(doc.downloads)) || 0,
       durationSeconds: parseRuntime(textValue(doc.runtime)),
@@ -648,11 +647,11 @@ function buildArchiveSearchQuery(rawQuery) {
   const tokenQueries = tokenizeSearchQuery(normalized)
     .map((token) => {
       const safeToken = escapeArchiveQueryValue(token);
-      return `((title:"${safeToken}") OR (creator:"${safeToken}") OR (description:"${safeToken}") OR (identifier:"${safeToken}"))`;
+      return `((title:"${safeToken}") OR (creator:"${safeToken}") OR (identifier:"${safeToken}"))`;
     })
     .join(" OR ");
 
-  const baseQuery = `((title:"${safeQuery}") OR (creator:"${safeQuery}") OR (description:"${safeQuery}") OR "${safeQuery}")`;
+  const baseQuery = `((title:"${safeQuery}") OR (creator:"${safeQuery}") OR "${safeQuery}")`;
   if (tokenQueries) {
     return `mediatype:(movies) AND (${baseQuery} OR (${tokenQueries}))`;
   }
@@ -666,7 +665,6 @@ function searchRelevance(result, rawQuery) {
   const title = String(result.title || "").toLowerCase();
   const creator = String(result.creator || "").toLowerCase();
   const identifier = String(result.identifier || "").toLowerCase();
-  const description = String(result.description || "").toLowerCase();
 
   let score = 0;
   if (!normalizedQuery) {
@@ -703,9 +701,6 @@ function searchRelevance(result, rawQuery) {
     }
     if (identifier.includes(token)) {
       score += 8;
-    }
-    if (description.includes(token)) {
-      score += 5;
     }
   }
 
