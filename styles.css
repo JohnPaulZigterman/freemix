@@ -296,10 +296,10 @@ input[type="number"]:focus {
 
 .performance-grid {
   display: grid;
-  grid-template-columns: minmax(330px, 1fr) 150px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(190px, 0.95fr);
   gap: 4px;
   align-items: stretch;
-  max-width: 660px;
+  max-width: min(100%, 860px);
   margin-inline: auto;
   margin-top: 4px;
 }
@@ -421,6 +421,7 @@ input[type="number"]:focus {
 }
 
 .arrangement-panel {
+  min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-width: 0;
@@ -443,7 +444,7 @@ input[type="number"]:focus {
 }
 
 .arrangement-length-field {
-  width: 74px;
+  width: 60px;
 }
 
 .arrangement-length-field select {
@@ -481,9 +482,11 @@ input[type="number"]:focus {
 
 .arrangement-grid {
   display: grid;
-  grid-template-columns: 22px repeat(var(--arrangement-steps), minmax(0, 1fr));
-  gap: 2px;
+  width: 100%;
+  grid-template-columns: 18px repeat(var(--arrangement-steps), minmax(0, 1fr));
+  gap: 1px;
   align-content: center;
+  overflow: hidden;
 }
 
 .arrangement-corner,
