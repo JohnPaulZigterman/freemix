@@ -224,7 +224,6 @@ input[type="search"]:focus {
 
 .transport-button,
 .track-toggle,
-.track-advanced-toggle,
 select,
 input[type="number"] {
   min-height: 28px;
@@ -239,7 +238,8 @@ input[type="number"] {
 }
 
 .transport-button,
-.track-toggle {
+.track-toggle,
+.track-advanced-toggle {
   padding: 0 9px;
   cursor: pointer;
 }
@@ -725,7 +725,7 @@ input[type="number"]:focus {
   display: grid;
   grid-template-columns: 44px minmax(92px, 1fr) 38px minmax(72px, 0.72fr) minmax(92px, 1fr) 42px 44px;
   grid-template-areas:
-    "label source source source source source source source"
+    "label source source source source source source"
     "label moment sec energy volume advanced toggle"
     "fx fx fx fx fx fx fx";
   gap: 1px;
@@ -834,6 +834,7 @@ input[type="number"]:focus {
 }
 
 .fx-field {
+  display: grid;
   min-height: 33px;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
