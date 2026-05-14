@@ -120,16 +120,15 @@ const TRACK_CONTROL_SECTIONS = {
         step: "0.01",
       },
     },
-  ],
-  advanced: [
     {
       control: "blendMode",
       type: "select",
       label: "Blend",
       fieldClass: "blend-field",
-      visibility: "advanced",
       options: Object.entries(BLEND_MODES).map(([value, label]) => ({ value, label })),
     },
+  ],
+  advanced: [
     {
       control: "fxChain",
       type: "fx-chain",
@@ -178,13 +177,12 @@ function markAppStateDirty(force = false) {
   }
 }
 
-[
+  [
   "selectedSource",
   "transport",
   "audioContext",
   "webAudioDisabled",
   "masterMuted",
-  "simpleMode",
   "arrangementStepCount",
   "arrangementCopyMode",
   "arrangementCopySourceStep",
@@ -201,7 +199,7 @@ function markAppStateDirty(force = false) {
     },
     set(value) {
       appState[key] = value;
-      if (["simpleMode", "arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"].includes(key)) {
+      if (["arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"].includes(key)) {
         markAppStateDirty(true);
       }
     },
@@ -387,15 +385,6 @@ function renderWorkstation() {
       <div class="transport" aria-label="Transport controls">
         <button class="transport-button play-button" id="playButton" type="button">Play</button>
         <button class="transport-button" id="stopButton" type="button">Stop</button>
-        <button
-          class="transport-button ${simpleMode ? "active" : ""}"
-          id="simpleModeButton"
-          type="button"
-          aria-pressed="${simpleMode}"
-          title="Toggle advanced controls"
-        >
-          ${simpleMode ? "Simple" : "Advanced"}
-        </button>
         <label class="control-field bpm-field">
           <span>BPM</span>
           <input id="bpmInput" type="number" min="40" max="220" step="1" value="${DEFAULT_BPM}">
@@ -451,9 +440,9 @@ function applyTrackControlVisibility(track) {
     return;
   }
 
-  trackRow.classList.toggle("is-simple-mode", !!simpleMode);
+  trackRow.classList.toggle("is-advanced", !!track.showAdvanced);
   trackRow.querySelectorAll(".control-advanced").forEach((control) => {
-    control.classList.toggle("is-hidden", simpleMode);
+    control.classList.toggle("is-hidden", !track.showAdvanced);
   });
 }
 
@@ -611,6 +600,15 @@ function renderTrackControlRow(track) {
       ${basicControls}
       ${advancedControls}
       ${fxChain}
+      <button
+        class="track-advanced-toggle"
+        type="button"
+        data-track-control="${track.id}"
+        data-control="advanced"
+        aria-pressed="${!!track.showAdvanced}"
+      >
+        ${track.showAdvanced ? "Advanced" : "Adv"}
+      </button>
       <button
         class="track-toggle"
         type="button"
@@ -794,6 +792,13 @@ function handleTrackControl(event) {
     control.setAttribute("aria-pressed", String(track.muted));
     applyTrackVolume(track);
   }
+
+  if (controlName === "advanced") {
+    track.showAdvanced = !track.showAdvanced;
+    control.textContent = track.showAdvanced ? "Advanced" : "Adv";
+    control.setAttribute("aria-pressed", String(track.showAdvanced));
+    applyTrackControlVisibility(track);
+  }
 }
 
 function startTransport() {
@@ -881,14 +886,6 @@ function stopTransport(resetVideos = true) {
   if (tracks.some((track) => track.source)) {
     setStatus("Source ready");
   }
-}
-
-function toggleSimpleMode() {
-  simpleMode = !simpleMode;
-  tracks.forEach((track) => {
-    applyTrackControlVisibility(track);
-  });
-  window.freemixRender?.updateTransportRow?.();
 }
 
 function hardStopPlayback(reason = "stopped") {
@@ -1665,6 +1662,7 @@ function createInitialTracks() {
   return TRACKS.map((track, index) => ({
     ...track,
     id: `track-${index + 1}`,
+    showAdvanced: false,
     startTime: index * 2,
     retriggersPerBar: [1, 2, 4, 8][index],
     volume: 0.55,
@@ -1758,18 +1756,6 @@ function escapeHtml(value) {
     }
   }
 
-  const baseToggleSimpleMode = window.toggleSimpleMode;
-  if (typeof baseToggleSimpleMode === "function") {
-    window.toggleSimpleMode = function patchedToggleSimpleMode() {
-      const result = baseToggleSimpleMode.apply(this, arguments);
-      tracks.forEach((track) => {
-        applyTrackControlVisibility(track);
-      });
-      markAppStateDirty();
-      return result;
-    };
-  }
-
   const baseStartTransport = window.startTransport;
   if (typeof baseStartTransport === "function") {
     window.startTransport = function patchedStartTransport() {
@@ -1785,7 +1771,9 @@ function escapeHtml(value) {
       const control = event?.currentTarget;
       const controlName = control?.dataset?.control;
       const needsPersist =
-        controlName && ["muted", "startTime", "startNumber", "retriggersPerBar", "volume", "blendMode", "durationFilter", "fx"].includes(controlName);
+        controlName && ["muted", "startTime", "startNumber", "retriggersPerBar", "volume", "blendMode", "durationFilter", "advanced", "fx"].includes(
+          controlName,
+        );
 
       const result = baseHandleTrackControl.apply(this, arguments);
       if (needsPersist) {
@@ -1888,7 +1876,6 @@ function escapeHtml(value) {
     if (typeof navigator !== "undefined" && typeof window !== "undefined") {
       const payload = {
         selectedSource,
-        simpleMode,
         arrangementStepCount,
         arrangementEnabled: arrangement.enabled,
         arrangementStep: arrangement.step,
@@ -1901,6 +1888,7 @@ function escapeHtml(value) {
           volume: track.volume,
           startTime: track.startTime,
           retriggersPerBar: track.retriggersPerBar,
+          showAdvanced: track.showAdvanced,
           blendMode: track.blendMode,
           durationFilter: track.durationFilter,
           hasSource: !!track.source,

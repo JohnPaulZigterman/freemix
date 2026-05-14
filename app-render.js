@@ -16,7 +16,6 @@
     }
 
     const playButton = player.querySelector("#playButton");
-    const simpleButton = player.querySelector("#simpleModeButton");
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
     const layoutSelect = player.querySelector("#layoutSelect");
@@ -25,12 +24,6 @@
 
     if (playButton) {
       playButton.classList.toggle("active", !!transport?.active);
-    }
-
-    if (simpleButton) {
-      simpleButton.textContent = simpleMode ? "Simple" : "Advanced";
-      simpleButton.classList.toggle("active", simpleMode);
-      simpleButton.setAttribute("aria-pressed", String(simpleMode));
     }
 
     if (metroButton) {

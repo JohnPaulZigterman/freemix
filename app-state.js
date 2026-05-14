@@ -6,7 +6,6 @@
     audioContext: null,
     webAudioDisabled: false,
     masterMuted: false,
-    simpleMode: true,
     arrangementStepCount: 8,
     arrangementCopyMode: false,
     arrangementCopySourceStep: null,
@@ -42,7 +41,6 @@
   state.audioContext = state.audioContext ?? defaultsFromSaved.audioContext;
   state.webAudioDisabled = state.webAudioDisabled ?? defaultsFromSaved.webAudioDisabled;
   state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
-  state.simpleMode = state.simpleMode ?? defaultsFromSaved.simpleMode;
   state.arrangementStepCount = state.arrangementStepCount ?? defaultsFromSaved.arrangementStepCount;
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
   state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
@@ -56,7 +54,6 @@
   state.trackSourceCache = state.trackSourceCache ?? {};
 
   const persistableScalarKeys = new Set([
-    "simpleMode",
     "arrangementStepCount",
     "masterMuted",
     "arrangementCopyMode",
@@ -64,7 +61,15 @@
     "userOnboarding",
   ]);
 
-  const persistableTrackKeys = new Set(["muted", "volume", "startTime", "retriggersPerBar", "blendMode", "durationFilter"]);
+  const persistableTrackKeys = new Set([
+    "showAdvanced",
+    "muted",
+    "volume",
+    "startTime",
+    "retriggersPerBar",
+    "blendMode",
+    "durationFilter",
+  ]);
   let persistTimer = null;
 
   function hydrateTracks(trackRows) {
@@ -97,6 +102,10 @@
       if (typeof stored.durationFilter === "string") {
         track.durationFilter = stored.durationFilter;
       }
+
+      if (typeof stored.showAdvanced === "boolean") {
+        track.showAdvanced = stored.showAdvanced;
+      }
     });
   }
 
@@ -120,6 +129,7 @@
 
     rows.forEach((track) => {
       snapshot[track.id] = {
+        showAdvanced: !!track.showAdvanced,
         muted: !!track.muted,
         volume: Number(track.volume) || 0,
         startTime: Number(track.startTime) || 0,
@@ -141,7 +151,6 @@
       const payload = JSON.stringify({
         version: 2,
         state: {
-          simpleMode: !!state.simpleMode,
           arrangementStepCount: state.arrangementStepCount || 8,
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
@@ -203,7 +212,6 @@
     "audioContext",
     "webAudioDisabled",
     "masterMuted",
-    "simpleMode",
     "arrangementStepCount",
     "arrangementCopyMode",
     "arrangementCopySourceStep",

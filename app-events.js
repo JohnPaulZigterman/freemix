@@ -77,11 +77,6 @@
       return true;
     }
 
-    if (id === "simpleModeButton") {
-      toggleSimpleMode();
-      return true;
-    }
-
     if (id === "metroButton") {
       masterMuted = !masterMuted;
       window.freemixRender?.updateTransportRow?.();

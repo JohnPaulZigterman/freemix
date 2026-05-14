@@ -224,6 +224,7 @@ input[type="search"]:focus {
 
 .transport-button,
 .track-toggle,
+.track-advanced-toggle,
 select,
 input[type="number"] {
   min-height: 28px;
@@ -245,6 +246,7 @@ input[type="number"] {
 
 .transport-button:hover,
 .track-toggle:hover,
+.track-advanced-toggle:hover,
 select:hover,
 input[type="number"]:focus {
   border-color: var(--line-hot);
@@ -721,11 +723,11 @@ input[type="number"]:focus {
 .track-row {
   position: relative;
   display: grid;
-  grid-template-columns: 44px minmax(92px, 1fr) 38px minmax(72px, 0.72fr) minmax(92px, 1fr) 42px;
+  grid-template-columns: 44px minmax(92px, 1fr) 38px minmax(72px, 0.72fr) minmax(92px, 1fr) 42px 44px;
   grid-template-areas:
-    "label source source source source source"
-    "label moment sec energy volume toggle"
-    "fx fx fx fx fx fx";
+    "label source source source source source source source"
+    "label moment sec energy volume advanced toggle"
+    "fx fx fx fx fx fx fx";
   gap: 1px;
   align-items: end;
   padding: 1px;
@@ -797,6 +799,17 @@ input[type="number"]:focus {
 .track-toggle {
   grid-area: toggle;
   align-self: stretch;
+}
+
+.track-advanced-toggle {
+  grid-area: advanced;
+  align-self: stretch;
+}
+
+.track-advanced-toggle[aria-pressed="true"] {
+  border-color: rgba(85, 168, 255, 0.55);
+  background: #1b3350;
+  color: #55a8ff;
 }
 
 .fx-chain {
@@ -975,12 +988,13 @@ input[type="range"] {
 }
 
 .track-row .track-toggle,
+.track-row .track-advanced-toggle,
 .track-row select,
 .track-row input[type="number"] {
   min-height: 18px;
 }
 
-.track-row.is-simple-mode .control-advanced,
+.track-row:not(.is-advanced) .control-advanced,
 .control-advanced.is-hidden {
   display: none;
 }
@@ -1184,12 +1198,12 @@ input[type="range"] {
   }
 
   .track-row {
-    grid-template-columns: 52px minmax(0, 1fr) 50px;
+    grid-template-columns: 52px minmax(0, 1fr) 48px 48px;
     grid-template-areas:
-      "label source source"
-      "label moment sec"
-      "energy volume toggle"
-      "fx fx fx";
+      "label source source source"
+      "label moment sec energy"
+      "volume advanced toggle ."
+      "fx fx fx fx";
   }
 
   .track-source {
