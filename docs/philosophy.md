@@ -139,6 +139,8 @@ The arrangement layer should answer:
 
 The timeline can become richer over time, but the earliest version should prioritize immediacy: record a loop, save a scene, switch scenes, and perform an arrangement.
 
+A first arrangement mode can be a small clip grid rather than a full timeline. Each track gets a row, each bar gets a cell, and clicking a cell captures the current musical and visual state of that track. During arrangement playback, those captured cells should take over from the local live controls so the user can build form without learning timeline editing.
+
 ## Design Values
 
 Freemix should feel:

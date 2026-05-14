@@ -257,6 +257,9 @@ Core features:
 
 - Scene slots.
 - Capture current track states.
+- First pass: an 8-bar grid to the right of the video surface, with one row per track.
+- Clicking a grid cell captures that track's current source, start moment, retrigger rate, volume, mute state, and FX.
+- When arrangement mode is on, captured cells override the matching track's live controls during playback.
 - Switch scenes with quantization.
 - Simple arrangement recording.
 - Minimal timeline showing scene order and duration.

@@ -6,6 +6,7 @@ const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
 const DEFAULT_BPM = 92;
+const ARRANGEMENT_STEPS = 8;
 const TRACKS = [
   { name: "Perc", role: "Impact", color: "green" },
   { name: "Bass", role: "Weight", color: "amber" },
@@ -43,6 +44,7 @@ let transport = null;
 let audioContext = null;
 let masterMuted = false;
 let tracks = createInitialTracks();
+let arrangement = createInitialArrangement();
 let trackSearchRequestCounter = 0;
 
 renderWorkstation();
@@ -218,8 +220,12 @@ function renderWorkstation() {
         </div>
       </div>
 
-      <div class="video-matrix" aria-label="Video sources">
-        ${tracks.map((track) => renderVideoCell(track)).join("")}
+      <div class="performance-grid">
+        <div class="video-matrix" aria-label="Video sources">
+          ${tracks.map((track) => renderVideoCell(track)).join("")}
+        </div>
+
+        ${renderArrangementPanel()}
       </div>
 
       <div class="control-bank" aria-label="Track controls">
@@ -229,6 +235,52 @@ function renderWorkstation() {
   `;
 
   bindWorkstationControls();
+}
+
+function renderArrangementPanel() {
+  return `
+    <aside class="arrangement-panel" aria-label="Arrangement">
+      <div class="arrangement-header">
+        <span>Arr</span>
+        <button
+          class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
+          type="button"
+          id="arrangementToggle"
+          aria-pressed="${arrangement.enabled}"
+        >
+          ${arrangement.enabled ? "On" : "Off"}
+        </button>
+      </div>
+      <div class="arrangement-grid" style="--arrangement-steps: ${ARRANGEMENT_STEPS}">
+        <div class="arrangement-corner">Trk</div>
+        ${Array.from({ length: ARRANGEMENT_STEPS }, (_, index) => `<div class="arrangement-step-label">${index + 1}</div>`).join("")}
+        ${tracks.map((track) => renderArrangementRow(track)).join("")}
+      </div>
+      <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
+    </aside>
+  `;
+}
+
+function renderArrangementRow(track) {
+  return `
+    <div class="arrangement-track-label ${track.color}">${escapeHtml(track.name.slice(0, 1))}</div>
+    ${arrangement.clips
+      .map((step, index) => {
+        const clip = step[track.id];
+        return `
+          <button
+            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${arrangement.step === index ? "playing" : ""}"
+            type="button"
+            data-arr-track="${track.id}"
+            data-arr-step="${index}"
+            title="${clip ? escapeHtml(`${track.name} bar ${index + 1}`) : `Capture ${track.name}`}"
+          >
+            ${clip ? "x" : ""}
+          </button>
+        `;
+      })
+      .join("")}
+  `;
 }
 
 function renderVideoCell(track) {
@@ -389,12 +441,18 @@ function bindWorkstationControls() {
     const now = performance.now();
     transport.nextBeatAt = now;
     transport.beatIndex = 0;
-    updateTrackTriggerGrid(now);
+    if (arrangement.enabled && hasArrangementClips()) {
+      updateArrangementStep(arrangement.step, now, true);
+    } else {
+      updateTrackTriggerGrid(now);
+    }
   });
   document.querySelector("#metroButton").addEventListener("click", () => {
     masterMuted = !masterMuted;
     document.querySelector("#metroButton").classList.toggle("active", !masterMuted);
   });
+  document.querySelector("#arrangementToggle").addEventListener("click", toggleArrangement);
+  document.querySelector("#arrangementClear").addEventListener("click", clearArrangement);
 
   document.querySelectorAll("[data-track-control]").forEach((control) => {
     control.addEventListener("input", handleTrackControl);
@@ -409,7 +467,12 @@ function bindWorkstationControls() {
     video.volume = 1;
   });
 
+  document.querySelectorAll("[data-arr-track]").forEach((cell) => {
+    cell.addEventListener("click", handleArrangementCell);
+  });
+
   tracks.forEach((track) => applyVideoFx(track));
+  renderArrangementPlayhead();
 }
 
 function handleTrackControl(event) {
@@ -488,10 +551,15 @@ function startTransport() {
     startedAt: startAt,
     nextBeatAt: startAt,
     beatIndex: 0,
+    arrangementStep: -1,
     frameId: null,
   };
 
-  updateTrackTriggerGrid(startAt);
+  if (arrangement.enabled && hasArrangementClips()) {
+    updateArrangementStep(0, startAt, true);
+  } else {
+    updateTrackTriggerGrid(startAt);
+  }
 
   document.querySelector("#playButton").classList.add("active");
   setStatus("Playing");
@@ -529,6 +597,7 @@ function tickTransport() {
 
   const now = performance.now();
   const beatMs = 60000 / transport.bpm;
+  const barMs = beatMs * 4;
 
   while (now >= transport.nextBeatAt) {
     const beat = transport.beatIndex % 4;
@@ -538,13 +607,18 @@ function tickTransport() {
     transport.nextBeatAt += beatMs;
   }
 
+  if (arrangement.enabled && hasArrangementClips()) {
+    const currentStep = Math.floor(Math.max(0, now - transport.startedAt) / barMs) % ARRANGEMENT_STEPS;
+    updateArrangementStep(currentStep, transport.startedAt + Math.floor(Math.max(0, now - transport.startedAt) / barMs) * barMs);
+  }
+
   tracks.forEach((track) => {
     if (!track.source || !track.stepMs) {
       return;
     }
 
     while (now >= track.nextTriggerAt) {
-      triggerTrack(track);
+      triggerTrack(track, track.arrangementClip ?? track);
       track.nextTriggerAt += track.stepMs;
     }
   });
@@ -552,18 +626,23 @@ function tickTransport() {
   transport.frameId = requestAnimationFrame(tickTransport);
 }
 
-function triggerTrack(track) {
+function triggerTrack(track, clip = track) {
   const video = getTrackVideo(track);
-  const cell = document.querySelector(`[data-track-id="${track.id}"]`);
+  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
   if (!video || !cell) {
     return;
   }
 
-  video.currentTime = safeStartTime(track, video);
+  if (clip.source?.mediaUrl && video.src !== clip.source.mediaUrl) {
+    video.src = clip.source.mediaUrl;
+    video.load();
+  }
+
+  video.currentTime = safeStartTime(clip, video);
   setupTrackAudio(track, video);
-  applyTrackVolume(track);
-  applyTrackFx(track);
-  applyVideoFx(track);
+  applyTrackVolume(track, clip);
+  applyTrackFx(track, clip);
+  applyVideoFx(track, clip);
   video.play().catch(() => {
     setStatus("Tap play again", true);
   });
@@ -652,15 +731,15 @@ function syncStartControls(track) {
     });
 }
 
-function applyTrackVolume(track) {
+function applyTrackVolume(track, state = track) {
   const video = getTrackVideo(track);
   if (track.audio?.output) {
-    track.audio.output.gain.value = track.muted ? 0 : track.volume;
+    track.audio.output.gain.value = state.muted ? 0 : state.volume;
   }
 
   if (video) {
     video.muted = false;
-    video.volume = track.audio ? 1 : track.muted ? 0 : track.volume;
+    video.volume = track.audio ? 1 : state.muted ? 0 : state.volume;
   }
 }
 
@@ -717,41 +796,41 @@ function setupTrackAudio(track, video) {
   }
 }
 
-function applyTrackFx(track) {
+function applyTrackFx(track, state = track) {
   const audio = track.audio;
   if (!audio) {
     return;
   }
 
-  audio.low.gain.value = track.fx.eqLow;
-  audio.mid.gain.value = track.fx.eqMid;
-  audio.high.gain.value = track.fx.eqHigh;
-  audio.drive.curve = createTubeCurve(track.fx.tube);
+  audio.low.gain.value = state.fx.eqLow;
+  audio.mid.gain.value = state.fx.eqMid;
+  audio.high.gain.value = state.fx.eqHigh;
+  audio.drive.curve = createTubeCurve(state.fx.tube);
   audio.drive.oversample = "4x";
-  audio.delay.delayTime.value = 0.12 + track.fx.delay * 0.5;
-  audio.delayGain.gain.value = track.fx.delay * 0.42;
-  audio.reverbGain.gain.value = track.fx.reverb * 0.45;
+  audio.delay.delayTime.value = 0.12 + state.fx.delay * 0.5;
+  audio.delayGain.gain.value = state.fx.delay * 0.42;
+  audio.reverbGain.gain.value = state.fx.reverb * 0.45;
 }
 
-function applyVideoFx(track) {
-  const cell = document.querySelector(`[data-track-id="${track.id}"]`);
+function applyVideoFx(track, state = track) {
+  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
   if (!cell) {
     return;
   }
 
-  const lowLift = Math.max(track.fx.eqLow, 0) / 12;
-  const midCut = Math.max(-track.fx.eqMid, 0) / 12;
-  const highLift = Math.max(track.fx.eqHigh, 0) / 12;
-  const highCut = Math.max(-track.fx.eqHigh, 0) / 12;
-  const tube = track.fx.tube;
-  const delay = track.fx.delay;
-  const reverb = track.fx.reverb;
+  const lowLift = Math.max(state.fx.eqLow, 0) / 12;
+  const midCut = Math.max(-state.fx.eqMid, 0) / 12;
+  const highLift = Math.max(state.fx.eqHigh, 0) / 12;
+  const highCut = Math.max(-state.fx.eqHigh, 0) / 12;
+  const tube = state.fx.tube;
+  const delay = state.fx.delay;
+  const reverb = state.fx.reverb;
 
   const brightness = 0.86 + highLift * 0.3 - highCut * 0.22 + lowLift * 0.06;
-  const contrast = 1 + tube * 0.45 + Math.max(track.fx.eqMid, 0) * 0.018;
+  const contrast = 1 + tube * 0.45 + Math.max(state.fx.eqMid, 0) * 0.018;
   const saturate = 0.92 + lowLift * 0.25 + highLift * 0.18 + tube * 0.75;
   const blur = reverb * 2.2 + highCut * 1.4 + midCut * 0.6;
-  const hue = track.fx.eqMid * 1.6;
+  const hue = state.fx.eqMid * 1.6;
 
   cell.style.setProperty("--delay-ghost", delay.toFixed(2));
   cell.style.setProperty("--reverb-glow", reverb.toFixed(2));
@@ -827,9 +906,97 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   const beatMs = 60000 / transport.bpm;
   const barMs = beatMs * 4;
   tracks.forEach((track) => {
+    track.arrangementClip = null;
     track.stepMs = barMs / track.retriggersPerBar;
     track.nextTriggerAt = startAt;
   });
+}
+
+function handleArrangementCell(event) {
+  const cell = event.currentTarget;
+  const track = tracks.find((item) => item.id === cell.dataset.arrTrack);
+  const stepIndex = Number(cell.dataset.arrStep);
+  if (!track || !Number.isInteger(stepIndex)) {
+    return;
+  }
+
+  if (!track.source) {
+    setStatus(`${track.name}: load source first`, true);
+    return;
+  }
+
+  arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
+  arrangement.step = stepIndex;
+  setStatus(`${track.name}: placed in ${stepIndex + 1}`);
+  renderWorkstation();
+}
+
+function toggleArrangement() {
+  arrangement.enabled = !arrangement.enabled;
+  if (transport?.active) {
+    const now = performance.now();
+    if (arrangement.enabled && hasArrangementClips()) {
+      updateArrangementStep(arrangement.step, now, true);
+    } else {
+      updateTrackTriggerGrid(now);
+    }
+  }
+
+  renderWorkstation();
+  setStatus(arrangement.enabled ? "Arrangement on" : "Arrangement off");
+}
+
+function clearArrangement() {
+  arrangement = createInitialArrangement();
+  if (transport?.active) {
+    updateTrackTriggerGrid(performance.now());
+  }
+
+  renderWorkstation();
+  setStatus("Arrangement cleared");
+}
+
+function updateArrangementStep(stepIndex, barStartAt, force = false) {
+  if (!transport || (!force && transport.arrangementStep === stepIndex)) {
+    return;
+  }
+
+  transport.arrangementStep = stepIndex;
+  arrangement.step = stepIndex;
+  const beatMs = 60000 / transport.bpm;
+  const barMs = beatMs * 4;
+  const step = arrangement.clips[stepIndex];
+
+  tracks.forEach((track) => {
+    const clip = step[track.id] ?? null;
+    track.arrangementClip = clip;
+    track.stepMs = clip ? barMs / clip.retriggersPerBar : 0;
+    track.nextTriggerAt = barStartAt;
+    track.lastStep = -1;
+  });
+
+  renderArrangementPlayhead();
+}
+
+function renderArrangementPlayhead() {
+  document.querySelectorAll(".arrangement-cell").forEach((cell) => {
+    cell.classList.toggle("playing", Number(cell.dataset.arrStep) === arrangement.step);
+  });
+}
+
+function hasArrangementClips() {
+  return arrangement.clips.some((step) => Object.keys(step).length > 0);
+}
+
+function captureTrackClip(track) {
+  return {
+    source: track.source,
+    startTime: track.startTime,
+    retriggersPerBar: track.retriggersPerBar,
+    volume: track.volume,
+    muted: track.muted,
+    fx: { ...track.fx },
+  };
 }
 
 function queueTrackSearch(track, query) {
@@ -1001,11 +1168,20 @@ function createInitialTracks() {
     lastStep: -1,
     nextTriggerAt: 0,
     stepMs: 0,
+    arrangementClip: null,
     source: null,
     durationFilter: "any",
     searchTimer: null,
     searchRequestId: 0,
   }));
+}
+
+function createInitialArrangement() {
+  return {
+    enabled: false,
+    step: 0,
+    clips: Array.from({ length: ARRANGEMENT_STEPS }, () => ({})),
+  };
 }
 
 function setStatus(message, isError = false) {
