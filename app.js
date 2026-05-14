@@ -14,6 +14,7 @@ const SOURCE_METADATA_CACHE_MAX_SIZE = 48;
 const SEARCH_REQUEST_IN_FLIGHT_TTL_MS = 8_000;
 const SOURCE_METADATA_REQUEST_TTL_MS = 60_000;
 const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
+const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
   new Set([
     "startTime",
@@ -233,6 +234,7 @@ const searchResultCache = new Map();
 const searchRequestInflight = new Map();
 const liveControlSchedulers = new Map();
 let arrangementPlayheadStep = -1;
+let liveControlPersistTimer = null;
 
 function getTrackById(trackId) {
   if (!trackId) {
@@ -406,7 +408,7 @@ function queueLiveTrackControlUpdate(control, eventType = "change") {
     return;
   }
 
-  if (!isDebouncedLiveControl(controlName)) {
+  if (!isDebouncedLiveControl(controlName) || eventType !== "input") {
     handleTrackControl({ type: eventType, target: control, currentTarget: control });
     return;
   }
@@ -424,6 +426,29 @@ function queueLiveTrackControlUpdate(control, eventType = "change") {
       handleTrackControl({ type: eventType, target: control, currentTarget: control });
     }, LIVE_CONTROL_UPDATE_DEBOUNCE_MS),
   );
+}
+
+function queueControlStatePersist(delayMs = LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS) {
+  if (liveControlPersistTimer !== null) {
+    window.clearTimeout(liveControlPersistTimer);
+  }
+
+  liveControlPersistTimer = window.setTimeout(() => {
+    liveControlPersistTimer = null;
+    markAppStateDirty();
+  }, delayMs);
+}
+
+function resyncTrackTiming(track) {
+  if (!track || !transport?.active) {
+    return;
+  }
+
+  const beatMs = 60000 / transport.bpm;
+  const barMs = beatMs * 4;
+  track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
+  track.nextTriggerAt = Math.max(performance.now(), transport.nextBeatAt || performance.now());
+  track.lastStep = -1;
 }
 
 window.freemixQueueTrackControlUpdate = queueLiveTrackControlUpdate;
@@ -1450,7 +1475,7 @@ function handleTrackControl(event) {
     }
 
     syncStartControls(track);
-    if (video) {
+    if (video && (!transport?.active || event?.type !== "input")) {
       safeSetCurrentTime(video, track.arrangementClip ?? track);
     }
 
@@ -1465,6 +1490,7 @@ function handleTrackControl(event) {
   if (controlName === "retriggersPerBar") {
     track.retriggersPerBar = normalizeRetriggersPerBar(control.value);
     track.lastStep = -1;
+    resyncTrackTiming(track);
     previewTrack(track);
   }
 
@@ -1503,7 +1529,11 @@ function handleTrackControl(event) {
   }
 
   if (controlName !== "sourceSearch") {
-    markAppStateDirty();
+    if (event?.type === "input") {
+      queueControlStatePersist();
+    } else {
+      markAppStateDirty();
+    }
   }
 }
 
