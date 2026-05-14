@@ -72,6 +72,10 @@
     if (trackCell) {
       trackCell.outerHTML = renderVideoCell(track, Math.max(trackIndex, 0));
     }
+
+    if (typeof window.applyTrackControlVisibility === "function") {
+      window.applyTrackControlVisibility(track);
+    }
   }
 
   function buildArrangementGridMarkup() {

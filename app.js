@@ -54,24 +54,128 @@ const FX_CONTROLS = [
   { key: "reverb", label: "Verb", min: 0, max: 1, step: 0.01 },
 ];
 
+const TRACK_CONTROL_SECTIONS = {
+  source: [
+    {
+      control: "sourceSearch",
+      type: "search",
+      label: "Source",
+      attrs: {
+        type: "search",
+        placeholder: "Search video",
+      },
+      fieldClass: "track-source-search",
+    },
+    {
+      control: "durationFilter",
+      type: "select",
+      label: "Length",
+      fieldClass: "duration-filter",
+      options: Object.entries(DURATION_FILTERS).map(([value, filter]) => ({
+        value,
+        label: filter.label,
+      })),
+    },
+  ],
+  basic: [
+    {
+      control: "startTime",
+      type: "range",
+      label: "Moment",
+      fieldClass: "start-field",
+      inputProps: {
+        min: "0",
+        max: "120",
+        step: "0.1",
+      },
+    },
+    {
+      control: "startNumber",
+      type: "number",
+      label: "Sec",
+      fieldClass: "compact-number",
+      inputProps: {
+        min: "0",
+        step: "0.1",
+      },
+    },
+    {
+      control: "retriggersPerBar",
+      type: "select",
+      label: "Energy",
+      fieldClass: "energy-field",
+      options: Object.entries(RETRIGGER_LABELS).map(([value, label]) => ({
+        value,
+        label,
+      })),
+    },
+    {
+      control: "volume",
+      type: "range",
+      label: "Vol",
+      fieldClass: "volume-field",
+      inputProps: {
+        min: "0",
+        max: "1",
+        step: "0.01",
+      },
+    },
+  ],
+  advanced: [
+    {
+      control: "blendMode",
+      type: "select",
+      label: "Blend",
+      fieldClass: "blend-field",
+      visibility: "advanced",
+      options: Object.entries(BLEND_MODES).map(([value, label]) => ({ value, label })),
+    },
+    {
+      control: "fxChain",
+      type: "fx-chain",
+      label: "FX",
+      fieldClass: "fx-chain",
+      visibility: "advanced",
+    },
+  ],
+};
+
 const appState = window.freemixState || {};
-appState.selectedSource ??= null;
-appState.transport ??= null;
-appState.audioContext ??= null;
-appState.webAudioDisabled ??= false;
-appState.masterMuted ??= false;
-appState.simpleMode ??= true;
-appState.arrangementStepCount ??= DEFAULT_ARRANGEMENT_STEPS;
-appState.arrangementCopyMode ??= false;
-appState.arrangementCopySourceStep ??= null;
-appState.videoLayout ??= "stack";
-appState.trackSearchRequestCounter ??= 0;
+const appStateManager = window.freemixStateManager || {};
+const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
 
 if (!appState.tracks) {
   appState.tracks = createInitialTracks();
 }
+
+if (typeof appStateManager.hydrateTracks === "function") {
+  appStateManager.hydrateTracks(appState.tracks);
+}
+
 if (!appState.arrangement) {
-  appState.arrangement = createInitialArrangement(appState.arrangementStepCount);
+  appState.arrangement = createInitialArrangement(appState.arrangementStepCount || DEFAULT_ARRANGEMENT_STEPS);
+} else if (typeof appStateManager.hydrateArrangement === "function") {
+  appStateManager.hydrateArrangement(appState.arrangement);
+}
+
+if (!appState.userOnboarding || !appState.userOnboarding.phase) {
+  appState.userOnboarding = { phase: "seed", needsHint: true };
+}
+
+function markAppStateDirty(force = false) {
+  if (typeof appState.__markStateDirty === "function") {
+    appState.__markStateDirty(appState.tracks, force);
+    return;
+  }
+
+  if (typeof appStateManager.markStateDirty === "function") {
+    appStateManager.markStateDirty(appState.tracks, force);
+    return;
+  }
+
+  if (typeof persistState === "function") {
+    persistState();
+  }
 }
 
 [
@@ -88,6 +192,7 @@ if (!appState.arrangement) {
   "arrangement",
   "videoLayout",
   "trackSearchRequestCounter",
+  "userOnboarding",
 ].forEach((key) => {
   Object.defineProperty(window, key, {
     configurable: true,
@@ -96,9 +201,27 @@ if (!appState.arrangement) {
     },
     set(value) {
       appState[key] = value;
+      if (["simpleMode", "arrangementStepCount", "masterMuted", "videoLayout", "userOnboarding"].includes(key)) {
+        markAppStateDirty(true);
+      }
     },
   });
 });
+
+const debugMode = new URLSearchParams(window.location.search).get("mode") === "dev";
+
+function showGuidance(message) {
+  if (appState.userOnboarding?.needsHint) {
+    setStatus(message);
+  }
+}
+
+function clearGuidanceHint() {
+  if (appState.userOnboarding?.needsHint) {
+    appState.userOnboarding.needsHint = false;
+    markAppStateDirty(true);
+  }
+}
 
 window.addEventListener("pagehide", () => {
   hardStopPlayback("page hidden");
@@ -314,8 +437,24 @@ function renderWorkstation() {
   `;
 
   bindWorkstationControls();
+  tracks.forEach(applyTrackControlVisibility);
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
+  if (appState.userOnboarding?.needsHint) {
+    showGuidance("What now: load one source per track, then press Play");
+  }
+}
+
+function applyTrackControlVisibility(track) {
+  const trackRow = playerPanel.querySelector(`article.track-row[data-track-row-id="${track.id}"]`);
+  if (!trackRow) {
+    return;
+  }
+
+  trackRow.classList.toggle("is-simple-mode", !!simpleMode);
+  trackRow.querySelectorAll(".control-advanced").forEach((control) => {
+    control.classList.toggle("is-hidden", simpleMode);
+  });
 }
 
 function renderArrangementPanel() {
@@ -336,7 +475,7 @@ function renderArrangementPanel() {
             type="button"
             id="arrangementToggle"
           aria-pressed="${arrangement.enabled}"
-        >
+            >
           ${arrangement.enabled ? "On" : "Off"}
         </button>
           <button
@@ -347,7 +486,16 @@ function renderArrangementPanel() {
           >
             ${arrangementCopyMode ? "Copying" : "Copy"}
           </button>
+          <button
+            class="arrangement-action"
+            type="button"
+            id="arrangementCopyAllButton"
+            title="Copy current section into all empty sections"
+          >
+            Fill
+          </button>
       </div>
+        ${renderDebugPanel()}
         <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}">
           <div class="arrangement-corner">Trk</div>
           ${Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("")}
@@ -355,6 +503,21 @@ function renderArrangementPanel() {
       </div>
       <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
     </aside>
+  `;
+}
+
+function renderDebugPanel() {
+  if (!debugMode) {
+    return "";
+  }
+
+  return `
+    <div class="debug-actions" role="group" aria-label="Debug actions">
+      <button class="debug-action-button" type="button" data-debug-action="loadMockSource">Load mock source</button>
+      <button class="debug-action-button" type="button" data-debug-action="seedArrangement">Seed arrangement</button>
+      <button class="debug-action-button" type="button" data-debug-action="dumpState">Dump state</button>
+      <button class="debug-action-button" type="button" data-debug-action="simulateTransport">8-bar sweep</button>
+    </div>
   `;
 }
 
@@ -423,6 +586,13 @@ function renderTrackControlRow(track) {
   const sourceMeta = track.source
     ? [track.source.creator, track.source.year].filter(Boolean).join(" - ") || track.source.mediaFormat
     : "Search to load video";
+  const sourceControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.source);
+  const basicControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.basic);
+  const advancedControls = TRACK_CONTROL_SECTIONS.advanced
+    .filter((control) => control.type !== "fx-chain")
+    .map((control) => renderTrackControlField(track, control))
+    .join("");
+  const fxChain = renderTrackFxChain(track);
 
   return `
     <article class="track-row ${track.color}" data-track-row-id="${track.id}">
@@ -431,102 +601,16 @@ function renderTrackControlRow(track) {
         <span>${escapeHtml(track.role)}</span>
       </div>
       <div class="track-source">
-        <label class="control-field track-source-search">
-          <span>Source</span>
-          <input
-            type="search"
-            placeholder="Search video"
-            autocomplete="off"
-            spellcheck="false"
-            value=""
-            data-track-control="${track.id}"
-            data-control="sourceSearch"
-          >
-        </label>
-        <label class="control-field duration-filter">
-          <span>Length</span>
-          <select data-track-control="${track.id}" data-control="durationFilter">
-            ${Object.entries(DURATION_FILTERS)
-              .map(
-                ([value, filter]) =>
-                  `<option value="${value}" ${value === track.durationFilter ? "selected" : ""}>${filter.label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
-        ${simpleMode ? "" : `<label class="control-field blend-field">
-          <span>Blend</span>
-          <select data-track-control="${track.id}" data-control="blendMode">
-            ${Object.entries(BLEND_MODES)
-              .map(
-                ([value, label]) =>
-                  `<option value="${value}" ${value === track.blendMode ? "selected" : ""}>${label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>`}
+        ${sourceControls}
         <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
           <strong>${escapeHtml(sourceTitle)}</strong>
           <span>${escapeHtml(sourceMeta)}</span>
         </div>
         <div class="track-results" id="results-${track.id}" hidden></div>
       </div>
-      <label class="control-field start-field">
-        <span>Moment</span>
-        <input
-          type="range"
-          min="0"
-          max="120"
-          step="0.1"
-          value="${track.startTime}"
-          data-track-control="${track.id}"
-          data-control="startTime"
-        >
-      </label>
-      <label class="control-field compact-number">
-        <span>Sec</span>
-        <input
-          type="number"
-          min="0"
-          step="0.1"
-          value="${track.startTime}"
-          data-track-control="${track.id}"
-          data-control="startNumber"
-        >
-      </label>
-      <label class="control-field energy-field">
-        <span>Energy</span>
-        <select data-track-control="${track.id}" data-control="retriggersPerBar">
-          ${Object.entries(RETRIGGER_LABELS)
-            .map(
-              ([value, label]) =>
-                `<option value="${value}" ${Number(value) === track.retriggersPerBar ? "selected" : ""}>${label}</option>`,
-            )
-            .join("")}
-        </select>
-      </label>
-      <label class="control-field volume-field">
-        <span>Vol</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value="${track.volume}"
-          data-track-control="${track.id}"
-          data-control="volume"
-        >
-      </label>
-      ${
-        simpleMode
-          ? ""
-          : `
-      <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
-        <span class="fx-title">FX</span>
-        ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
-      </div>
-      `
-      }
+      ${basicControls}
+      ${advancedControls}
+      ${fxChain}
       <button
         class="track-toggle"
         type="button"
@@ -540,9 +624,84 @@ function renderTrackControlRow(track) {
   `;
 }
 
+function renderTrackControls(track, controls) {
+  return controls
+    .map((control) => renderTrackControlField(track, control))
+    .join("");
+}
+
+function renderTrackControlField(track, control) {
+  const isAdvanced = control.visibility === "advanced";
+  const className = `control-field ${control.fieldClass || ""}`.trim();
+  const trackAttributes = `data-track-control="${track.id}" data-control="${control.control}"`;
+  const visibilityClass = isAdvanced ? "control-advanced" : "";
+  const resolvedValue = control.control === "startNumber" ? track.startTime : track[control.control];
+
+  if (control.type === "search") {
+    return `
+      <label class="control-field ${control.fieldClass}">
+        <span>${control.label}</span>
+        <input
+          type="${control.attrs.type}"
+          placeholder="${control.attrs.placeholder}"
+          autocomplete="off"
+          spellcheck="false"
+          value=""
+          class="${visibilityClass}"
+          ${trackAttributes}
+        >
+      </label>
+    `;
+  }
+
+  if (control.type === "select") {
+    return `
+      <label class="${className}">
+        <span>${control.label}</span>
+        <select class="${visibilityClass}" ${trackAttributes}>
+          ${control.options
+            .map(
+              (option) =>
+                `<option value="${option.value}" ${String(option.value) === String(track[control.control]) ? "selected" : ""}>${option.label}</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+    `;
+  }
+
+  if (control.type === "range" || control.type === "number") {
+    return `
+      <label class="${className}">
+        <span>${control.label}</span>
+        <input
+          type="${control.type}"
+          min="${control.inputProps.min}"
+          max="${control.inputProps.max ?? ""}"
+          step="${control.inputProps.step}"
+          value="${resolvedValue}"
+          class="${visibilityClass}"
+          ${trackAttributes}
+        >
+      </label>
+    `;
+  }
+
+  return "";
+}
+
+function renderTrackFxChain(track) {
+  return `
+    <div class="fx-chain control-advanced" aria-label="${escapeHtml(track.name)} effects chain">
+      <span class="fx-title">FX</span>
+      ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
+    </div>
+  `;
+}
+
 function renderFxControl(track, fxControl) {
   return `
-    <label class="control-field fx-field">
+    <label class="control-field fx-field control-advanced">
       <span>${fxControl.label}</span>
       <input
         type="range"
@@ -726,7 +885,10 @@ function stopTransport(resetVideos = true) {
 
 function toggleSimpleMode() {
   simpleMode = !simpleMode;
-  renderWorkstation();
+  tracks.forEach((track) => {
+    applyTrackControlVisibility(track);
+  });
+  window.freemixRender?.updateTransportRow?.();
 }
 
 function hardStopPlayback(reason = "stopped") {
@@ -1164,10 +1326,12 @@ function toggleArrangementCopyMode() {
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    markAppStateDirty();
     return;
   }
 
   renderWorkstation();
+  markAppStateDirty();
 }
 
 function pasteArrangementSection(targetStep) {
@@ -1192,10 +1356,12 @@ function pasteArrangementSection(targetStep) {
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    markAppStateDirty();
     return;
   }
 
   renderWorkstation();
+  markAppStateDirty();
 }
 
 function toggleArrangement() {
@@ -1211,10 +1377,12 @@ function toggleArrangement() {
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    markAppStateDirty();
   } else {
     renderWorkstation();
   }
   setStatus(arrangement.enabled ? "Arrangement on" : "Arrangement off");
+  markAppStateDirty();
 }
 
 function clearArrangement() {
@@ -1231,6 +1399,7 @@ function clearArrangement() {
     renderWorkstation();
   }
   setStatus("Arrangement cleared");
+  markAppStateDirty();
 }
 
 function updateArrangementStepCount(event) {
@@ -1239,13 +1408,29 @@ function updateArrangementStepCount(event) {
     return;
   }
 
+  const previousArrangement = arrangement;
   stopTransport(false);
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementStepCount = nextLength;
   arrangement = createInitialArrangement(nextLength);
-  renderWorkstation();
+  if (previousArrangement?.clips) {
+    for (let index = 0; index < Math.min(previousArrangement.clips.length, arrangement.clips.length); index += 1) {
+      arrangement.clips[index] = previousArrangement.clips[index] || {};
+    }
+  }
+
+  const previousStep = Number(previousArrangement?.step) || 0;
+  arrangement.step = Math.min(previousStep, nextLength - 1);
+
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+    window.freemixRender.updateSourceStrip?.();
+  } else {
+    renderWorkstation();
+  }
   setStatus(`Arrangement: ${nextLength} bars`);
+  markAppStateDirty();
 }
 
 function updateArrangementStep(stepIndex, barStartAt, force = false) {
@@ -1540,3 +1725,267 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+(function initFreemixRuntimeUX() {
+  if (window.appUXPatched) {
+    return;
+  }
+
+  const DEMO_VIDEO_SOURCE = {
+    identifier: "freemix-demo",
+    title: "Debug sample loop",
+    creator: "Sample",
+    year: "2026",
+    runtime: "0:16",
+    mediaUrl: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+    mediaName: "demo.mp4",
+    mediaFormat: "video/mp4",
+    archiveUrl: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+  };
+
+  function markOnboardingProgress(nextPhase, hintMessage) {
+    appState.userOnboarding.phase = nextPhase;
+    if (!appState.userOnboarding.needsHint) {
+      return;
+    }
+
+    if (hintMessage) {
+      showGuidance(hintMessage);
+    }
+
+    if (nextPhase === "done") {
+      clearGuidanceHint();
+    }
+  }
+
+  const baseToggleSimpleMode = window.toggleSimpleMode;
+  if (typeof baseToggleSimpleMode === "function") {
+    window.toggleSimpleMode = function patchedToggleSimpleMode() {
+      const result = baseToggleSimpleMode.apply(this, arguments);
+      tracks.forEach((track) => {
+        applyTrackControlVisibility(track);
+      });
+      markAppStateDirty();
+      return result;
+    };
+  }
+
+  const baseStartTransport = window.startTransport;
+  if (typeof baseStartTransport === "function") {
+    window.startTransport = function patchedStartTransport() {
+      const result = baseStartTransport.apply(this, arguments);
+      markOnboardingProgress("done", "What now: Fine-tune track controls while it cycles");
+      return result;
+    };
+  }
+
+  const baseHandleTrackControl = window.handleTrackControl;
+  if (typeof baseHandleTrackControl === "function") {
+    window.handleTrackControl = function patchedHandleTrackControl(event) {
+      const control = event?.currentTarget;
+      const controlName = control?.dataset?.control;
+      const needsPersist =
+        controlName && ["muted", "startTime", "startNumber", "retriggersPerBar", "volume", "blendMode", "durationFilter", "fx"].includes(controlName);
+
+      const result = baseHandleTrackControl.apply(this, arguments);
+      if (needsPersist) {
+        markAppStateDirty();
+      }
+
+      if (appState.userOnboarding?.needsHint) {
+        if (controlName === "sourceSearch") {
+          markOnboardingProgress("armed", "What now: set start and energy, then press Play");
+        } else {
+          markOnboardingProgress("armed", "What now: tune controls and press Play");
+        }
+      }
+
+      return result;
+    };
+  }
+
+  const baseLoadTrackSource = window.loadTrackSource;
+  if (typeof baseLoadTrackSource === "function") {
+    window.loadTrackSource = async function patchedLoadTrackSource(track, result) {
+      const loaded = await baseLoadTrackSource.apply(this, arguments);
+      markOnboardingProgress("armed", "What now: adjust Moment and Energy, then press Play");
+      markAppStateDirty();
+      return loaded;
+    };
+  }
+
+  const baseHandleArrangementCell = window.handleArrangementCell;
+  if (typeof baseHandleArrangementCell === "function") {
+    window.handleArrangementCell = function patchedHandleArrangementCell(event) {
+      const arrangementCell = event.currentTarget;
+      const result = baseHandleArrangementCell.apply(this, arguments);
+      const trackId = arrangementCell?.dataset?.arrTrack;
+      const stepIndex = Number(arrangementCell?.dataset?.arrStep);
+      if (trackId && Number.isInteger(stepIndex)) {
+        markAppStateDirty();
+      }
+
+      if (appState.userOnboarding?.needsHint && arrangement.clips[stepIndex]?.[trackId]) {
+        markOnboardingProgress("arrange", "What now: use arrangement copy to fill other sections");
+      }
+
+      return result;
+    };
+  }
+
+  window.copyCurrentArrangementSectionToAll = function copyCurrentArrangementSectionToAll() {
+    const sourceIndex = arrangement.step;
+    const sourceStep = arrangement.clips[sourceIndex];
+    if (!sourceStep || !Object.keys(sourceStep).length) {
+      setStatus("Capture a section first", true);
+      return;
+    }
+
+    for (let stepIndex = 0; stepIndex < arrangementStepCount; stepIndex += 1) {
+      if (stepIndex === sourceIndex) {
+        continue;
+      }
+
+      if (Object.keys(arrangement.clips[stepIndex]).length === 0) {
+        arrangement.clips[stepIndex] = cloneArrangementStep(sourceStep);
+      }
+    }
+
+    if (window.freemixRender?.updateArrangementGrid) {
+      window.freemixRender.updateArrangementGrid();
+    }
+
+    setStatus("Current section copied into empty sections");
+    markAppStateDirty();
+  };
+
+  window.seedArrangement = function seedArrangement() {
+    const baseStep = {};
+    tracks.forEach((track) => {
+      if (track.source) {
+        baseStep[track.id] = captureTrackClip(track);
+      }
+    });
+
+    if (!Object.keys(baseStep).length) {
+      setStatus("Load a source first", true);
+      return;
+    }
+
+    arrangement.clips.forEach((step, index) => {
+      arrangement.clips[index] = cloneArrangementStep(baseStep);
+    });
+    arrangement.enabled = true;
+    if (window.freemixRender?.updateArrangementGrid) {
+      window.freemixRender.updateArrangementGrid();
+    }
+
+    setStatus("Arrangement seeded from current states");
+    markAppStateDirty();
+  };
+
+  window.dumpState = function dumpState() {
+    if (typeof navigator !== "undefined" && typeof window !== "undefined") {
+      const payload = {
+        selectedSource,
+        simpleMode,
+        arrangementStepCount,
+        arrangementEnabled: arrangement.enabled,
+        arrangementStep: arrangement.step,
+        arrangementCopyMode,
+        transportActive: !!transport?.active,
+        transportBpm: transport?.bpm,
+        tracks: tracks.map((track) => ({
+          id: track.id,
+          muted: track.muted,
+          volume: track.volume,
+          startTime: track.startTime,
+          retriggersPerBar: track.retriggersPerBar,
+          blendMode: track.blendMode,
+          durationFilter: track.durationFilter,
+          hasSource: !!track.source,
+          sourceIdentifier: track.source?.identifier,
+        })),
+      };
+
+      console.table(payload.tracks);
+      console.log("[freemix-state]", payload);
+      setStatus("State dumped to console");
+    }
+  };
+
+  window.loadMockSource = function loadMockSource() {
+    tracks.forEach((track) => {
+      stopTransport(false);
+      disposeTrackAudio(track);
+      track.source = { ...DEMO_VIDEO_SOURCE };
+      track.startTime = 0;
+      track.lastStep = -1;
+      track.durationFilter = track.durationFilter || "quick";
+      if (window.freemixRender?.updateTrackRow) {
+        window.freemixRender.updateTrackRow(track);
+      }
+    });
+    selectedSource = tracks[0]?.source ?? selectedSource;
+    if (window.freemixRender?.updateSourceStrip) {
+      window.freemixRender.updateSourceStrip();
+    }
+
+    setStatus("Debug: loaded demo source on all tracks");
+    markAppStateDirty();
+  };
+
+  window.simulateTransportSweep = function simulateTransportSweep() {
+    const sweepBars = Math.min(arrangementStepCount, 8);
+    if (transport?.active) {
+      setStatus("Transport is already active");
+      return;
+    }
+
+    if (!hasArrangementClips()) {
+      seedArrangement();
+    }
+
+    if (!arrangement.enabled) {
+      toggleArrangement();
+    }
+
+    startTransport();
+    const beatMs = 60000 / (transport?.bpm || DEFAULT_BPM);
+    const barMs = beatMs * 4;
+    window.setTimeout(() => {
+      if (transport?.active) {
+        stopTransport();
+      }
+
+      setStatus("8-bar debug transport sweep complete");
+      clearGuidanceHint();
+    }, barMs * sweepBars + 250);
+  };
+
+  window.performDebugAction = function performDebugAction(action) {
+    if (action === "loadMockSource") {
+      loadMockSource();
+      return;
+    }
+
+    if (action === "seedArrangement") {
+      seedArrangement();
+      return;
+    }
+
+    if (action === "dumpState") {
+      dumpState();
+      return;
+    }
+
+    if (action === "simulateTransport") {
+      simulateTransportSweep();
+      return;
+    }
+
+    setStatus("Unknown debug action");
+  };
+
+  window.appUXPatched = true;
+})();

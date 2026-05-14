@@ -146,6 +146,11 @@ input[type="search"]:focus {
   box-shadow: 0 0 0 2px rgba(22, 199, 132, 0.3);
 }
 
+* :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .player-panel {
   margin-top: 5px;
   overflow: hidden;
@@ -423,7 +428,10 @@ input[type="number"]:focus {
 .arrangement-panel {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr auto auto;
+  max-width: 100%;
+  max-height: 360px;
+  overflow: hidden;
   min-width: 0;
   padding: 4px;
   border: 1px solid var(--line);
@@ -486,7 +494,8 @@ input[type="number"]:focus {
   grid-template-columns: 18px repeat(var(--arrangement-steps), minmax(0, 1fr));
   gap: 1px;
   align-content: center;
-  overflow: hidden;
+  overflow: auto;
+  max-height: 210px;
 }
 
 .arrangement-corner,
@@ -502,6 +511,7 @@ input[type="number"]:focus {
 
 .arrangement-step-label {
   min-height: 0;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 0;
   background: #111315;
@@ -547,6 +557,7 @@ input[type="number"]:focus {
 .arrangement-cell {
   display: grid;
   min-width: 0;
+  min-height: 0;
   aspect-ratio: 1;
   place-items: center;
   border: 1px solid #3d444b;
@@ -571,6 +582,19 @@ input[type="number"]:focus {
 .arrangement-clear {
   margin-top: 4px;
   width: 100%;
+}
+
+.arrangement-action {
+  min-height: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--control);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
 .video-cell.green,
@@ -954,6 +978,32 @@ input[type="range"] {
 .track-row select,
 .track-row input[type="number"] {
   min-height: 18px;
+}
+
+.track-row.is-simple-mode .control-advanced,
+.control-advanced.is-hidden {
+  display: none;
+}
+
+.debug-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  margin-top: 3px;
+}
+
+.debug-action-button {
+  min-height: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: #2b2f34;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.6rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 2px 3px;
 }
 
 .track-toggle[aria-pressed="true"] {

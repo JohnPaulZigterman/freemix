@@ -3,6 +3,7 @@
 
   const CONTROL_SELECTOR = "[data-track-control]";
   const RESULT_SELECTOR = ".track-result-button[data-track-id][data-source-id]";
+  const DEBUG_ACTION_SELECTOR = "[data-debug-action]";
 
   function getTrackFromControl(control) {
     if (!control) {
@@ -102,6 +103,13 @@
       return true;
     }
 
+    if (id === "arrangementCopyAllButton") {
+      if (typeof window.copyCurrentArrangementSectionToAll === "function") {
+        window.copyCurrentArrangementSectionToAll();
+      }
+      return true;
+    }
+
     return false;
   }
 
@@ -135,6 +143,15 @@
   function onClick(event) {
     const target = event.target;
     if (!target) {
+      return;
+    }
+
+    const debugButton = target.closest(DEBUG_ACTION_SELECTOR);
+    if (debugButton) {
+      const action = debugButton.getAttribute("data-debug-action");
+      if (typeof window.performDebugAction === "function") {
+        window.performDebugAction(action);
+      }
       return;
     }
 
