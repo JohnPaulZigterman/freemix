@@ -1,22 +1,35 @@
 :root {
   color-scheme: dark;
-  --bg: #151719;
-  --panel: #202327;
-  --panel-strong: #111315;
-  --control: #2b2f34;
-  --control-hot: #343a40;
-  --ink: #f5f7f8;
-  --muted: #9aa3aa;
-  --line: #3a4046;
-  --line-hot: #59616a;
+  --bg: #0e1012;
+  --bg-fade: radial-gradient(circle at top, #1a1f25 0, #0e1012 360px);
+  --panel: #171b20;
+  --panel-strong: #0e1115;
+  --panel-alt: #252a30;
+  --control: #222830;
+  --control-hot: #2f3740;
+  --control-rim: #7a8592;
+  --ink: #eef2f7;
+  --ink-soft: #c4cdd7;
+  --muted: #95a0ac;
+  --line: #30383f;
+  --line-hot: #4d5865;
   --accent: #16c784;
   --accent-dark: #0e8f61;
-  --accent-soft: #173d2f;
+  --accent-soft: #1a3e2f;
+  --active-emerald: #1f4b37;
   --amber: #ffb020;
   --danger: #ff5c48;
-  --shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
-  --mech-edge: #4b545f;
-  --mech-accent: #7a828b;
+  --range-track: #101318;
+  --range-shadow: #0f1317;
+  --range-thumb-end: #5a6674;
+  --silver: #a5b0be;
+  --silver-deep: #7c8999;
+  --silver-glow: rgba(208, 220, 233, 0.27);
+  --shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  --shadow-strong: 0 0 0 1px rgba(0, 0, 0, 0.5) inset,
+    0 10px 24px rgba(0, 0, 0, 0.5);
+  --mech-edge: #4a5563;
+  --mech-accent: #8793a4;
   --radius-panel: 2px;
   --radius-control: 1px;
 }
@@ -29,10 +42,10 @@ body {
   min-height: 100vh;
   margin: 0;
   font-family:
-    "Arial Narrow", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Arial Narrow", "Trebuchet MS", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   color: var(--ink);
-  background: radial-gradient(circle at top, #25292e 0, var(--bg) 360px);
+  background: var(--bg-fade);
 }
 
 .app-shell {
@@ -48,9 +61,9 @@ body {
   border-top-color: var(--line-hot);
   border-radius: var(--radius-panel);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 44%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 44%),
     var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-strong);
 }
 
 .brand-row {
@@ -66,9 +79,10 @@ body {
 .catalogue-link {
   margin-left: auto;
   padding: 4px 7px;
-  border: 1px solid rgba(255, 176, 32, 0.45);
+  border: 1px solid color-mix(in srgb, var(--silver) 55%, var(--line) 45%);
   border-radius: var(--radius-control);
-  color: var(--amber);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--silver) 15%, transparent) 0, transparent 100%);
+  color: var(--ink-soft);
   font-size: 0.68rem;
   font-weight: 900;
   text-decoration: none;
@@ -77,13 +91,15 @@ body {
 
 .catalogue-link:hover,
 .catalogue-link:focus-visible {
-  background: #3b2b0d;
+  background: color-mix(in srgb, var(--silver) 28%, var(--panel));
+  color: var(--bg);
   outline: none;
+  box-shadow: inset 0 0 0 1px var(--silver-glow);
 }
 
 .eyebrow {
   margin: 0 0 2px;
-  color: var(--amber);
+  color: var(--silver);
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0;
@@ -102,6 +118,7 @@ h1 {
   line-height: 1;
   letter-spacing: 0;
   text-transform: uppercase;
+  text-shadow: 0 0 18px rgba(190, 205, 225, 0.1);
 }
 
 .status-pill {
@@ -109,7 +126,7 @@ h1 {
   max-width: 44%;
   padding: 4px 7px;
   overflow: hidden;
-  border: 1px solid rgba(22, 199, 132, 0.35);
+  border: 1px solid rgba(22, 199, 132, 0.3);
   border-radius: var(--radius-control);
   background: var(--accent-soft);
   color: var(--accent);
@@ -121,8 +138,8 @@ h1 {
 }
 
 .status-pill.error {
-  border-color: rgba(255, 92, 72, 0.35);
-  background: #3d1c19;
+  border-color: rgba(255, 92, 72, 0.28);
+  background: var(--panel-alt);
   color: var(--danger);
 }
 
@@ -145,12 +162,13 @@ input[type="search"] {
 
 input[type="search"]:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(22, 199, 132, 0.3);
+  box-shadow: 0 0 0 2px rgba(22, 199, 132, 0.22);
 }
 
 * :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 1px rgba(22, 199, 132, 0.2);
 }
 
 .player-panel {
@@ -175,13 +193,13 @@ input[type="search"]:focus {
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: #191c1f;
+  background: color-mix(in srgb, var(--panel-alt) 70%, var(--panel));
 }
 
 .panel-label {
   display: inline-block;
   margin-bottom: 3px;
-  color: var(--amber);
+  color: var(--silver);
   font-size: 0.66rem;
   font-weight: 900;
   text-transform: uppercase;
@@ -221,7 +239,7 @@ input[type="search"]:focus {
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: #17191c;
+  background: color-mix(in srgb, var(--panel-alt) 72%, var(--panel));
 }
 
 .transport-button,
@@ -232,7 +250,7 @@ input[type="number"] {
   border: 1px solid var(--mech-edge);
   border-radius: var(--radius-control);
   background:
-    linear-gradient(180deg, #323a42 0, var(--control) 56%, #262e35 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 15%, var(--control) 85%) 0, var(--control) 56%, color-mix(in srgb, var(--panel-strong) 30%, var(--control) 70%) 100%);
   color: var(--ink);
   font: inherit;
   font-size: 0.62rem;
@@ -263,14 +281,14 @@ select:hover,
 input[type="number"]:focus {
   border-color: var(--mech-accent);
   background:
-    linear-gradient(180deg, #3d4651 0, var(--control-hot) 56%, #2b333c 100%);
+    linear-gradient(180deg, var(--mech-accent) 0, var(--control-hot) 56%, var(--panel-alt) 100%);
 }
 
 .transport-button.active,
 .metronome-button.active {
   border-color: rgba(22, 199, 132, 0.75);
   background:
-    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
+    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
   color: var(--accent);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
@@ -307,10 +325,10 @@ input[type="number"]:focus {
 .beat-light {
   display: block;
   height: 10px;
-  border: 1px solid #3d444b;
+  border: 1px solid var(--mech-edge);
   border-radius: 0;
-  background: #08090a;
-  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
+  background: var(--panel-alt);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.85);
 }
 
 .beat-light.active {
@@ -456,7 +474,7 @@ input[type="number"]:focus {
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: #111315;
+  background: var(--panel-strong);
 }
 
 .arrangement-header {
@@ -488,7 +506,7 @@ input[type="number"]:focus {
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   background:
-    linear-gradient(180deg, #323a42 0, var(--control) 56%, #262e35 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 18%, var(--control) 82%) 0, var(--control) 56%, var(--panel-alt) 100%);
   color: var(--ink);
   font: inherit;
   font-size: 0.6rem;
@@ -504,14 +522,14 @@ input[type="number"]:focus {
 .arrangement-toggle.active {
   border-color: rgba(22, 199, 132, 0.75);
   background:
-    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
+    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
   color: var(--accent);
 }
 
 .arrangement-copy.active {
   border-color: rgba(22, 199, 132, 0.75);
   background:
-    linear-gradient(180deg, #1f4b37 0, #1a4635 56%, #173a2e 100%);
+    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
   color: var(--accent);
 }
 
@@ -541,7 +559,7 @@ input[type="number"]:focus {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 0;
-  background: #111315;
+  background: color-mix(in srgb, var(--panel-strong) 80%, var(--bg) 20%);
   color: inherit;
   font: inherit;
   appearance: none;
@@ -553,7 +571,7 @@ input[type="number"]:focus {
 
 .arrangement-step-label.copy-source {
   border-color: rgba(22, 199, 132, 0.65);
-  background: #143525;
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--panel-strong) 65%);
   color: var(--accent);
 }
 
@@ -587,9 +605,9 @@ input[type="number"]:focus {
   min-height: 0;
   aspect-ratio: 1;
   place-items: center;
-  border: 1px solid #3d444b;
+  border: 1px solid var(--line);
   border-radius: 0;
-  background: #060708;
+  background: color-mix(in srgb, var(--panel-strong) 72%, #060708 28%);
   color: var(--track-color);
   font-size: 0.58rem;
   line-height: 1;
@@ -597,8 +615,8 @@ input[type="number"]:focus {
 }
 
 .arrangement-cell.filled {
-  border-color: color-mix(in srgb, var(--track-color) 68%, #222);
-  background: color-mix(in srgb, var(--track-color) 22%, #060708);
+  border-color: color-mix(in srgb, var(--track-color) 64%, var(--line));
+  background: color-mix(in srgb, var(--track-color) 22%, var(--panel-alt));
 }
 
 .arrangement-cell.playing {
@@ -647,8 +665,8 @@ input[type="number"]:focus {
 .video-cell {
   position: relative;
   overflow: hidden;
-  border-right: 1px solid #050607;
-  border-bottom: 1px solid #050607;
+  border-right: 1px solid var(--bg);
+  border-bottom: 1px solid var(--bg);
   background: #050607;
 }
 
@@ -702,9 +720,9 @@ input[type="number"]:focus {
   gap: 5px;
   align-items: center;
   padding: 3px 5px;
-  border: 1px solid color-mix(in srgb, var(--track-color) 58%, #111);
+  border: 1px solid color-mix(in srgb, var(--track-color) 58%, var(--panel-strong));
   border-radius: var(--radius-control);
-  background: rgba(5, 6, 7, 0.82);
+  background: linear-gradient(180deg, rgba(15, 18, 22, 0.85), rgba(5, 6, 7, 0.85));
   color: var(--ink);
   font-size: 0.68rem;
   text-transform: uppercase;
@@ -724,7 +742,7 @@ input[type="number"]:focus {
   width: 100%;
   height: 100%;
   place-items: center;
-  background: #000;
+  background: #050607;
   color: var(--muted);
   font-size: 0.9rem;
   font-weight: 900;
@@ -760,7 +778,7 @@ input[type="number"]:focus {
   border: 1px solid var(--line);
   border-left: 2px solid var(--track-color);
   border-radius: var(--radius-panel);
-  background: #17191c;
+  background: color-mix(in srgb, var(--panel) 72%, var(--panel-strong) 28%);
 }
 
 .track-row-label {
@@ -770,9 +788,9 @@ input[type="number"]:focus {
   align-content: center;
   min-width: 0;
   padding: 1px 2px;
-  border: 1px solid color-mix(in srgb, var(--track-color) 55%, #111);
+  border: 1px solid color-mix(in srgb, var(--track-color) 55%, var(--panel-strong));
   border-radius: var(--radius-control);
-  background: #0f1113;
+  background: color-mix(in srgb, var(--panel-strong) 78%, var(--bg) 22%);
   text-transform: uppercase;
 }
 
@@ -834,7 +852,7 @@ input[type="number"]:focus {
 
 .track-advanced-toggle[aria-pressed="true"] {
   border-color: rgba(85, 168, 255, 0.55);
-  background: #1b3350;
+  background: color-mix(in srgb, #55a8ff 24%, var(--panel-strong) 76%);
   color: #55a8ff;
 }
 
@@ -844,8 +862,8 @@ input[type="number"]:focus {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   align-items: end;
-  padding-top: 3px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--silver) 40%, transparent);
 }
 
 .fx-title {
@@ -893,7 +911,7 @@ input[type="number"]:focus {
   padding: 0 2px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: #111315;
+  background: var(--panel-strong);
   color: var(--muted);
   font-size: 0.56rem;
   font-weight: 900;
@@ -952,7 +970,7 @@ input[type="number"]:focus {
   padding: 1px 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: #111315;
+  background: var(--panel-strong);
 }
 
 .track-source-name strong,
@@ -984,7 +1002,7 @@ input[type="number"]:focus {
   overflow-y: auto;
   border: 1px solid var(--line-hot);
   border-radius: var(--radius-panel);
-  background: #111315;
+  background: color-mix(in srgb, var(--panel-strong) 90%, var(--panel) 10%);
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
 }
 
@@ -1011,7 +1029,7 @@ input[type="number"]:focus {
 .track-result-button:hover,
 .track-result-button:focus-visible {
   outline: none;
-  background: #26362f;
+  background: color-mix(in srgb, var(--silver) 10%, var(--panel-alt));
 }
 
 .track-result-button img {
@@ -1020,7 +1038,7 @@ input[type="number"]:focus {
   object-fit: cover;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: #08090a;
+  background: var(--panel-strong);
 }
 
 .track-result-button strong,
@@ -1082,7 +1100,7 @@ select {
   min-height: 16px;
   font-size: 0.56rem;
   border: 1px solid var(--mech-edge);
-  background: linear-gradient(180deg, #313841 0, #2a3138 54%, #252c33 100%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--silver) 15%, var(--control) 85%) 0, var(--control) 54%, var(--panel-alt) 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     inset 0 -1px 0 rgba(0, 0, 0, 0.45),
@@ -1104,8 +1122,8 @@ input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border: 1px solid var(--mech-edge);
   background:
-    linear-gradient(90deg, #9ca4ac, color-mix(in srgb, var(--track-color, #9ca4ac) 45%, #101318 55%));
-  box-shadow: inset 0 -1px 0 #0f1317;
+    linear-gradient(90deg, var(--silver), color-mix(in srgb, var(--track-color, var(--silver)) 45%, var(--range-track) 55%));
+  box-shadow: inset 0 -1px 0 var(--range-shadow);
 }
 
 input[type="range"]::-webkit-slider-thumb {
@@ -1114,10 +1132,10 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 11px;
   margin-top: -4px;
-  border: 1px solid #bec6cf;
+  border: 1px solid var(--silver);
   border-radius: 0;
   background:
-    linear-gradient(180deg, #ecf3fa 0, #7f8892 52%, #606973 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 90%, var(--ink) 10%) 0, var(--silver-deep) 52%, var(--range-thumb-end) 100%);
   box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
 
@@ -1125,17 +1143,17 @@ input[type="range"]::-moz-range-track {
   height: 4px;
   border: 1px solid var(--mech-edge);
   background:
-    linear-gradient(90deg, #9ca4ac, color-mix(in srgb, var(--track-color, #9ca4ac) 45%, #101318 55%));
-  box-shadow: inset 0 -1px 0 #0f1317;
+    linear-gradient(90deg, var(--silver), color-mix(in srgb, var(--track-color, var(--silver)) 45%, var(--range-track) 55%));
+  box-shadow: inset 0 -1px 0 var(--range-shadow);
 }
 
 input[type="range"]::-moz-range-thumb {
   width: 14px;
   height: 11px;
-  border: 1px solid #bec6cf;
+  border: 1px solid var(--silver);
   border-radius: 0;
   background:
-    linear-gradient(180deg, #ecf3fa 0, #7f8892 52%, #606973 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 90%, var(--ink) 10%) 0, var(--silver-deep) 52%, var(--range-thumb-end) 100%);
   box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.45);
 }
 
@@ -1163,7 +1181,7 @@ input[type="range"]::-moz-range-thumb {
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   background:
-    linear-gradient(180deg, #313841 0, var(--control) 56%, #262e35 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 20%, var(--control) 80%) 0, var(--control) 56%, var(--panel-alt) 100%);
   color: var(--muted);
   font: inherit;
   font-size: 0.54rem;
@@ -1181,7 +1199,7 @@ input[type="range"]::-moz-range-thumb {
 .debug-action-button:hover {
   border-color: var(--mech-accent);
   background:
-    linear-gradient(180deg, #3b454f 0, #323a43 56%, #2d353e 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--silver) 28%, var(--control-hot) 72%) 0, var(--control) 56%, var(--panel-alt) 100%);
 }
 
 .debug-action-button:active {
@@ -1193,7 +1211,7 @@ input[type="range"]::-moz-range-thumb {
 
 .track-toggle[aria-pressed="true"] {
   border-color: rgba(255, 92, 72, 0.55);
-  background: #351b19;
+  background: color-mix(in srgb, var(--danger) 18%, var(--panel-strong) 82%);
   color: var(--danger);
 }
 
@@ -1236,7 +1254,7 @@ input[type="range"]::-moz-range-thumb {
   place-items: center;
   border: 1px solid rgba(22, 199, 132, 0.65);
   border-radius: var(--radius-panel);
-  background: #14291f;
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--panel-alt) 70%);
   color: white;
   box-shadow: inset 0 0 20px rgba(22, 199, 132, 0.16);
 }
@@ -1258,7 +1276,7 @@ input[type="range"]::-moz-range-thumb {
   aspect-ratio: 16 / 9;
   border: 0;
   display: block;
-  background: #111;
+  background: #050607;
 }
 
 @keyframes triggerPulse {
@@ -1305,10 +1323,10 @@ input[type="range"]::-moz-range-thumb {
 .archive-link {
   flex: 0 0 auto;
   padding: 6px 8px;
-  border: 1px solid rgba(255, 176, 32, 0.55);
+  border: 1px solid color-mix(in srgb, var(--silver) 55%, var(--line) 45%);
   border-radius: var(--radius-control);
-  background: #3b2b0d;
-  color: var(--amber);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--silver) 22%, transparent) 0, transparent 100%);
+  color: var(--ink-soft);
   font-size: 0.78rem;
   font-weight: 800;
   text-decoration: none;
@@ -1316,7 +1334,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .archive-link:hover {
-  background: #4a3510;
+  background: color-mix(in srgb, var(--silver) 30%, var(--panel));
 }
 
 @media (max-width: 640px) {
