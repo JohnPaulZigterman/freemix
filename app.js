@@ -600,12 +600,13 @@ function startTransport() {
     startedAt: startAt,
     nextBeatAt: startAt,
     beatIndex: 0,
+    arrangementStartStep: arrangement.step,
     arrangementStep: -1,
     frameId: null,
   };
 
   if (arrangement.enabled && hasArrangementClips()) {
-    updateArrangementStep(0, startAt, true);
+    updateArrangementStep(arrangement.step, startAt, true);
   } else {
     updateTrackTriggerGrid(startAt);
   }
@@ -657,8 +658,9 @@ function tickTransport() {
   }
 
   if (arrangement.enabled && hasArrangementClips()) {
-    const currentStep = Math.floor(Math.max(0, now - transport.startedAt) / barMs) % ARRANGEMENT_STEPS;
-    updateArrangementStep(currentStep, transport.startedAt + Math.floor(Math.max(0, now - transport.startedAt) / barMs) * barMs);
+    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
+    const currentStep = (transport.arrangementStartStep + elapsedBars) % ARRANGEMENT_STEPS;
+    updateArrangementStep(currentStep, transport.startedAt + elapsedBars * barMs);
   }
 
   tracks.forEach((track) => {
@@ -981,12 +983,13 @@ function handleArrangementCell(event) {
   }
 
   if (!track.source) {
-    setStatus(`${track.name}: load source first`, true);
+    selectArrangementStep(stepIndex);
+    setStatus(`Bar ${stepIndex + 1} selected`);
     return;
   }
 
   arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
-  arrangement.step = stepIndex;
+  selectArrangementStep(stepIndex);
   setStatus(`${track.name}: placed in ${stepIndex + 1}`);
   renderWorkstation();
 }
@@ -1022,6 +1025,9 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   }
 
   transport.arrangementStep = stepIndex;
+  if (force) {
+    transport.arrangementStartStep = stepIndex;
+  }
   arrangement.step = stepIndex;
   const beatMs = 60000 / transport.bpm;
   const barMs = beatMs * 4;
@@ -1034,6 +1040,22 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     track.nextTriggerAt = barStartAt;
     track.lastStep = -1;
   });
+
+  renderArrangementPlayhead();
+}
+
+function selectArrangementStep(stepIndex) {
+  arrangement.step = stepIndex;
+
+  if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+    const now = performance.now();
+    transport.startedAt = now;
+    transport.nextBeatAt = now;
+    transport.beatIndex = 0;
+    transport.arrangementStartStep = stepIndex;
+    updateArrangementStep(stepIndex, now, true);
+    return;
+  }
 
   renderArrangementPlayhead();
 }
