@@ -71,6 +71,33 @@
     }
   }
 
+  function updateArrangementCell(track, stepIndex) {
+    if (!track?.id || !Number.isInteger(stepIndex)) {
+      return;
+    }
+
+    const player = document.querySelector("#playerPanel");
+    if (!player) {
+      return;
+    }
+
+    const cell = player.querySelector(
+      `.arrangement-cell[data-arr-track="${track.id}"][data-arr-step="${stepIndex}"]`,
+    );
+    if (!cell) {
+      return;
+    }
+
+    const clip = arrangement.clips?.[stepIndex]?.[track.id];
+    const isFilled = !!clip;
+    cell.classList.toggle("filled", isFilled);
+    cell.textContent = isFilled ? "x" : "";
+    cell.title = isFilled
+      ? escapeHtml(`${track.name || "Track"} bar ${stepIndex + 1}`)
+      : `Capture ${track.name || "track"}`;
+    cell.classList.toggle("playing", arrangement.step === stepIndex);
+  }
+
   function updateArrangementGrid() {
     if (typeof window.freemixInvalidateUiNodeCache === "function") {
       window.freemixInvalidateUiNodeCache();
@@ -114,6 +141,23 @@
     }
   }
 
+  function updateArrangementStepLabels() {
+    if (typeof window.renderArrangementStepLabels !== "function") {
+      return;
+    }
+
+    const labels = document.querySelector(".arrangement-step-labels");
+    if (!labels) {
+      return;
+    }
+
+    labels.outerHTML = `
+      <div class="arrangement-step-labels" aria-label="Arrangement steps" style="--arrangement-steps: ${arrangementStepCount}">
+        ${window.renderArrangementStepLabels()}
+      </div>
+    `;
+  }
+
   function updateSourceStrip() {
     const sourceStrip = document.querySelector(".source-strip");
     if (!sourceStrip) {
@@ -149,6 +193,8 @@
     updateTransportRow,
     updateTrackRow,
     updateArrangementGrid,
+    updateArrangementCell,
+    updateArrangementStepLabels,
     updateSourceStrip,
     updateArrangementPlayhead: renderArrangementPlayhead,
   };

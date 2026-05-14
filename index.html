@@ -37,5 +37,13 @@
     <script src="app-audio.js"></script>
     <script src="app-render.js"></script>
     <script src="app-events.js"></script>
+    <script>
+      const __searchParams = new URLSearchParams(window.location.search);
+      if (__searchParams.get("mode") === "dev") {
+        const debugScript = document.createElement("script");
+        debugScript.src = "app-debug.js";
+        document.body.appendChild(debugScript);
+      }
+    </script>
   </body>
 </html>

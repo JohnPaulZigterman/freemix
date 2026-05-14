@@ -235,6 +235,11 @@
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
+      if (typeof window.freemixQueueTrackControlUpdate === "function") {
+        window.freemixQueueTrackControlUpdate(trackControl, event.type);
+        return;
+      }
+
       handleTrackControl({ type: event.type, target: trackControl, currentTarget: trackControl });
       return;
     }
@@ -263,6 +268,11 @@
 
     const trackControl = control.closest(CONTROL_SELECTOR);
     if (trackControl) {
+      if (typeof window.freemixQueueTrackControlUpdate === "function") {
+        window.freemixQueueTrackControlUpdate(trackControl, event.type);
+        return;
+      }
+
       handleTrackControl({ type: event.type, target: trackControl, currentTarget: trackControl });
     }
   }
