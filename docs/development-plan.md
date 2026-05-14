@@ -134,7 +134,7 @@ Visual direction:
 - Keep the default video canvas at standard 16:9 so the combined 2x2 output is suitable for YouTube and other streaming platforms.
 - Preserve the default control layout as a matching 2x2 grid, mapped to the video quadrants, even when future video layouts are added.
 - Default the video layout to a full-frame stack, with track 1 at the bottom and tracks 2 through 4 layered above it.
-- Offer simple transparency modes so layered video sources can blend without turning the app into a video compositor.
+- Offer simple per-track blend modes, such as screen, multiply, add, difference, and color-dodge, so layered video sources can get vivid without turning the app into a video compositor.
 
 Non-goals for this phase:
 

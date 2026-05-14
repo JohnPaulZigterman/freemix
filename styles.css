@@ -207,7 +207,7 @@ input[type="search"]:focus {
 
 .transport {
   display: grid;
-  grid-template-columns: auto auto 86px auto 72px 76px minmax(96px, 1fr);
+  grid-template-columns: auto auto 86px auto 72px minmax(96px, 1fr);
   gap: 4px;
   align-items: stretch;
   margin-top: 0;
@@ -267,8 +267,7 @@ input[type="number"]:focus {
   text-align: center;
 }
 
-.layout-field,
-.alpha-field {
+.layout-field {
   min-width: 0;
 }
 
@@ -316,7 +315,7 @@ input[type="number"]:focus {
   overflow: hidden;
   border: 1px solid var(--line-hot);
   border-radius: var(--radius-panel);
-  background: #030405;
+  background: #000;
 }
 
 .video-matrix.layout-stack {
@@ -329,46 +328,12 @@ input[type="number"]:focus {
   inset: 0;
   z-index: var(--layer-index);
   border: 0;
+  background: transparent;
 }
 
 .video-matrix.layout-stack .video-cell:nth-child(2n),
 .video-matrix.layout-stack .video-cell:nth-child(n + 3) {
   border: 0;
-}
-
-.video-matrix.layout-stack.alpha-blend .video-cell {
-  opacity: 0.56;
-  mix-blend-mode: screen;
-}
-
-.video-matrix.layout-stack.alpha-blend .video-cell:nth-child(1) {
-  opacity: 1;
-  mix-blend-mode: normal;
-}
-
-.video-matrix.layout-stack.alpha-glass .video-cell {
-  opacity: 0.72;
-  mix-blend-mode: lighten;
-}
-
-.video-matrix.layout-stack.alpha-glass .video-cell:nth-child(1) {
-  opacity: 1;
-  mix-blend-mode: normal;
-}
-
-.video-matrix.layout-stack.alpha-ghost .video-cell {
-  opacity: 0.38;
-  mix-blend-mode: screen;
-}
-
-.video-matrix.layout-stack.alpha-ghost .video-cell:nth-child(1) {
-  opacity: 1;
-  mix-blend-mode: normal;
-}
-
-.video-matrix.layout-stack.alpha-solid .video-cell {
-  opacity: 1;
-  mix-blend-mode: normal;
 }
 
 .video-matrix.layout-stack .video-cell:nth-child(1) .track-badge {
@@ -403,6 +368,46 @@ input[type="number"]:focus {
 
 .video-matrix.layout-stack .video-cell:not(:last-child) .track-empty-video {
   opacity: 0;
+}
+
+.video-matrix.layout-stack .video-cell.blend-normal {
+  opacity: 1;
+  mix-blend-mode: normal;
+}
+
+.video-matrix.layout-stack .video-cell.blend-screen {
+  opacity: 0.78;
+  mix-blend-mode: screen;
+}
+
+.video-matrix.layout-stack .video-cell.blend-multiply {
+  opacity: 0.88;
+  mix-blend-mode: multiply;
+}
+
+.video-matrix.layout-stack .video-cell.blend-add {
+  opacity: 0.7;
+  mix-blend-mode: plus-lighter;
+}
+
+.video-matrix.layout-stack .video-cell.blend-difference {
+  opacity: 0.74;
+  mix-blend-mode: difference;
+}
+
+.video-matrix.layout-stack .video-cell.blend-exclusion {
+  opacity: 0.78;
+  mix-blend-mode: exclusion;
+}
+
+.video-matrix.layout-stack .video-cell.blend-dodge {
+  opacity: 0.64;
+  mix-blend-mode: color-dodge;
+}
+
+.video-matrix.layout-stack .video-cell.blend-hard {
+  opacity: 0.78;
+  mix-blend-mode: hard-light;
 }
 
 .arrangement-panel {
@@ -694,7 +699,7 @@ input[type="number"]:focus {
   grid-area: source;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(82px, 0.9fr) 58px minmax(0, 1.15fr);
+  grid-template-columns: minmax(82px, 0.86fr) 54px 60px minmax(0, 1.05fr);
   gap: 2px;
   padding: 0;
 }

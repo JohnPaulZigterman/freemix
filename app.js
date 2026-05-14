@@ -11,11 +11,15 @@ const VIDEO_LAYOUTS = {
   stack: "Stack",
   grid: "Grid",
 };
-const TRANSPARENCY_MODES = {
-  blend: "Blend",
-  glass: "Glass",
-  ghost: "Ghost",
-  solid: "Solid",
+const BLEND_MODES = {
+  normal: "Normal",
+  screen: "Screen",
+  multiply: "Multiply",
+  add: "Add",
+  difference: "Diff",
+  exclusion: "Excl",
+  dodge: "Dodge",
+  hard: "Hard",
 };
 const TRACKS = [
   { name: "Perc", role: "Impact", color: "green" },
@@ -56,7 +60,6 @@ let masterMuted = false;
 let tracks = createInitialTracks();
 let arrangement = createInitialArrangement();
 let videoLayout = "stack";
-let transparencyMode = "blend";
 let trackSearchRequestCounter = 0;
 
 renderWorkstation();
@@ -235,17 +238,6 @@ function renderWorkstation() {
               .join("")}
           </select>
         </label>
-        <label class="control-field alpha-field">
-          <span>Alpha</span>
-          <select id="alphaSelect">
-            ${Object.entries(TRANSPARENCY_MODES)
-              .map(
-                ([value, label]) =>
-                  `<option value="${value}" ${value === transparencyMode ? "selected" : ""}>${label}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
         <div class="meter" aria-label="Bar position">
           <span class="beat-light" data-beat="0"></span>
           <span class="beat-light" data-beat="1"></span>
@@ -255,7 +247,7 @@ function renderWorkstation() {
       </div>
 
       <div class="performance-grid">
-        <div class="video-matrix layout-${videoLayout} alpha-${transparencyMode}" aria-label="Video sources">
+        <div class="video-matrix layout-${videoLayout}" aria-label="Video sources">
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
@@ -319,7 +311,7 @@ function renderArrangementRow(track) {
 
 function renderVideoCell(track, index) {
   return `
-    <div class="video-cell ${track.color}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
+    <div class="video-cell ${track.color} blend-${track.blendMode}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
       ${
         track.source
           ? `<video
@@ -373,6 +365,17 @@ function renderTrackControlRow(track) {
               .map(
                 ([value, filter]) =>
                   `<option value="${value}" ${value === track.durationFilter ? "selected" : ""}>${filter.label}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <label class="control-field blend-field">
+          <span>Blend</span>
+          <select data-track-control="${track.id}" data-control="blendMode">
+            ${Object.entries(BLEND_MODES)
+              .map(
+                ([value, label]) =>
+                  `<option value="${value}" ${value === track.blendMode ? "selected" : ""}>${label}</option>`,
               )
               .join("")}
           </select>
@@ -491,12 +494,6 @@ function bindWorkstationControls() {
     tracks.forEach((track) => disposeTrackAudio(track));
     renderWorkstation();
   });
-  document.querySelector("#alphaSelect").addEventListener("change", (event) => {
-    transparencyMode = event.target.value;
-    stopTransport(false);
-    tracks.forEach((track) => disposeTrackAudio(track));
-    renderWorkstation();
-  });
   document.querySelector("#arrangementToggle").addEventListener("click", toggleArrangement);
   document.querySelector("#arrangementClear").addEventListener("click", clearArrangement);
 
@@ -541,6 +538,12 @@ function handleTrackControl(event) {
       `[data-track-control="${track.id}"][data-control="sourceSearch"]`,
     );
     queueTrackSearch(track, sourceSearch?.value.trim() ?? "");
+    return;
+  }
+
+  if (controlName === "blendMode") {
+    track.blendMode = control.value;
+    applyTrackBlend(track);
     return;
   }
 
@@ -689,6 +692,7 @@ function triggerTrack(track, clip = track) {
   applyTrackVolume(track, clip);
   applyTrackFx(track, clip);
   applyVideoFx(track, clip);
+  applyTrackBlend(track, clip);
   video.play().catch(() => {
     setStatus("Tap play again", true);
   });
@@ -886,6 +890,16 @@ function applyVideoFx(track, state = track) {
   );
 }
 
+function applyTrackBlend(track, state = track) {
+  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  if (!cell) {
+    return;
+  }
+
+  Object.keys(BLEND_MODES).forEach((mode) => cell.classList.remove(`blend-${mode}`));
+  cell.classList.add(`blend-${state.blendMode}`);
+}
+
 function disposeTrackAudio(track) {
   if (!track.audio) {
     return;
@@ -1041,6 +1055,7 @@ function captureTrackClip(track) {
     retriggersPerBar: track.retriggersPerBar,
     volume: track.volume,
     muted: track.muted,
+    blendMode: track.blendMode,
     fx: { ...track.fx },
   };
 }
@@ -1202,6 +1217,7 @@ function createInitialTracks() {
     retriggersPerBar: [1, 2, 4, 8][index],
     volume: 0.55,
     muted: false,
+    blendMode: ["normal", "screen", "difference", "add"][index],
     fx: {
       eqLow: 0,
       eqMid: 0,

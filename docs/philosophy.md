@@ -99,7 +99,7 @@ Future layouts can include:
 
 - Full-screen single-track focus.
 - Stacked performance views, with track 1 on the bottom and later tracks layered above it.
-- Transparency and blend modes that let multiple videos occupy the same full-frame canvas.
+- Per-track transparency and blend modes that let multiple videos occupy the same full-frame canvas.
 - Picture-in-picture emphasis.
 - Scene-based arrangements.
 - Layouts that follow the currently active track.
