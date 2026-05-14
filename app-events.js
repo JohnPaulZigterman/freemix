@@ -254,7 +254,12 @@
 
       video.dataset.binding = "true";
       video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
-      video.addEventListener("error", () => setStatus("Media error", true));
+      video.addEventListener("error", (event) => {
+        const sourceError = event?.target?.error;
+        const code = Number(sourceError?.code);
+        const message = sourceError?.message || (Number.isFinite(code) ? `code ${code}` : "unknown");
+        setStatus(`Media error: ${message}`, true);
+      });
       video.muted = false;
       video.volume = 1;
     });

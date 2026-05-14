@@ -176,6 +176,15 @@ function resolvePreferredBpm() {
   return clamp(Number(appState.preferredBpm), 40, 220);
 }
 
+function normalizeRetriggersPerBar(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.floor(Math.abs(parsed)) || 1);
+}
+
   [
   "selectedSource",
   "transport",
@@ -554,8 +563,7 @@ function renderVideoCell(track, index) {
               class="track-video"
               id="video-${track.id}"
               src="${track.source.mediaUrl}"
-              crossorigin="anonymous"
-              preload="metadata"
+              preload="auto"
               playsinline
             ></video>`
           : `<div class="track-empty-video" aria-hidden="true"></div>`
@@ -872,7 +880,7 @@ function handleTrackControl(event) {
   }
 
   if (controlName === "retriggersPerBar") {
-    track.retriggersPerBar = Number(control.value);
+    track.retriggersPerBar = normalizeRetriggersPerBar(control.value);
     track.lastStep = -1;
     previewTrack(track);
   }
@@ -927,21 +935,133 @@ function startTransport() {
   }
 
   stopTransport(false);
-  const contextStart = ensureAudioContext();
+  let contextStart;
+  try {
+    contextStart = ensureAudioContext();
+  } catch (error) {
+    console.warn(error);
+    webAudioDisabled = true;
+  }
 
   if (contextStart && typeof contextStart.then === "function") {
     startTransport.runningPromise = contextStart
-      .catch(() => {})
+      .catch(() => {
+        webAudioDisabled = true;
+      })
       .finally(() => {
         startTransport.runningPromise = null;
-        if (!document.hidden) {
-          startTransportWithState();
-        }
       });
-    return;
   }
 
+  // Start transport scheduling in the click stack to keep browser autoplay context
+  // aligned with the user gesture that initiated playback.
   startTransportWithState();
+}
+
+function safeSetCurrentTime(video, track) {
+  const nextTime = safeStartTime(track, video);
+  try {
+    video.currentTime = nextTime;
+    return;
+  } catch (error) {
+    // Browser may throw if metadata isn't ready yet.
+    try {
+      video.currentTime = 0;
+    } catch {
+      // Give up silently; playback helpers below will still handle the state.
+    }
+  }
+}
+
+function waitForTrackReady(video) {
+  if (video.readyState >= 2) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const done = () => {
+      video.removeEventListener("canplay", done);
+      video.removeEventListener("error", done);
+      resolve();
+    };
+
+    video.addEventListener("canplay", done, { once: true });
+    video.addEventListener("error", done, { once: true });
+  });
+}
+
+function attemptVideoPlay(video, track, clipState) {
+  const shouldBeMuted = !!clipState?.muted || !!track.muted;
+  const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
+
+  const playWithState = async (muted) => {
+    video.muted = muted;
+    video.volume = muted ? 0 : Number.isFinite(track.audio?.output?.gain?.value) ? 1 : targetVolume;
+    if (video.readyState < 2 && video.networkState !== 0) {
+      video.load();
+    }
+
+    await video.play();
+
+    return muted;
+  };
+
+  return playWithState(shouldBeMuted)
+    .catch(async (error) => {
+      if (shouldBeMuted || !(error instanceof DOMException)) {
+        if (error instanceof DOMException) {
+          setStatus(`Playback blocked: ${error.name}`, true);
+        }
+        throw error;
+      }
+
+      if (error.name !== "NotAllowedError") {
+        throw error;
+      }
+
+      try {
+        const wasMuted = await playWithState(true);
+        if (wasMuted) {
+          video.muted = false;
+          applyTrackVolume(track, clipState);
+        }
+
+        return wasMuted;
+      } catch (fallbackError) {
+        if (fallbackError instanceof DOMException) {
+          setStatus(`Playback blocked: ${fallbackError.name}`, true);
+        } else {
+          setStatus("Playback failed", true);
+        }
+
+        throw fallbackError;
+      }
+    })
+    .then((wasMuted) => {
+      if (wasMuted && !shouldBeMuted) {
+        video.muted = false;
+        applyTrackVolume(track, clipState);
+      } else {
+        applyTrackVolume(track, clipState);
+      }
+
+      return true;
+    })
+    .catch((error) => {
+      if (error instanceof DOMException) {
+        setStatus(`Playback failed: ${error.name}`, true);
+        if (error.name === "NotSupportedError") {
+          setStatus("Media codec unsupported in this browser. Try another clip.", true);
+        }
+      } else {
+        setStatus("Playback failed", true);
+      }
+
+      if (!shouldBeMuted) {
+        setStatus("Tap play again", true);
+      }
+      return false;
+    });
 }
 
 function startTransportWithState() {
@@ -956,7 +1076,7 @@ function startTransportWithState() {
   });
 
   const now = performance.now();
-  const startAt = now + 80;
+  const startAt = now;
   transport = {
     active: true,
     bpm: resolvePreferredBpm(),
@@ -993,7 +1113,7 @@ function stopTransport(resetVideos = true) {
       const video = getTrackVideo(track);
       if (video) {
         video.pause();
-        video.currentTime = safeStartTime(track, video);
+        safeSetCurrentTime(video, track);
       }
     });
   }
@@ -1074,7 +1194,7 @@ function triggerTrack(track, clip = track) {
     video.load();
   }
 
-  video.currentTime = safeStartTime(clip, video);
+  safeSetCurrentTime(video, clip);
   setupTrackAudio(track, video);
   applyTrackVolume(track, clip);
   applyTrackFx(track, clip);
@@ -1082,9 +1202,7 @@ function triggerTrack(track, clip = track) {
   applyTrackBlend(track, clip);
   applyTrackOpacity(track, clip);
   applyTrackPitchAndSpeed(track, clip);
-  video.play().catch(() => {
-    setStatus("Tap play again", true);
-  });
+  void attemptVideoPlay(video, track, clip);
 
   cell.classList.remove("triggered");
   window.requestAnimationFrame(() => cell.classList.add("triggered"));
@@ -1132,12 +1250,28 @@ function ensureAudioContext() {
     return Promise.resolve();
   }
 
+  if (typeof window.AudioContext !== "function") {
+    webAudioDisabled = true;
+    return Promise.resolve();
+  }
+
   if (!audioContext || audioContext.state === "closed") {
-    audioContext = new AudioContext();
+    try {
+      audioContext = new AudioContext();
+    } catch (error) {
+      console.warn(error);
+      webAudioDisabled = true;
+      return Promise.resolve();
+    }
   }
 
   if (audioContext.state === "suspended") {
-    return audioContext.resume();
+    return audioContext
+      .resume()
+      .catch((error) => {
+        console.warn(error);
+        webAudioDisabled = true;
+      });
   }
 
   return Promise.resolve();
@@ -1189,7 +1323,7 @@ function applyTrackVolume(track, state = track) {
 }
 
 function setupTrackAudio(track, video) {
-  if (webAudioDisabled || !audioContext || !video) {
+  if (webAudioDisabled || !audioContext || audioContext.state !== "running" || !video) {
     return false;
   }
 
@@ -1399,7 +1533,7 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   const barMs = beatMs * 4;
   tracks.forEach((track) => {
     track.arrangementClip = null;
-    track.stepMs = barMs / track.retriggersPerBar;
+    track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
     track.nextTriggerAt = startAt;
   });
 }
@@ -1586,7 +1720,7 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   tracks.forEach((track) => {
     const clip = step[track.id] ?? null;
     track.arrangementClip = clip;
-    track.stepMs = clip ? barMs / clip.retriggersPerBar : 0;
+    track.stepMs = clip ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar) : 0;
     track.nextTriggerAt = barStartAt;
     track.lastStep = -1;
   });
