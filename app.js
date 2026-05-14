@@ -17,12 +17,14 @@ const SEARCH_RESULT_FIELDS = Object.freeze([
   "downloads",
 ]);
 const SEARCHABLE_TEXT_FIELDS = Object.freeze(["title", "creator", "description", "subject", "identifier", "collection"]);
-const SEARCH_QUERY_VARIANT_TARGET = 18;
+const SEARCH_QUERY_VARIANT_TARGET = 24;
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
 const SOURCE_METADATA_CACHE_MAX_SIZE = 48;
 const SEARCH_REQUEST_IN_FLIGHT_TTL_MS = 8_000;
+const MAX_BEAT_CATCHUP_PER_FRAME = 8;
+const MAX_TRACK_TRIGGER_BURST_PER_FRAME = 8;
 const SOURCE_METADATA_REQUEST_TTL_MS = 60_000;
 const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
@@ -50,7 +52,7 @@ const UI_NODE_CACHE = {
   beatLights: null,
 };
 const SEARCH_ROWS_PER_REQUEST = 24;
-const SEARCH_RESULTS_LIMIT = 6;
+const SEARCH_RESULTS_LIMIT = 8;
 const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 2;
 const SEARCH_RESULT_CACHE_STORAGE_KEY = "freemix.searchResultCache.v1";
 const SEARCH_RESULT_CACHE_PERSIST_TTL_MS = 6 * 60 * 60 * 1000;
@@ -262,6 +264,7 @@ if (!appState.arrangement) {
   appStateManager.hydrateArrangement(appState.arrangement);
 }
 normalizeArrangementState(appState.arrangement, appState.arrangementStepCount || DEFAULT_ARRANGEMENT_STEPS);
+refreshArrangementHasClipsState(appState.arrangement);
 
 if (!appState.userOnboarding || !appState.userOnboarding.phase) {
   appState.userOnboarding = { phase: "seed", needsHint: true };
@@ -303,6 +306,7 @@ let liveControlPersistTimer = null;
 let arrangementPlayheadUpdateFrame = null;
 let searchResultCachePersistTimer = null;
 let sourceMetadataCachePersistTimer = null;
+let arrangementHasClips = false;
 
 function readJsonFromStorage(storageKey, fallback) {
   if (typeof localStorage === "undefined") {
@@ -892,6 +896,7 @@ function placeLaunchPadTrackInActiveSection(track = getLaunchPadTrack()) {
   const safeStep = Math.max(0, Math.min(activeStep, arrangementStepCount - 1));
   arrangement.clips[safeStep] = arrangement.clips[safeStep] || {};
   arrangement.clips[safeStep][track.id] = captureTrackClip(track);
+  refreshArrangementHasClipsState();
 
   if (window.freemixRender?.updateArrangementCell) {
     window.freemixRender.updateArrangementCell(track, safeStep);
@@ -1070,6 +1075,7 @@ function buildArchiveSearchQueryVariants(rawQuery) {
 
   const toFieldClause = (value) =>
     `(${SEARCHABLE_TEXT_FIELDS.map((field) => `${field}:(${value})`).join(" OR ")})`;
+  const titleCreatorClause = (value) => `(title:(${value}) OR creator:(${value}))`;
   const mediaScoped = (query) => `mediatype:(movies) AND (${query})`;
   const wildcardValue = safeQuery.includes(" ") ? "" : `${safeQuery}*`;
 
@@ -1080,6 +1086,11 @@ function buildArchiveSearchQueryVariants(rawQuery) {
   if (uniqueTokens.length > 0) {
     const tokenClause = uniqueTokens.map((token) => toFieldClause(`"${token}"`)).join(" OR ");
     addQuery(mediaScoped(tokenClause));
+
+    if (uniqueTokens.length > 1) {
+      const titleCreatorTokens = uniqueTokens.slice(0, 4).map((token) => titleCreatorClause(`"${token}*"`)).join(" AND ");
+      addQuery(mediaScoped(`(${titleCreatorTokens})`));
+    }
   }
 
   if (safeQuery !== rawQuery.trim()) {
@@ -1088,9 +1099,10 @@ function buildArchiveSearchQueryVariants(rawQuery) {
 
   addQuery(mediaScoped(`"${safeQuery}"`));
   addQuery(mediaScoped(safeQuery));
+  addQuery(toFieldClause(`"${safeQuery}*"`));
   addQuery(toFieldClause(`"${safeQuery}"`));
 
-  return Array.from(queries).slice(0, 5);
+  return Array.from(queries).slice(0, 7);
 }
 
 function searchRelevance(result, rawQuery) {
@@ -1620,21 +1632,25 @@ function renderArrangementRow(track) {
   `;
 }
 
+function renderArrangementGridRows() {
+  return tracks
+    .map(
+      (track) => `
+        <div class="arrangement-track-row" data-track-id="${track.id}">
+          <div class="arrangement-track-label ${track.color}" title="${escapeHtml(track.name)}">
+            ${escapeHtml(track.name)}
+          </div>
+          ${renderArrangementRow(track)}
+        </div>
+      `,
+    )
+    .join("");
+}
+
 function renderArrangementGrid() {
   return `
     <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement lanes">
-      ${tracks
-        .map(
-          (track) => `
-            <div class="arrangement-track-row" data-track-id="${track.id}">
-              <div class="arrangement-track-label ${track.color}" title="${escapeHtml(track.name)}">
-                ${escapeHtml(track.name)}
-              </div>
-              ${renderArrangementRow(track)}
-            </div>
-          `,
-        )
-        .join("")}
+      ${renderArrangementGridRows()}
     </div>
   `;
 }
@@ -2387,11 +2403,11 @@ function startTransportWithState() {
       return;
     }
 
-    safeSetCurrentTime(video, track);
     if (track.source?.mediaUrl && video.src !== track.source.mediaUrl) {
       video.src = track.source.mediaUrl;
       video.load();
     }
+    safeSetCurrentTime(video, track);
     setupTrackAudio(track, video);
     applyTrackVolume(track, track);
   });
@@ -2429,6 +2445,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
     startTransport.bootToken += 1;
   }
   startTransport.runningPromise = null;
+  const shouldResetVideos = !!resetVideos;
 
   if (arrangementPlayheadUpdateFrame !== null) {
     window.cancelAnimationFrame(arrangementPlayheadUpdateFrame);
@@ -2437,9 +2454,33 @@ function stopTransport(resetVideos = true, bumpToken = true) {
 
   if (transport?.frameId) {
     cancelAnimationFrame(transport.frameId);
+    transport.frameId = null;
   }
 
+  if (transport && shouldResetVideos) {
+    tracks.forEach((track) => {
+      const video = getTrackVideo(track);
+      if (!video) {
+        return;
+      }
+
+      if (!video.pause || typeof video.pause !== "function") {
+        return;
+      }
+
+      video.pause();
+      safeSetCurrentTime(video, track);
+    });
+  }
+
+  if (Number.isFinite(arrangementPlayheadStep)) {
+    getArrangementCellsByStep(arrangementPlayheadStep).forEach((cell) => {
+      cell.classList.remove("playing");
+    });
+  }
   transport = null;
+  arrangementPlayheadStep = -1;
+
   window.freemixRender?.updateTransportRow?.();
   const beatLights = getBeatLights();
   if (activeBeatLightIndex >= 0 && activeBeatLightIndex < beatLights.length) {
@@ -2449,16 +2490,6 @@ function stopTransport(resetVideos = true, bumpToken = true) {
     }
   }
   activeBeatLightIndex = -1;
-
-  if (resetVideos) {
-    tracks.forEach((track) => {
-      const video = getTrackVideo(track);
-      if (video) {
-        video.pause();
-        safeSetCurrentTime(video, track);
-      }
-    });
-  }
 
   if (tracks.some((track) => track.source)) {
     setStatus("Source ready");
@@ -2495,12 +2526,27 @@ function tickTransport() {
   const beatMs = transport.beatMs || 60000 / transport.bpm;
   const barMs = transport.barMs || beatMs * 4;
 
-  while (now >= transport.nextBeatAt) {
+  const beatCatchupLimit = Math.max(
+    0,
+    Math.floor((now - transport.nextBeatAt) / beatMs) + 1,
+  );
+  for (let beatCatchupCount = 0; beatCatchupCount < beatCatchupLimit; beatCatchupCount += 1) {
+    if (beatCatchupCount >= MAX_BEAT_CATCHUP_PER_FRAME) {
+      break;
+    }
+
     const beat = transport.beatIndex % 4;
     renderBeat(beat);
     playMetronome(beat);
     transport.beatIndex += 1;
     transport.nextBeatAt += beatMs;
+  }
+
+  if (transport.nextBeatAt <= now) {
+    const missedBeats = Math.floor((now - transport.nextBeatAt) / beatMs) + 1;
+    if (missedBeats > 0) {
+      transport.nextBeatAt += missedBeats * beatMs;
+    }
   }
 
   if (arrangement.enabled && hasArrangementClips()) {
@@ -2515,8 +2561,14 @@ function tickTransport() {
       return;
     }
     const canPlay = isTrackAudibleInMix(track);
+    let triggerBudget = MAX_TRACK_TRIGGER_BURST_PER_FRAME;
 
     while (now >= track.nextTriggerAt) {
+      if (triggerBudget <= 0) {
+        break;
+      }
+
+      triggerBudget -= 1;
       if (!canPlay) {
         track.nextTriggerAt += track.stepMs;
         continue;
@@ -2524,6 +2576,13 @@ function tickTransport() {
 
       triggerTrack(track, track.arrangementClip ?? track);
       track.nextTriggerAt += track.stepMs;
+    }
+
+    if (track.nextTriggerAt <= now) {
+      const missedTriggers = Math.floor((now - track.nextTriggerAt) / track.stepMs) + 1;
+      if (missedTriggers > 0) {
+        track.nextTriggerAt += missedTriggers * track.stepMs;
+      }
     }
   });
 
@@ -3019,6 +3078,7 @@ function handleArrangementCell(event) {
   }
 
   arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
+  refreshArrangementHasClipsState();
   selectArrangementStep(stepIndex);
   setStatus(`${track.name}: placed in ${stepIndex + 1}`);
   if (window.freemixRender?.updateArrangementGrid) {
@@ -3086,6 +3146,7 @@ function pasteArrangementSection(targetStep) {
   const sourceStep = arrangement.clips[arrangementCopySourceStep];
   arrangement.clips[targetStep] = cloneArrangementStep(sourceStep);
   arrangement.step = targetStep;
+  refreshArrangementHasClipsState();
 
   if (
     transport?.active &&
@@ -3110,6 +3171,65 @@ function pasteArrangementSection(targetStep) {
   }
 
   renderWorkstation();
+  markAppStateDirty();
+}
+
+function copyCurrentArrangementSectionToAll() {
+  const sourceStepIndex = arrangement.step;
+  const sourceStep = arrangement.clips?.[sourceStepIndex];
+  if (!sourceStep || Object.keys(sourceStep).length === 0) {
+    setStatus("Choose a source section first");
+    return;
+  }
+
+  const destinationSteps = [];
+  for (let index = 0; index < arrangement.clips.length; index += 1) {
+    if (index === sourceStepIndex) {
+      continue;
+    }
+
+    const step = arrangement.clips[index];
+    if (!step || Object.keys(step).length > 0) {
+      continue;
+    }
+
+    arrangement.clips[index] = cloneArrangementStep(sourceStep);
+    destinationSteps.push(index);
+  }
+
+  if (!destinationSteps.length) {
+    setStatus("No empty sections to fill");
+    return;
+  }
+
+  refreshArrangementHasClipsState();
+
+  if (window.freemixRender?.updateArrangementGrid) {
+    if (typeof window.freemixRender.updateArrangementCell === "function") {
+      destinationSteps.forEach((stepIndex) => {
+        tracks.forEach((track) => {
+          window.freemixRender.updateArrangementCell(track, stepIndex);
+        });
+      });
+    } else {
+      window.freemixRender.updateArrangementGrid();
+    }
+    window.freemixRender.updateArrangementPlayhead?.();
+  } else {
+    renderWorkstation();
+  }
+
+  if (
+    transport?.active &&
+    arrangement.enabled &&
+    hasArrangementClips() &&
+    transport.arrangementStep !== sourceStepIndex &&
+    destinationSteps.includes(transport.arrangementStep)
+  ) {
+    updateArrangementStep(transport.arrangementStep, performance.now(), true);
+  }
+
+  setStatus(`Filled ${destinationSteps.length} empty sections`);
   markAppStateDirty();
 }
 
@@ -3139,6 +3259,7 @@ function clearArrangement() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangement = createInitialArrangement();
+  refreshArrangementHasClipsState();
   closeArrangementClearMenu();
   if (transport?.active) {
     updateTrackTriggerGrid(performance.now());
@@ -3188,6 +3309,8 @@ window.closeArrangementClearMenu = closeArrangementClearMenu;
 window.openArrangementClearMenu = openArrangementClearMenu;
 window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
 window.renderArrangementGrid = renderArrangementGrid;
+window.renderArrangementGridRows = renderArrangementGridRows;
+window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 
 function updateArrangementStepCount(event) {
@@ -3210,6 +3333,7 @@ function updateArrangementStepCount(event) {
       arrangement.clips[index] = previousArrangement.clips[index] || {};
     }
   }
+  refreshArrangementHasClipsState();
 
   const previousStep = Number(previousArrangement?.step) || 0;
   arrangement.step = Math.min(previousStep, nextLength - 1);
@@ -3301,7 +3425,23 @@ function renderArrangementPlayhead() {
 }
 
 function hasArrangementClips() {
-  return arrangement.clips.some((step) => Object.keys(step).length > 0);
+  return !!arrangementHasClips;
+}
+
+function refreshArrangementHasClipsState(targetArrangement = arrangement) {
+  if (!targetArrangement || !Array.isArray(targetArrangement.clips)) {
+    arrangementHasClips = false;
+    return false;
+  }
+
+  arrangementHasClips = targetArrangement.clips.some((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) {
+      return false;
+    }
+    return Object.keys(step).length > 0;
+  });
+
+  return arrangementHasClips;
 }
 
 function captureTrackClip(track) {

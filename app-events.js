@@ -43,7 +43,26 @@
   }
 
   function clearResults() {
-    tracks.forEach((track) => renderTrackResults(track, []));
+    if (!playerPanel) {
+      return;
+    }
+
+    const visibleResultPanels = playerPanel.querySelectorAll(".track-results:not([hidden])");
+    if (visibleResultPanels.length === 0) {
+      return;
+    }
+
+    visibleResultPanels.forEach((resultsEl) => {
+      const trackId = resultsEl.id?.startsWith("results-") ? resultsEl.id.slice(8) : "";
+      const track = trackId ? getResultTrack(trackId) : null;
+      if (track) {
+        renderTrackResults(track, []);
+        return;
+      }
+
+      resultsEl.hidden = true;
+      resultsEl.innerHTML = "";
+    });
   }
 
   function consumeLaunchHint() {

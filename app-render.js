@@ -102,26 +102,30 @@
 
     const labels = document.querySelector(".arrangement-step-labels");
     if (labels) {
-      const nextLabels = typeof window.renderArrangementStepLabels === "function" ? window.renderArrangementStepLabels() : "";
-      labels.outerHTML = `
-        <div class="arrangement-step-labels" aria-label="Arrangement steps" style="--arrangement-steps: ${arrangementStepCount}">
-          ${nextLabels}
-        </div>
-      `;
+      labels.style.setProperty("--arrangement-steps", arrangementStepCount);
+      labels.innerHTML = typeof window.renderArrangementStepLabels === "function"
+        ? window.renderArrangementStepLabels()
+        : "";
     }
 
     const arrangementGrid = document.querySelector(".arrangement-grid");
-    const renderGrid = typeof window.renderArrangementGrid === "function" ? window.renderArrangementGrid() : "";
     if (arrangementGrid) {
-    if (renderGrid) {
-        arrangementGrid.outerHTML = renderGrid;
+      const rows = typeof window.renderArrangementGridRows === "function" ? window.renderArrangementGridRows() : null;
+      arrangementGrid.style.setProperty("--arrangement-steps", arrangementStepCount);
+      if (rows !== null) {
+        arrangementGrid.innerHTML = rows;
         window.freemixSyncArrangementTrackHeights?.();
         return;
       }
 
-      renderWorkstation();
-      window.freemixSyncArrangementTrackHeights?.();
-      return;
+      if (typeof window.renderArrangementGrid === "function") {
+        const renderGrid = window.renderArrangementGrid();
+        if (renderGrid) {
+          arrangementGrid.outerHTML = renderGrid;
+          window.freemixSyncArrangementTrackHeights?.();
+          return;
+        }
+      }
     }
 
     if (typeof renderWorkstation === "function") {
@@ -140,11 +144,8 @@
       return;
     }
 
-    labels.outerHTML = `
-      <div class="arrangement-step-labels" aria-label="Arrangement steps" style="--arrangement-steps: ${arrangementStepCount}">
-        ${window.renderArrangementStepLabels()}
-      </div>
-    `;
+    labels.style.setProperty("--arrangement-steps", arrangementStepCount);
+    labels.innerHTML = typeof window.renderArrangementStepLabels === "function" ? window.renderArrangementStepLabels() : "";
   }
 
   function updateSourceStrip() {
