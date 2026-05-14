@@ -61,6 +61,24 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+.catalogue-link {
+  margin-left: auto;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 176, 32, 0.45);
+  border-radius: var(--radius-control);
+  color: var(--amber);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.catalogue-link:hover,
+.catalogue-link:focus-visible {
+  background: #3b2b0d;
+  outline: none;
+}
+
 .eyebrow {
   margin: 0 0 2px;
   color: var(--amber);
