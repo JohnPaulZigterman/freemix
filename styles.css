@@ -823,7 +823,7 @@ input[type="number"]:focus {
 }
 
 .fx-title {
-  grid-column: 1 / -1;
+  margin-right: auto;
   align-self: center;
   color: var(--track-color);
   font-size: 0.66rem;
@@ -831,6 +831,34 @@ input[type="number"]:focus {
   letter-spacing: 0.01em;
   text-transform: uppercase;
   padding-bottom: 1px;
+}
+
+.fx-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.fx-top-controls {
+  display: grid;
+  grid-template-columns: minmax(76px, 1fr) minmax(96px, 1fr);
+  gap: 2px;
+  align-items: end;
+  margin-left: auto;
+  max-width: 240px;
+}
+
+.fx-top-controls .control-field {
+  min-width: 0;
+  margin: 0;
+}
+
+.track-blend-select,
+.fx-top-controls .control-field span + select,
+.fx-top-controls .control-field span + input[type="range"] {
+  width: 100%;
 }
 
 .fx-field {

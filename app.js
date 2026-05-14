@@ -22,6 +22,7 @@ const BLEND_MODES = {
   dodge: "Dodge",
   hard: "Hard",
 };
+const BLEND_MODE_OPTIONS = Object.entries(BLEND_MODES).map(([value, label]) => ({ value, label }));
 const TRACKS = [
   { name: "Perc", role: "Impact", color: "green" },
   { name: "Bass", role: "Weight", color: "amber" },
@@ -120,13 +121,6 @@ const TRACK_CONTROL_SECTIONS = {
         max: "1",
         step: "0.01",
       },
-    },
-    {
-      control: "blendMode",
-      type: "select",
-      label: "Blend",
-      fieldClass: "blend-field",
-      options: Object.entries(BLEND_MODES).map(([value, label]) => ({ value, label })),
     },
   ],
   advanced: [
@@ -692,7 +686,37 @@ function renderTrackControlField(track, control) {
 function renderTrackFxChain(track) {
   return `
     <div class="fx-chain control-advanced" aria-label="${escapeHtml(track.name)} effects chain">
-      <span class="fx-title">FX</span>
+      <div class="fx-header">
+        <span class="fx-title">FX</span>
+        <div class="fx-top-controls">
+          <label class="control-field fx-blend control-advanced">
+            <span>Blend</span>
+            <select
+              class="track-blend-select"
+              data-track-control="${track.id}"
+              data-control="blendMode"
+            >
+              ${BLEND_MODE_OPTIONS.map(
+                (option) => `<option value="${option.value}" ${String(option.value) === String(track.blendMode) ? "selected" : ""}>${option.label}</option>`,
+              ).join("")}
+            </select>
+          </label>
+          <label class="control-field fx-opacity control-advanced">
+            <span>Opacity</span>
+            <input
+              id="opacity-${track.id}"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
+              data-track-control="${track.id}"
+              data-control="opacity"
+              aria-label="${escapeHtml(`${track.name} Opacity`)}"
+            >
+          </label>
+        </div>
+      </div>
       ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
     </div>
   `;
@@ -726,7 +750,11 @@ function renderFxControl(track, fxControl) {
 function bindWorkstationControls() {
   if (typeof window.freemixBindWorkstationControls === "function") {
     window.freemixBindWorkstationControls();
-    tracks.forEach((track) => applyVideoFx(track));
+    tracks.forEach((track) => {
+      applyVideoFx(track);
+      applyTrackBlend(track);
+      applyTrackOpacity(track);
+    });
     renderArrangementPlayhead();
     window.freemixRender?.updateTransportRow?.();
     return;
@@ -769,6 +797,12 @@ function handleTrackControl(event) {
   if (controlName === "blendMode") {
     track.blendMode = control.value;
     applyTrackBlend(track);
+    return;
+  }
+
+  if (controlName === "opacity") {
+    track.opacity = clamp(Number(control.value), 0, 1);
+    applyTrackOpacity(track);
     return;
   }
 
@@ -983,6 +1017,7 @@ function triggerTrack(track, clip = track) {
   applyTrackFx(track, clip);
   applyVideoFx(track, clip);
   applyTrackBlend(track, clip);
+  applyTrackOpacity(track, clip);
   video.play().catch(() => {
     setStatus("Tap play again", true);
   });
@@ -1199,6 +1234,17 @@ function applyVideoFx(track, state = track) {
     "--video-filter",
     `brightness(${brightness}) contrast(${contrast}) saturate(${saturate}) blur(${blur}px) hue-rotate(${hue}deg)`,
   );
+}
+
+function applyTrackOpacity(track, state = track) {
+  const cell = document.querySelector(`.video-cell[data-track-id="${track.id}"]`);
+  if (!cell) {
+    return;
+  }
+
+  const rawOpacity = state.opacity;
+  const opacity = Number.isFinite(Number(rawOpacity)) ? Number(rawOpacity) : 1;
+  cell.style.opacity = `${clamp(opacity, 0, 1)}`;
 }
 
 function applyTrackBlend(track, state = track) {
@@ -1507,6 +1553,7 @@ function captureTrackClip(track) {
     volume: track.volume,
     muted: track.muted,
     blendMode: track.blendMode,
+    opacity: track.opacity,
     fx: { ...track.fx },
   };
 }
@@ -1686,6 +1733,7 @@ function createInitialTracks() {
     volume: 0.55,
     muted: false,
     blendMode: ["normal", "screen", "difference", "add"][index],
+    opacity: 1,
     fx: {
       eqLow: 0,
       eqMid: 0,
@@ -1789,9 +1837,19 @@ function escapeHtml(value) {
       const control = event?.currentTarget;
       const controlName = control?.dataset?.control;
       const needsPersist =
-        controlName && ["muted", "startTime", "startNumber", "retriggersPerBar", "volume", "blendMode", "durationFilter", "advanced", "fx"].includes(
-          controlName,
-        );
+        controlName &&
+        [
+          "muted",
+          "startTime",
+          "startNumber",
+          "retriggersPerBar",
+          "volume",
+          "blendMode",
+          "opacity",
+          "durationFilter",
+          "advanced",
+          "fx",
+        ].includes(controlName);
 
       const result = baseHandleTrackControl.apply(this, arguments);
       if (needsPersist) {
