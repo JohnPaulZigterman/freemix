@@ -71,7 +71,10 @@ const DEFAULTS = {
     "startTime",
     "retriggersPerBar",
     "blendMode",
+    "opacity",
     "durationFilter",
+    "speed",
+    "pitch",
   ]);
   let persistTimer = null;
 
@@ -106,8 +109,20 @@ const DEFAULTS = {
         track.durationFilter = stored.durationFilter;
       }
 
+      if (typeof stored.opacity === "number") {
+        track.opacity = stored.opacity;
+      }
+
       if (typeof stored.showAdvanced === "boolean") {
         track.showAdvanced = stored.showAdvanced;
+      }
+
+      if (typeof stored.speed === "number") {
+        track.speed = stored.speed;
+      }
+
+      if (typeof stored.pitch === "number") {
+        track.pitch = stored.pitch;
       }
     });
   }
@@ -139,6 +154,9 @@ const DEFAULTS = {
         retriggersPerBar: Number(track.retriggersPerBar) || 1,
         blendMode: track.blendMode ?? "normal",
         durationFilter: track.durationFilter ?? "quick",
+        opacity: Number(track.opacity) || 1,
+        speed: Number(track.speed) || 1,
+        pitch: Number(track.pitch) || 0,
       };
     });
 

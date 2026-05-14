@@ -688,12 +688,15 @@ function renderTrackControlField(track, control) {
 }
 
 function renderTrackFxChain(track) {
+  const speedValue = Number.isFinite(track.speed) ? track.speed : 1;
+  const pitchValue = Number.isFinite(track.pitch) ? track.pitch : 0;
+
   return `
-    <div class="fx-chain control-advanced" aria-label="${escapeHtml(track.name)} effects chain">
+    <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
       <div class="fx-header">
         <span class="fx-title">FX</span>
         <div class="fx-top-controls">
-          <label class="control-field fx-blend control-advanced">
+          <label class="control-field fx-blend">
             <span>Blend</span>
             <select
               class="track-blend-select"
@@ -705,7 +708,37 @@ function renderTrackFxChain(track) {
               ).join("")}
             </select>
           </label>
-          <label class="control-field fx-opacity control-advanced">
+          <label class="control-field fx-top-control control-advanced">
+            <span>Pitch</span>
+            <output class="fx-mini-value" for="pitch-${track.id}" aria-hidden="true">${pitchValue > 0 ? "+" : ""}${pitchValue}</output>
+            <input
+              id="pitch-${track.id}"
+              type="range"
+              min="-12"
+              max="12"
+              step="1"
+              value="${pitchValue}"
+              data-track-control="${track.id}"
+              data-control="pitch"
+              aria-label="${escapeHtml(`${track.name} Pitch`)}"
+            >
+          </label>
+          <label class="control-field fx-top-control control-advanced">
+            <span>Speed</span>
+            <output class="fx-mini-value" for="speed-${track.id}" aria-hidden="true">${speedValue.toFixed(2)}x</output>
+            <input
+              id="speed-${track.id}"
+              type="range"
+              min="0.5"
+              max="2"
+              step="0.05"
+              value="${speedValue}"
+              data-track-control="${track.id}"
+              data-control="speed"
+              aria-label="${escapeHtml(`${track.name} Speed`)}"
+            >
+          </label>
+          <label class="control-field fx-opacity">
             <span>Opacity</span>
             <input
               id="opacity-${track.id}"
@@ -758,6 +791,7 @@ function bindWorkstationControls() {
       applyVideoFx(track);
       applyTrackBlend(track);
       applyTrackOpacity(track);
+      applyTrackPitchAndSpeed(track);
     });
     renderArrangementPlayhead();
     window.freemixRender?.updateTransportRow?.();
@@ -810,6 +844,27 @@ function handleTrackControl(event) {
     return;
   }
 
+  if (controlName === "speed") {
+    track.speed = clamp(Number(control.value), 0.5, 2);
+    const valueEl = control.parentElement?.querySelector(".fx-mini-value");
+    if (valueEl) {
+      valueEl.textContent = `${Number(track.speed).toFixed(2)}x`;
+    }
+    applyTrackPitchAndSpeed(track);
+    return;
+  }
+
+  if (controlName === "pitch") {
+    track.pitch = clamp(Number(control.value), -12, 12);
+    const valueEl = control.parentElement?.querySelector(".fx-mini-value");
+    if (valueEl) {
+      const displayPitch = Number(track.pitch);
+      valueEl.textContent = `${displayPitch > 0 ? "+" : ""}${displayPitch}`;
+    }
+    applyTrackPitchAndSpeed(track);
+    return;
+  }
+
   if (controlName === "startTime" || controlName === "startNumber") {
     track.startTime = Math.max(0, Number(control.value) || 0);
     syncStartControls(track);
@@ -854,6 +909,10 @@ function handleTrackControl(event) {
     control.textContent = track.showAdvanced ? "Now" : "More";
     control.setAttribute("aria-pressed", String(track.showAdvanced));
     applyTrackControlVisibility(track);
+  }
+
+  if (controlName !== "sourceSearch") {
+    markAppStateDirty();
   }
 }
 
@@ -1022,6 +1081,7 @@ function triggerTrack(track, clip = track) {
   applyVideoFx(track, clip);
   applyTrackBlend(track, clip);
   applyTrackOpacity(track, clip);
+  applyTrackPitchAndSpeed(track, clip);
   video.play().catch(() => {
     setStatus("Tap play again", true);
   });
@@ -1249,6 +1309,17 @@ function applyTrackOpacity(track, state = track) {
   const rawOpacity = state.opacity;
   const opacity = Number.isFinite(Number(rawOpacity)) ? Number(rawOpacity) : 1;
   cell.style.opacity = `${clamp(opacity, 0, 1)}`;
+}
+
+function applyTrackPitchAndSpeed(track, state = track) {
+  const video = getTrackVideo(track);
+  if (!video) {
+    return;
+  }
+
+  const speed = Number.isFinite(Number(state.speed)) ? Number(state.speed) : 1;
+  const pitch = Number.isFinite(Number(state.pitch)) ? Number(state.pitch) : 0;
+  video.playbackRate = clamp(speed * 2 ** (pitch / 12), 0.25, 4);
 }
 
 function applyTrackBlend(track, state = track) {
@@ -1558,6 +1629,8 @@ function captureTrackClip(track) {
     muted: track.muted,
     blendMode: track.blendMode,
     opacity: track.opacity,
+    speed: track.speed,
+    pitch: track.pitch,
     fx: { ...track.fx },
   };
 }
@@ -1738,6 +1811,8 @@ function createInitialTracks() {
     muted: false,
     blendMode: ["normal", "screen", "difference", "add"][index],
     opacity: 1,
+    speed: 1,
+    pitch: 0,
     fx: {
       eqLow: 0,
       eqMid: 0,
@@ -1850,6 +1925,8 @@ function escapeHtml(value) {
           "volume",
           "blendMode",
           "opacity",
+          "speed",
+          "pitch",
           "durationFilter",
           "advanced",
           "fx",

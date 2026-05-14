@@ -869,16 +869,38 @@ input[type="number"]:focus {
 
 .fx-top-controls {
   display: grid;
-  grid-template-columns: minmax(76px, 1fr) minmax(96px, 1fr);
+  grid-template-columns: repeat(4, minmax(72px, 0.95fr));
   gap: 2px;
   align-items: end;
   margin-left: auto;
-  max-width: 240px;
+  max-width: 360px;
+  width: min(100%, 360px);
 }
 
 .fx-top-controls .control-field {
   min-width: 0;
   margin: 0;
+  gap: 2px;
+}
+
+.fx-top-control {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fx-mini-value {
+  justify-self: end;
+  min-height: 13px;
+  padding: 0 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: #111315;
+  color: var(--muted);
+  font-size: 0.56rem;
+  font-weight: 900;
+}
+
+.fx-mini-value:empty {
+  display: none;
 }
 
 .track-blend-select,
