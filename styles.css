@@ -370,6 +370,16 @@ input[type="number"]:focus {
   opacity: 0;
 }
 
+.video-matrix.layout-stack.has-sources .video-cell.no-source {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-matrix.layout-stack.has-sources .video-cell.no-source .track-badge,
+.video-matrix.layout-stack.has-sources .video-cell.no-source .track-empty-video {
+  display: none;
+}
+
 .video-matrix.layout-stack .video-cell.blend-normal {
   opacity: 1;
   mix-blend-mode: normal;

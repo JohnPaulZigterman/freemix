@@ -247,7 +247,7 @@ function renderWorkstation() {
       </div>
 
       <div class="performance-grid">
-        <div class="video-matrix layout-${videoLayout}" aria-label="Video sources">
+        <div class="video-matrix layout-${videoLayout} ${loadedTracks.length ? "has-sources" : "no-sources"}" aria-label="Video sources">
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
@@ -311,7 +311,7 @@ function renderArrangementRow(track) {
 
 function renderVideoCell(track, index) {
   return `
-    <div class="video-cell ${track.color} blend-${track.blendMode}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
+    <div class="video-cell ${track.color} blend-${track.blendMode} ${track.source ? "has-source" : "no-source"}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
       ${
         track.source
           ? `<video
@@ -319,7 +319,6 @@ function renderVideoCell(track, index) {
               id="video-${track.id}"
               src="${track.source.mediaUrl}"
               preload="metadata"
-              crossorigin="anonymous"
               playsinline
             ></video>`
           : `<div class="track-empty-video">Ready</div>`
