@@ -1,6 +1,7 @@
 (function initFreemixEvents() {
   let isBound = false;
   let playerPanel = null;
+  const boundVideoElements = new WeakSet();
 
   const CONTROL_SELECTOR = "[data-track-control]";
   const RESULT_SELECTOR = ".track-result-button[data-track-id][data-source-id]";
@@ -290,6 +291,29 @@
     }
   }
 
+  function bindTrackVideos() {
+    if (!playerPanel) {
+      return;
+    }
+
+    playerPanel.querySelectorAll(".track-video").forEach((video) => {
+      if (boundVideoElements.has(video)) {
+        return;
+      }
+
+      boundVideoElements.add(video);
+      video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
+      video.addEventListener("error", (event) => {
+        const sourceError = event?.target?.error;
+        const code = Number(sourceError?.code);
+        const message = sourceError?.message || (Number.isFinite(code) ? `code ${code}` : "unknown");
+        setStatus(`Media error: ${message}`, true);
+      });
+      video.muted = false;
+      video.volume = 1;
+    });
+  }
+
   function onKeydown(event) {
     if (event.key !== "Escape") {
       return;
@@ -306,44 +330,27 @@
   }
 
   function bind() {
-    if (isBound) {
-      return;
-    }
-
     playerPanel = document.querySelector("#playerPanel");
     if (!playerPanel) {
       return;
     }
 
-    playerPanel.addEventListener("click", onClick);
-    playerPanel.addEventListener("input", onInput);
-    playerPanel.addEventListener("change", onChange);
-    playerPanel.addEventListener("keydown", onKeydown);
+    if (!isBound) {
+      playerPanel.addEventListener("click", onClick);
+      playerPanel.addEventListener("input", onInput);
+      playerPanel.addEventListener("change", onChange);
+      playerPanel.addEventListener("keydown", onKeydown);
 
-    playerPanel.querySelectorAll(".track-video").forEach((video) => {
-      if (video.dataset.binding === "true") {
-        return;
-      }
-
-      video.dataset.binding = "true";
-      video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
-      video.addEventListener("error", (event) => {
-        const sourceError = event?.target?.error;
-        const code = Number(sourceError?.code);
-        const message = sourceError?.message || (Number.isFinite(code) ? `code ${code}` : "unknown");
-        setStatus(`Media error: ${message}`, true);
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest(".track-source")) {
+          clearResults();
+        }
       });
-      video.muted = false;
-      video.volume = 1;
-    });
 
-    document.addEventListener("click", (event) => {
-      if (!event.target.closest(".track-source")) {
-        clearResults();
-      }
-    });
+      isBound = true;
+    }
 
-    isBound = true;
+    bindTrackVideos();
   }
 
   window.freemixBindWorkstationControls = bind;

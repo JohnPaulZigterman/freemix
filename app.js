@@ -33,6 +33,7 @@ const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
 );
 const REVERB_BUFFER_CACHE = new WeakMap();
 const TUBE_CURVE_CACHE = new Map();
+let metronomeGain = null;
 const TRACK_LOOKUP = new Map();
 const UI_NODE_CACHE = {
   beatLights: null,
@@ -2129,6 +2130,10 @@ function safeSetCurrentTime(video, track) {
   }
 
   try {
+    if (almostEqual(video.currentTime, nextTime, 0.001)) {
+      return;
+    }
+
     video.currentTime = nextTime;
     return;
   } catch (error) {
@@ -2176,12 +2181,23 @@ function attemptVideoPlay(video, track, clipState) {
   const playWithState = async (muted) => {
     const hasLiveAudioGraph =
       !!track.audio && !webAudioDisabled && audioContext?.state === "running" && track.audio.mediaElement;
-    video.muted = muted;
+    if (video.muted !== muted) {
+      video.muted = muted;
+    }
+
     if (hasLiveAudioGraph && track.audio?.output?.gain) {
-      track.audio.output.gain.value = muted ? 0 : clipVolume;
-      video.volume = 1;
+      const targetGain = muted ? 0 : clipVolume;
+      if (!almostEqual(track.audio.output.gain.value, targetGain)) {
+        track.audio.output.gain.value = targetGain;
+      }
+      if (!almostEqual(video.volume, 1)) {
+        video.volume = 1;
+      }
     } else {
-      video.volume = muted ? 0 : clipVolume;
+      const targetVideoVolume = muted ? 0 : clipVolume;
+      if (!almostEqual(video.volume, targetVideoVolume)) {
+        video.volume = targetVideoVolume;
+      }
     }
 
     if (video.readyState < 2 && video.networkState !== 0) {
@@ -2211,8 +2227,13 @@ function attemptVideoPlay(video, track, clipState) {
         if (track.audio) {
           disposeTrackAudio(track);
         }
-        video.muted = shouldBeMuted;
-        video.volume = shouldBeMuted ? 0 : clipVolume;
+        if (video.muted !== shouldBeMuted) {
+          video.muted = shouldBeMuted;
+        }
+        const fallbackVolume = shouldBeMuted ? 0 : clipVolume;
+        if (!almostEqual(video.volume, fallbackVolume)) {
+          video.volume = fallbackVolume;
+        }
         await waitForTrackReady(video);
         await video.play();
         return shouldBeMuted;
@@ -2512,16 +2533,44 @@ function playMetronome(beat) {
     return;
   }
 
+  const metronomeOutput = getMetronomeGainNode();
+  if (!metronomeOutput) {
+    return;
+  }
+
+  const now = audioContext.currentTime;
+  const envelope = audioContext.createGain();
   const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
   oscillator.type = "square";
   oscillator.frequency.value = beat === 0 ? 1320 : 880;
-  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.08, audioContext.currentTime + 0.004);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.05);
-  oscillator.connect(gain).connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.055);
+  envelope.gain.setValueAtTime(0.0001, now);
+  envelope.gain.exponentialRampToValueAtTime(0.08, now + 0.004);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
+  oscillator.connect(envelope).connect(metronomeOutput);
+  oscillator.start(now);
+  oscillator.stop(now + 0.055);
+}
+
+function getMetronomeGainNode() {
+  if (!audioContext) {
+    return null;
+  }
+
+  if (!metronomeGain || metronomeGain.context !== audioContext) {
+    if (metronomeGain) {
+      try {
+        metronomeGain.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+
+    metronomeGain = audioContext.createGain();
+    metronomeGain.gain.value = 1;
+    metronomeGain.connect(audioContext.destination);
+  }
+
+  return metronomeGain;
 }
 
 function ensureAudioContext() {
@@ -2563,12 +2612,17 @@ function updateTrackDuration(video) {
 
   const trackId = video.id.replace("video-", "");
   const track = getTrackById(trackId);
+  const maxDurationValue = String(Math.max(1, video.duration - 1));
   getTrackControls({ id: trackId }, "startTime").forEach((range) => {
-    range.max = String(Math.max(1, video.duration - 1));
+    if (range.max !== maxDurationValue) {
+      range.max = maxDurationValue;
+    }
   });
 
   getTrackControls({ id: trackId }, "startNumber").forEach((number) => {
-    number.max = String(Math.max(1, video.duration - 1));
+    if (number.max !== maxDurationValue) {
+      number.max = maxDurationValue;
+    }
   });
 
   if (!track) {
@@ -2612,13 +2666,19 @@ function applyTrackVolume(track, state = track) {
   }
 
   const video = getTrackVideo(track);
-  if (track.audio?.output && hasLiveAudioGraph) {
+  if (track.audio?.output && hasLiveAudioGraph && !almostEqual(track.audio.output.gain.value, isMuted ? 0 : volume)) {
     track.audio.output.gain.value = isMuted ? 0 : volume;
   }
 
   if (video) {
-    video.muted = isMuted;
-    video.volume = hasLiveAudioGraph ? 1 : (isMuted ? 0 : volume);
+    if (video.muted !== isMuted) {
+      video.muted = isMuted;
+    }
+
+    const nextVolume = hasLiveAudioGraph ? 1 : isMuted ? 0 : volume;
+    if (!almostEqual(video.volume, nextVolume)) {
+      video.volume = nextVolume;
+    }
   }
 }
 
@@ -2745,7 +2805,11 @@ function applyTrackOpacity(track, state = track) {
 
   const rawOpacity = state.opacity;
   const opacity = Number.isFinite(Number(rawOpacity)) ? Number(rawOpacity) : 1;
-  cell.style.opacity = `${clamp(opacity, 0, 1)}`;
+  const nextOpacity = clamp(opacity, 0, 1);
+  const styleOpacity = Number(cell.style.opacity);
+  if (!Number.isFinite(styleOpacity) || !almostEqual(styleOpacity, nextOpacity)) {
+    cell.style.opacity = `${nextOpacity}`;
+  }
 }
 
 function applyTrackPitchAndSpeed(track, state = track) {
@@ -2756,7 +2820,10 @@ function applyTrackPitchAndSpeed(track, state = track) {
 
   const speed = Number.isFinite(Number(state.speed)) ? Number(state.speed) : 1;
   const pitch = Number.isFinite(Number(state.pitch)) ? Number(state.pitch) : 0;
-  video.playbackRate = clamp(speed * 2 ** (pitch / 12), 0.25, 4);
+  const nextPlaybackRate = clamp(speed * 2 ** (pitch / 12), 0.25, 4);
+  if (!almostEqual(video.playbackRate, nextPlaybackRate, 0.0005)) {
+    video.playbackRate = nextPlaybackRate;
+  }
 }
 
 function applyTrackBlend(track, state = track) {
@@ -3571,6 +3638,10 @@ function clamp(value, min, max) {
     return min;
   }
   return Math.min(Math.max(next, min), max);
+}
+
+function almostEqual(a, b, epsilon = 0.0005) {
+  return Math.abs(a - b) <= epsilon;
 }
 
 function escapeHtml(value) {
