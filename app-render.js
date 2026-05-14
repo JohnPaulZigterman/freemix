@@ -71,29 +71,47 @@
     }
   }
 
-  function buildArrangementGridMarkup() {
-    return `
-      ${tracks.map((track) => renderArrangementRow(track)).join("")}
-    `;
-  }
-
   function updateArrangementGrid() {
-    const grid = document.querySelector(".arrangement-grid");
-    if (!grid) {
-      return;
+    if (typeof window.freemixInvalidateUiNodeCache === "function") {
+      window.freemixInvalidateUiNodeCache();
     }
 
-    const stepLabels = Array.from({ length: arrangementStepCount }, (_, index) =>
-      renderArrangementStepLabel(index),
-    ).join("");
+    const labels = document.querySelector(".arrangement-step-labels");
+    if (labels) {
+      const nextLabels = typeof window.renderArrangementStepLabels === "function" ? window.renderArrangementStepLabels() : "";
+      labels.outerHTML = `
+        <div class="arrangement-step-labels" aria-label="Arrangement steps" style="--arrangement-steps: ${arrangementStepCount}">
+          ${nextLabels}
+        </div>
+      `;
+    }
 
-    grid.outerHTML = `
-      <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}">
-        <div class="arrangement-corner">Trk</div>
-        ${stepLabels}
-        ${buildArrangementGridMarkup()}
-      </div>
-    `;
+    const renderStrip = typeof window.renderTrackArrangementStrip === "function" ? window.renderTrackArrangementStrip : null;
+    const fallbackTrackRow = typeof window.renderArrangementRow === "function" ? window.renderArrangementRow : null;
+
+    tracks.forEach((track) => {
+      const trackStrip = document.querySelector(`.track-arrangement-strip[data-track-arrangement="${track.id}"]`);
+      if (!trackStrip || !track?.id) {
+        return;
+      }
+
+      const nextStrip = renderStrip
+        ? renderStrip(track)
+        : fallbackTrackRow
+          ? `<div class="track-arrangement-strip" style="--arrangement-steps: ${arrangementStepCount}" data-track-arrangement="${track.id}">
+              ${fallbackTrackRow(track)}
+            </div>`
+          : "";
+
+      if (nextStrip) {
+        trackStrip.outerHTML = nextStrip;
+      }
+    });
+
+    const allStrips = document.querySelectorAll(".track-arrangement-strip");
+    if (!allStrips.length) {
+      renderWorkstation();
+    }
   }
 
   function updateSourceStrip() {

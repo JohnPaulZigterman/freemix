@@ -303,6 +303,8 @@ function invalidateUiNodeCache() {
   UI_NODE_CACHE.arrangementCells = null;
 }
 
+window.freemixInvalidateUiNodeCache = invalidateUiNodeCache;
+
 function normalizeRetriggersPerBar(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -694,8 +696,7 @@ function renderWorkstation() {
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
         </div>
 
-        <div class="arrangement-track-inline">
-          ${renderArrangementPanel()}
+      <div class="arrangement-track-inline">
           <div class="control-bank" aria-label="Track controls">
             <div class="track-add-row">
               <button
@@ -707,6 +708,7 @@ function renderWorkstation() {
                 Add Track (${tracks.length}/${MAX_TRACK_COUNT})
               </button>
             </div>
+            ${renderArrangementPanel()}
             ${tracks.map((track) => renderTrackControlRow(track)).join("")}
           </div>
         </div>
@@ -749,14 +751,14 @@ function renderArrangementPanel() {
               ).join("")}
             </select>
           </label>
-        <button
+          <button
             class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
             type="button"
             id="arrangementToggle"
-          aria-pressed="${arrangement.enabled}"
-            >
-          ${arrangement.enabled ? "On" : "Off"}
-        </button>
+            aria-pressed="${arrangement.enabled}"
+          >
+            ${arrangement.enabled ? "On" : "Off"}
+          </button>
           <button
             class="arrangement-copy ${arrangementCopyMode ? "active" : ""}"
             type="button"
@@ -773,27 +775,29 @@ function renderArrangementPanel() {
           >
             Fill
           </button>
-      </div>
-        ${renderDebugPanel()}
-        <div class="arrangement-grid" style="--arrangement-steps: ${arrangementStepCount}">
-          <div class="arrangement-corner">Trk</div>
-          ${Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("")}
-        ${tracks.map((track) => renderArrangementRow(track)).join("")}
-      </div>
-      <div class="arrangement-clear-group">
-        <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
-        <div class="arrangement-clear-menu" id="arrangementClearMenu" data-open="false" hidden>
-          <small>Clear all sections?</small>
-          <button class="arrangement-clear-action" type="button" data-arrangement-clear="confirm">
-            Yes
-          </button>
-          <button class="arrangement-clear-action" type="button" data-arrangement-clear="cancel">
-            No
-          </button>
+          <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
         </div>
-      </div>
-    </aside>
+        <div class="arrangement-clear-group">
+          <div class="arrangement-clear-menu" id="arrangementClearMenu" data-open="false" hidden>
+            <small>Clear all sections?</small>
+            <button class="arrangement-clear-action" type="button" data-arrangement-clear="confirm">
+              Yes
+            </button>
+            <button class="arrangement-clear-action" type="button" data-arrangement-clear="cancel">
+              No
+            </button>
+          </div>
+        </div>
+        <div class="arrangement-step-labels" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement steps">
+          ${renderArrangementStepLabels()}
+        </div>
+        ${renderDebugPanel()}
+      </aside>
   `;
+}
+
+function renderArrangementStepLabels() {
+  return Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("");
 }
 
 function renderDebugPanel() {
@@ -826,10 +830,7 @@ function renderArrangementStepLabel(stepIndex) {
 }
 
 function renderArrangementRow(track) {
-  const trackLabelMatch = /^Track\s+(\d+)/i.exec(track.name);
-  const arrangementTrackLabel = trackLabelMatch ? `T${trackLabelMatch[1]}` : track.name.slice(0, 2).toUpperCase();
   return `
-    <div class="arrangement-track-label ${track.color}">${escapeHtml(arrangementTrackLabel)}</div>
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
@@ -846,6 +847,14 @@ function renderArrangementRow(track) {
         `;
       })
       .join("")}
+  `;
+}
+
+function renderTrackArrangementStrip(track) {
+  return `
+    <div class="track-arrangement-strip" style="--arrangement-steps: ${arrangementStepCount}" data-track-arrangement="${escapeHtml(track.id)}">
+      ${renderArrangementRow(track)}
+    </div>
   `;
 }
 
@@ -892,7 +901,7 @@ function renderTrackControlRow(track) {
         <span>${escapeHtml(track.role)}</span>
       </div>
       <div class="track-source">
-        ${sourceControls}
+    ${sourceControls}
         <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
           <strong>${escapeHtml(sourceTitle)}</strong>
           <span>${escapeHtml(sourceMeta)}</span>
@@ -902,6 +911,7 @@ function renderTrackControlRow(track) {
       ${basicControls}
       ${advancedControls}
       ${fxChain}
+      ${renderTrackArrangementStrip(track)}
       <button
         class="track-toggle"
         type="button"
