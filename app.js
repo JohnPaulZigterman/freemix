@@ -261,6 +261,39 @@ function getTrackRowElement(track) {
   return playerPanel?.querySelector(`article.track-row[data-track-row-id="${trackId}"]`) || null;
 }
 
+function syncArrangementTrackHeights() {
+  if (!playerPanel) {
+    return;
+  }
+
+  tracks.forEach((track) => {
+    const trackRow = getTrackRowElement(track);
+    const arrangementRow = playerPanel.querySelector(`.arrangement-track-row[data-track-id="${track.id}"]`);
+    if (!trackRow || !arrangementRow) {
+      return;
+    }
+
+    const nextHeight = Math.round(trackRow.getBoundingClientRect().height);
+    if (!Number.isFinite(nextHeight) || nextHeight <= 0) {
+      return;
+    }
+
+    arrangementRow.style.setProperty("--arr-track-height", `${Math.max(28, nextHeight)}px`);
+  });
+}
+
+let arrangementTrackHeightSyncFrame = null;
+function queueArrangementTrackHeightSync() {
+  if (arrangementTrackHeightSyncFrame !== null) {
+    return;
+  }
+
+  arrangementTrackHeightSyncFrame = window.requestAnimationFrame(() => {
+    arrangementTrackHeightSyncFrame = null;
+    syncArrangementTrackHeights();
+  });
+}
+
 function getTrackControls(track, controlName) {
   const trackId = track?.id;
   if (!trackId || !controlName) {
@@ -289,6 +322,8 @@ function getTrackVideo(track) {
 
   return playerPanel?.querySelector(`#video-${trackId}`) || null;
 }
+
+window.addEventListener("resize", queueArrangementTrackHeightSync, { passive: true });
 
 function getBeatLights() {
   if (UI_NODE_CACHE.beatLights !== null) {
@@ -830,6 +865,7 @@ function renderWorkstation() {
   invalidateUiNodeCache();
   bindWorkstationControls();
   tracks.forEach(applyTrackControlVisibility);
+  syncArrangementTrackHeights();
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
   if (appState.userOnboarding?.needsHint) {
@@ -847,6 +883,7 @@ function applyTrackControlVisibility(track) {
   trackRow.querySelectorAll(".control-advanced").forEach((control) => {
     control.classList.toggle("is-hidden", !track.showAdvanced);
   });
+  syncArrangementTrackHeights();
 }
 
 function renderArrangementPanel() {
@@ -961,10 +998,12 @@ function renderArrangementGrid() {
       ${tracks
         .map(
           (track) => `
-            <div class="arrangement-track-label ${track.color}" title="${escapeHtml(track.name)}">
-              ${escapeHtml(track.name)}
+            <div class="arrangement-track-row" data-track-id="${track.id}">
+              <div class="arrangement-track-label ${track.color}" title="${escapeHtml(track.name)}">
+                ${escapeHtml(track.name)}
+              </div>
+              ${renderArrangementRow(track)}
             </div>
-            ${renderArrangementRow(track)}
           `,
         )
         .join("")}
@@ -2342,6 +2381,7 @@ window.closeArrangementClearMenu = closeArrangementClearMenu;
 window.openArrangementClearMenu = openArrangementClearMenu;
 window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
 window.renderArrangementGrid = renderArrangementGrid;
+window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 
 function updateArrangementStepCount(event) {
   const nextLength = Number(event.target.value);

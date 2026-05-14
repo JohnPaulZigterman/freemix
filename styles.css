@@ -625,7 +625,7 @@ input[type="number"]:focus {
   display: grid;
   grid-template-rows: auto auto auto auto;
   max-width: 100%;
-  max-height: min(44vh, 340px);
+  max-height: min(54vh, 430px);
   overflow: hidden;
   min-width: 0;
   padding: 3px;
@@ -769,12 +769,21 @@ input[type="number"]:focus {
 .arrangement-grid {
   display: grid;
   width: 100%;
-  grid-template-columns: var(--arr-label-width) repeat(var(--arrangement-steps), minmax(0, 1fr));
-  grid-auto-rows: var(--control-h-sm);
+  grid-template-columns: 1fr;
   gap: var(--control-gap-tight);
   align-content: start;
   overflow: auto;
-  max-height: min(32vh, 180px);
+  max-height: min(38vh, 280px);
+}
+
+.arrangement-track-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: var(--arr-label-width) repeat(var(--arrangement-steps), minmax(0, 1fr));
+  gap: var(--control-gap-tight);
+  align-items: stretch;
+  align-self: stretch;
+  min-height: var(--arr-track-height, var(--control-h-sm));
 }
 
 .arrangement-corner,
@@ -831,15 +840,16 @@ input[type="number"]:focus {
 }
 
 .arrangement-track-label {
-  min-height: var(--control-h-sm);
+  min-height: var(--arr-track-height, var(--control-h-sm));
+  height: var(--arr-track-height, var(--control-h-sm));
   color: var(--track-color);
 }
 
 .arrangement-cell {
   display: grid;
   min-width: 0;
-  min-height: var(--control-h-sm);
-  height: var(--control-h-sm);
+  min-height: var(--arr-track-height, var(--control-h-sm));
+  height: var(--arr-track-height, var(--control-h-sm));
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 0;
@@ -1009,7 +1019,7 @@ input[type="number"]:focus {
   align-items: start;
   gap: 2px;
   margin-top: 0;
-  max-height: min(44vh, 320px);
+  max-height: min(54vh, 430px);
   overflow: auto;
   position: relative;
   padding-top: 1px;
@@ -1769,7 +1779,7 @@ input[type="range"]::-moz-range-thumb {
     min-width: 0;
   }
 
-  .arrangement-grid {
+  .arrangement-track-row {
     grid-template-columns: 28px repeat(var(--arrangement-steps), minmax(0, 1fr));
   }
 
@@ -1905,7 +1915,7 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .arrangement-grid {
-    max-height: min(24vh, 150px);
+    max-height: min(32vh, 190px);
   }
 
   .arrangement-step-label,
@@ -2060,10 +2070,12 @@ input[type="range"]:focus-visible::-moz-range-thumb {
     line-height: 1;
   }
 
-  .arrangement-grid {
+  .arrangement-track-row {
     grid-template-columns: 48px repeat(var(--arrangement-steps), minmax(0, 1fr));
-    grid-auto-rows: var(--control-h-xs);
-    max-height: min(30vh, 128px);
+  }
+
+  .arrangement-grid {
+    max-height: min(34vh, 145px);
   }
 
   .arrangement-step-label,

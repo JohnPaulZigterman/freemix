@@ -64,6 +64,8 @@
     if (typeof window.applyTrackControlVisibility === "function") {
       window.applyTrackControlVisibility(track);
     }
+
+    window.freemixSyncArrangementTrackHeights?.();
   }
 
   function updateArrangementCell(track, stepIndex) {
@@ -111,17 +113,20 @@
     const arrangementGrid = document.querySelector(".arrangement-grid");
     const renderGrid = typeof window.renderArrangementGrid === "function" ? window.renderArrangementGrid() : "";
     if (arrangementGrid) {
-      if (renderGrid) {
+    if (renderGrid) {
         arrangementGrid.outerHTML = renderGrid;
+        window.freemixSyncArrangementTrackHeights?.();
         return;
       }
 
       renderWorkstation();
+      window.freemixSyncArrangementTrackHeights?.();
       return;
     }
 
     if (typeof renderWorkstation === "function") {
       renderWorkstation();
+      window.freemixSyncArrangementTrackHeights?.();
     }
   }
 
