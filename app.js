@@ -1974,6 +1974,7 @@ function handleTrackControl(event) {
 
   if (controlName === "blendMode") {
     track.blendMode = control.value;
+    applyArrangementClipControlValue(track, "blendMode", track.blendMode);
     applyTrackBlend(track);
     updateTrackModeChips(track);
     return;
@@ -1981,6 +1982,7 @@ function handleTrackControl(event) {
 
   if (controlName === "opacity") {
     track.opacity = clamp(Number(control.value), 0, 1);
+    applyArrangementClipControlValue(track, "opacity", track.opacity);
     applyTrackOpacity(track);
     updateTrackModeChips(track);
     return;
@@ -1988,6 +1990,7 @@ function handleTrackControl(event) {
 
   if (controlName === "speed") {
     track.speed = clamp(Number(control.value), 0.5, 2);
+    applyArrangementClipControlValue(track, "speed", track.speed);
     const valueEl = control.parentElement?.querySelector(".fx-mini-value");
     if (valueEl) {
       valueEl.textContent = `${Number(track.speed).toFixed(2)}x`;
@@ -1998,6 +2001,7 @@ function handleTrackControl(event) {
 
   if (controlName === "pitch") {
     track.pitch = clamp(Number(control.value), -12, 12);
+    applyArrangementClipControlValue(track, "pitch", track.pitch);
     const valueEl = control.parentElement?.querySelector(".fx-mini-value");
     if (valueEl) {
       const displayPitch = Number(track.pitch);
@@ -2016,9 +2020,7 @@ function handleTrackControl(event) {
     }
 
     track.startTime = nextStartTime;
-    if (track.arrangementClip) {
-      track.arrangementClip.startTime = nextStartTime;
-    }
+    applyArrangementClipControlValue(track, "startTime", nextStartTime);
 
     syncStartControls(track);
     if (video && (!transport?.active || event?.type !== "input")) {
@@ -2035,6 +2037,7 @@ function handleTrackControl(event) {
 
   if (controlName === "retriggersPerBar") {
     track.retriggersPerBar = normalizeRetriggersPerBar(control.value);
+    applyArrangementClipControlValue(track, "retriggersPerBar", track.retriggersPerBar);
     track.lastStep = -1;
     resyncTrackTiming(track);
     previewTrack(track);
@@ -2042,27 +2045,30 @@ function handleTrackControl(event) {
 
   if (controlName === "volume") {
     track.volume = Number(control.value);
+    applyArrangementClipControlValue(track, "volume", track.volume);
     applyTrackVolume(track);
   }
 
   if (controlName in track.fx) {
     track.fx[controlName] = Number(control.value);
+    applyArrangementClipControlValue(track, controlName, track.fx[controlName]);
     const valueEl = control.parentElement?.querySelector(".fx-value");
     const fxDefinition = FX_CONTROL_INDEX[controlName];
     if (valueEl && fxDefinition) {
-    const value =
+      const value =
         Number.isInteger(fxDefinition.step) || fxDefinition.step >= 1
           ? Math.round(track.fx[controlName])
           : track.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
       valueEl.textContent = String(value);
     }
-    applyTrackFx(track);
-    applyVideoFx(track);
+    applyTrackFx(track, track.arrangementClip ?? track);
+    applyVideoFx(track, track.arrangementClip ?? track);
     updateTrackModeChips(track);
   }
 
   if (controlName === "muted") {
     track.muted = !track.muted;
+    applyArrangementClipControlValue(track, "muted", track.muted);
     control.textContent = track.muted ? "Muted" : "On";
     control.setAttribute("aria-pressed", String(track.muted));
     updateTrackModeChips(track);
@@ -2782,6 +2788,62 @@ function syncStartControls(track) {
   });
 }
 
+function applyArrangementClipControlValue(track, controlName, value) {
+  const clip = track?.arrangementClip;
+  if (!clip || !tracks.includes(track)) {
+    return;
+  }
+
+  if (controlName === "speed") {
+    clip.speed = clamp(Number(value), 0.5, 2);
+    return;
+  }
+
+  if (controlName === "pitch") {
+    clip.pitch = clamp(Number(value), -12, 12);
+    return;
+  }
+
+  if (controlName === "startTime") {
+    clip.startTime = Number.isFinite(Number(value)) ? Number(value) : 0;
+    return;
+  }
+
+  if (controlName === "volume") {
+    clip.volume = clamp(Number(value), 0, 1);
+    return;
+  }
+
+  if (controlName === "opacity") {
+    clip.opacity = clamp(Number(value), 0, 1);
+    return;
+  }
+
+  if (controlName === "blendMode") {
+    clip.blendMode = typeof value === "string" && BLEND_MODE_OPTIONS.some(({ value: mode }) => mode === value)
+      ? value
+      : TRACK_BLEND_DEFAULTS[0];
+    return;
+  }
+
+  if (controlName === "retriggersPerBar") {
+    clip.retriggersPerBar = normalizeRetriggersPerBar(value);
+    return;
+  }
+
+  if (controlName === "muted") {
+    clip.muted = !!value;
+    return;
+  }
+
+  if (clip.fx && controlName in clip.fx) {
+    const nextValue = Number(value);
+    if (Number.isFinite(nextValue)) {
+      clip.fx[controlName] = nextValue;
+    }
+  }
+}
+
 function applyTrackVolume(track, state = track) {
   const isMuted = !!state.muted;
   const volume = clamp(Number(state.volume), 0, 1);
@@ -2886,14 +2948,22 @@ function applyTrackFx(track, state = track) {
     return;
   }
 
-  audio.low.gain.value = state.fx.eqLow;
-  audio.mid.gain.value = state.fx.eqMid;
-  audio.high.gain.value = state.fx.eqHigh;
-  audio.drive.curve = getTubeCurve(state.fx.tube);
+  const fxState = state?.fx || {};
+  const eqLow = clamp(Number(fxState.eqLow), -12, 12);
+  const eqMid = clamp(Number(fxState.eqMid), -12, 12);
+  const eqHigh = clamp(Number(fxState.eqHigh), -12, 12);
+  const tube = clamp(Number(fxState.tube), 0, 1);
+  const delay = clamp(Number(fxState.delay), 0, 1);
+  const reverb = clamp(Number(fxState.reverb), 0, 1);
+
+  audio.low.gain.value = eqLow;
+  audio.mid.gain.value = eqMid;
+  audio.high.gain.value = eqHigh;
+  audio.drive.curve = getTubeCurve(tube);
   audio.drive.oversample = "4x";
-  audio.delay.delayTime.value = 0.12 + state.fx.delay * 0.5;
-  audio.delayGain.gain.value = state.fx.delay * 0.42;
-  audio.reverbGain.gain.value = state.fx.reverb * 0.45;
+  audio.delay.delayTime.value = 0.12 + delay * 0.5;
+  audio.delayGain.gain.value = delay * 0.42;
+  audio.reverbGain.gain.value = reverb * 0.45;
 }
 
 function applyVideoFx(track, state = track) {
@@ -2902,16 +2972,17 @@ function applyVideoFx(track, state = track) {
     return;
   }
 
-  const lowLift = Math.max(state.fx.eqLow, 0) / 12;
-  const midCut = Math.max(-state.fx.eqMid, 0) / 12;
-  const highLift = Math.max(state.fx.eqHigh, 0) / 12;
-  const highCut = Math.max(-state.fx.eqHigh, 0) / 12;
-  const tube = state.fx.tube;
-  const delay = state.fx.delay;
-  const reverb = state.fx.reverb;
+  const fxState = state?.fx || {};
+  const lowLift = Math.max(clamp(Number(fxState.eqLow), -12, 12), 0) / 12;
+  const midCut = Math.max(-clamp(Number(fxState.eqMid), -12, 12), 0) / 12;
+  const highLift = Math.max(clamp(Number(fxState.eqHigh), -12, 12), 0) / 12;
+  const highCut = Math.max(-clamp(Number(fxState.eqHigh), -12, 12), 0) / 12;
+  const tube = clamp(Number(fxState.tube), 0, 1);
+  const delay = clamp(Number(fxState.delay), 0, 1);
+  const reverb = clamp(Number(fxState.reverb), 0, 1);
 
   const brightness = 0.86 + highLift * 0.3 - highCut * 0.22 + lowLift * 0.06;
-  const contrast = 1 + tube * 0.45 + Math.max(state.fx.eqMid, 0) * 0.018;
+  const contrast = 1 + tube * 0.45 + Math.max(clamp(Number(fxState.eqMid), -12, 12), 0) * 0.018;
   const saturate = 0.92 + lowLift * 0.25 + highLift * 0.18 + tube * 0.75;
   const blur = reverb * 2.2 + highCut * 1.4 + midCut * 0.6;
   const hue = state.fx.eqMid * 1.6;
@@ -2959,8 +3030,9 @@ function applyTrackBlend(track, state = track) {
     return;
   }
 
+  const requestedBlend = Object.prototype.hasOwnProperty.call(BLEND_MODES, state.blendMode) ? state.blendMode : TRACK_BLEND_DEFAULTS[0];
   Object.keys(BLEND_MODES).forEach((mode) => cell.classList.remove(`blend-${mode}`));
-  cell.classList.add(`blend-${state.blendMode}`);
+  cell.classList.add(`blend-${requestedBlend}`);
 }
 
 function disposeTrackAudio(track) {
