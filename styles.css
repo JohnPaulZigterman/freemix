@@ -61,7 +61,7 @@
   --control-h-lg: 17px;
   --control-gap-tight: 2px;
   --arr-label-width: 56px;
-  --arr-track-height-cap: 0px;
+  --arr-track-height-cap: 58px;
 }
 
 * {
@@ -558,9 +558,9 @@ input[type="number"]:focus {
 .arrangement-track-inline {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(300px, 0.95fr) minmax(360px, 1.6fr);
-  gap: 2px;
-  align-items: stretch;
+  grid-template-columns: minmax(320px, 0.96fr) minmax(360px, 1.2fr);
+  gap: 3px;
+  align-items: start;
   min-height: 0;
   width: 100%;
 }
@@ -707,7 +707,7 @@ input[type="number"]:focus {
   min-width: 0;
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto auto auto auto;
+  grid-template-rows: auto auto 1fr auto;
   max-width: 100%;
   max-height: min(54vh, 430px);
   overflow: hidden;
@@ -1193,7 +1193,7 @@ input[type="number"]:focus {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
+  gap: 1px;
   align-items: start;
   align-self: start;
   min-width: 0;
@@ -1332,19 +1332,19 @@ input[type="number"]:focus {
 }
 
 .track-channel-row--top {
-  grid-template-columns: minmax(220px, 1fr) minmax(86px, 0.58fr) auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(80px, 0.56fr) minmax(52px, 0.36fr);
   align-items: start;
 }
 
 .track-channel-row--bottom {
-  grid-template-columns: minmax(0, 1.48fr) minmax(50px, 0.48fr) minmax(76px, 0.74fr) minmax(48px, 0.52fr);
+  grid-template-columns: minmax(0, 1.42fr) minmax(50px, 0.47fr) minmax(52px, 0.36fr);
 }
 
 .track-source {
   min-width: 0;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(82px, 0.84fr) 50px 56px minmax(0, 1.08fr);
+  grid-template-columns: minmax(76px, 0.82fr) 48px 50px minmax(0, 1.06fr);
   gap: 2px;
   padding: 0;
 }
@@ -1369,9 +1369,9 @@ input[type="number"]:focus {
 .fx-chain {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px;
+  gap: 1px;
   align-items: end;
-  padding-top: 2px;
+  padding-top: 1px;
   border-top: 1px solid color-mix(in srgb, var(--silver) 40%, transparent);
   position: relative;
   z-index: 1;
@@ -1401,20 +1401,28 @@ input[type="number"]:focus {
 
 .fx-header {
   grid-column: 1 / -1;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  column-gap: 2px;
   gap: 4px;
 }
 
 .fx-top-controls {
   display: grid;
-  grid-template-columns: repeat(4, minmax(58px, 1fr));
+  grid-template-columns: minmax(56px, 82px) minmax(60px, 96px) auto;
   gap: 2px;
   align-items: end;
-  margin-left: auto;
-  max-width: 340px;
-  width: min(100%, 340px);
+  justify-content: end;
+  max-width: min(100%, 340px);
+}
+
+.track-fx-toggle {
+  min-width: 44px;
+  justify-self: end;
+  align-self: stretch;
+  padding-inline: 4px;
+  white-space: nowrap;
 }
 
 .fx-top-controls .control-field {
@@ -1740,7 +1748,7 @@ input[type="range"]::-moz-range-thumb {
 .track-row .track-advanced-toggle,
 .track-row select,
 .track-row input[type="number"] {
-  min-height: 18px;
+  min-height: var(--control-h-md);
   line-height: 1.1;
 }
 
@@ -2160,7 +2168,7 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .track-channel-row--bottom {
-    grid-template-columns: minmax(110px, 1.4fr) minmax(50px, 0.52fr) minmax(64px, 0.6fr) minmax(44px, 0.52fr);
+    grid-template-columns: minmax(110px, 1.42fr) minmax(50px, 0.47fr) minmax(48px, 0.36fr);
   }
 
   .track-state-chip {

@@ -1790,16 +1790,6 @@ function renderTrackControlRow(track) {
       <div class="track-channel-row track-channel-row--bottom">
         ${timingControls}
         ${levelControls}
-        <button
-          class="track-advanced-toggle"
-          type="button"
-          data-track-control="${track.id}"
-          data-control="advanced"
-          aria-pressed="${!!track.showAdvanced}"
-          title="Reveal advanced controls"
-        >
-          ${track.showAdvanced ? "Less" : "More"}
-        </button>
       </div>
       ${advancedControls}
     </article>
@@ -1911,6 +1901,16 @@ function renderTrackControlField(track, control) {
                 aria-label="${escapeHtml(`${track.name} Opacity`)}"
               >
             </label>
+            <button
+              class="track-advanced-toggle track-fx-toggle"
+              type="button"
+              data-track-control="${track.id}"
+              data-control="advanced"
+              aria-pressed="${!!track.showAdvanced}"
+              title="Reveal advanced controls"
+            >
+              ${track.showAdvanced ? "Less" : "More"}
+            </button>
             <label class="control-field fx-top-control control-advanced">
               <span>Pitch</span>
               <output class="fx-mini-value" for="pitch-${track.id}" aria-hidden="true">${pitchValue > 0 ? "+" : ""}${pitchValue}</output>
@@ -2073,7 +2073,11 @@ function handleTrackControl(event) {
     applyArrangementClipControlValue(track, "startTime", nextStartTime);
 
     syncStartControls(track);
-    if (video && (!transport?.active || event?.type !== "input")) {
+    if (video && transport?.active) {
+      track.nextTriggerAt = performance.now();
+    }
+
+    if (video) {
       safeSetCurrentTime(video, track.arrangementClip ?? track);
     }
 
@@ -3413,6 +3417,10 @@ function clearArrangement() {
 function openArrangementClearMenu() {
   const clearMenu = getArrangementClearMenu();
   if (!clearMenu) {
+    return;
+  }
+
+  if (clearMenu.hidden === false && clearMenu.getAttribute("data-open") === "true") {
     return;
   }
 
