@@ -218,8 +218,10 @@
 
   function sanitizeArrangementPreferenceState(raw = {}) {
     const input = sanitizeRecord(raw);
+    const rawStep = sanitizeNumber(input.step, 0);
+
     return {
-      step: sanitizeNumber(input.step, 0),
+      step: Number.isFinite(rawStep) ? Math.max(0, Math.floor(rawStep)) : 0,
       enabled: !!input.enabled,
     };
   }
