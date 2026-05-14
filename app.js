@@ -76,14 +76,14 @@ const TRACK_COLORS = ["green", "amber", "blue", "red"];
 const TRACK_BLEND_DEFAULTS = ["normal", "screen", "difference", "add"];
 const TRACK_RETRIGGER_DEFAULTS = [1, 2, 4, 8];
 const RETRIGGER_LABELS = {
-  1: "1 - anchor",
-  2: "2 - stride",
-  3: "3 - roll",
-  4: "4 - pulse",
-  5: "5 - skip",
-  6: "6 - drive",
-  7: "7 - spark",
-  8: "8 - rush",
+  1: "Whole",
+  2: "Half",
+  3: "Triplet",
+  4: "Quarter",
+  5: "Quintuplet",
+  6: "Sextuplet",
+  7: "Septuplet",
+  8: "Eighth",
 };
 const DURATION_FILTERS = {
   any: { label: "Any", min: 0, max: Infinity },
@@ -112,6 +112,8 @@ const TRACK_CONTROL_SECTIONS = {
       control: "sourceSearch",
       type: "search",
       label: "Find",
+      icon: "◉",
+      tooltip: "Search for a source clip",
       attrs: {
         type: "search",
         placeholder: "Search video",
@@ -122,6 +124,8 @@ const TRACK_CONTROL_SECTIONS = {
       control: "durationFilter",
       type: "select",
       label: "Length",
+      icon: "⏱",
+      tooltip: "Filter clips by length",
       fieldClass: "duration-filter",
       options: Object.entries(DURATION_FILTERS).map(([value, filter]) => ({
         value,
@@ -129,11 +133,13 @@ const TRACK_CONTROL_SECTIONS = {
       })),
     },
   ],
-  basic: [
+  timing: [
     {
       control: "startTime",
       type: "range",
       label: "Anchor",
+      icon: "⎋",
+      tooltip: "Anchor start point in seconds",
       fieldClass: "start-field",
       inputProps: {
         min: "0",
@@ -145,26 +151,36 @@ const TRACK_CONTROL_SECTIONS = {
       control: "startNumber",
       type: "number",
       label: "Sec",
+      icon: "#",
+      tooltip: "Anchor offset override",
       fieldClass: "compact-number",
       inputProps: {
         min: "0",
         step: "0.1",
       },
     },
+  ],
+  density: [
     {
       control: "retriggersPerBar",
       type: "select",
       label: "Density",
-      fieldClass: "energy-field",
+      icon: "♫",
+      tooltip: "How often this track retriggers each bar",
+      fieldClass: "density-field",
       options: Object.entries(RETRIGGER_LABELS).map(([value, label]) => ({
         value,
         label,
       })),
     },
+  ],
+  performance: [
     {
       control: "volume",
       type: "range",
       label: "Level",
+      icon: "∥",
+      tooltip: "Track output level",
       fieldClass: "volume-field",
       inputProps: {
         min: "0",
@@ -188,6 +204,31 @@ const appState = window.freemixState || {};
 const appStateManager = window.freemixStateManager || {};
 const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
 
+function normalizeArrangementState(targetArrangement, targetStepCount) {
+  const arrangementState = targetArrangement;
+  if (!arrangementState || typeof arrangementState !== "object") {
+    return;
+  }
+
+  const stepCount = Math.max(
+    1,
+    Number.isFinite(Number(targetStepCount)) ? Math.max(1, Math.floor(Number(targetStepCount))) : DEFAULT_ARRANGEMENT_STEPS,
+  );
+  const existingClips = Array.isArray(arrangementState.clips) ? arrangementState.clips : [];
+  arrangementState.clips = existingClips
+    .slice(0, stepCount)
+    .map((clip) => (clip && typeof clip === "object" && !Array.isArray(clip) ? clip : {}));
+  while (arrangementState.clips.length < stepCount) {
+    arrangementState.clips.push({});
+  }
+
+  arrangementState.step = Number.isFinite(Number(arrangementState.step))
+    ? clamp(Math.floor(Number(arrangementState.step)), 0, arrangementState.clips.length - 1)
+    : 0;
+  arrangementState.enabled = !!arrangementState.enabled;
+  arrangementState.steps = arrangementState.clips.length;
+}
+
 if (!Array.isArray(appState.tracks) || appState.tracks.length === 0) {
   appState.tracks = createInitialTracks(DEFAULT_TRACK_COUNT);
 } else if (appState.tracks.length > MAX_TRACK_COUNT) {
@@ -203,12 +244,18 @@ if (!appState.arrangement) {
 } else if (typeof appStateManager.hydrateArrangement === "function") {
   appStateManager.hydrateArrangement(appState.arrangement);
 }
+normalizeArrangementState(appState.arrangement, appState.arrangementStepCount || DEFAULT_ARRANGEMENT_STEPS);
 
 if (!appState.userOnboarding || !appState.userOnboarding.phase) {
   appState.userOnboarding = { phase: "seed", needsHint: true };
 }
 
 refreshTrackLookup();
+tracks.forEach((track) => {
+  if (typeof track.solo !== "boolean") {
+    track.solo = false;
+  }
+});
 
 function markAppStateDirty(force = false) {
   if (typeof appState.__markStateDirty === "function") {
@@ -235,6 +282,7 @@ const searchRequestInflight = new Map();
 const liveControlSchedulers = new Map();
 let arrangementPlayheadStep = -1;
 let liveControlPersistTimer = null;
+let arrangementPlayheadUpdateFrame = null;
 
 function getTrackById(trackId) {
   if (!trackId) {
@@ -245,6 +293,64 @@ function getTrackById(trackId) {
 }
 
 window.freemixGetTrackById = getTrackById;
+
+function hasSoloTracksEnabled() {
+  return tracks.some((track) => !!track?.solo);
+}
+
+function hasNonDefaultFx(track) {
+  if (track?.blendMode !== TRACK_BLEND_DEFAULTS[0]) {
+    return true;
+  }
+  if (Number(track?.opacity) !== 1) {
+    return true;
+  }
+  if (Number(track?.pitch) !== 0 || Number(track?.speed) !== 1) {
+    return true;
+  }
+  return Object.values(track?.fx || {}).some((value) => Number(value) !== 0);
+}
+
+function isTrackAudibleInMix(track) {
+  if (!track || track.muted) {
+    return false;
+  }
+  if (!hasSoloTracksEnabled()) {
+    return true;
+  }
+
+  return !!track.solo;
+}
+
+function updateTrackModeChips(track) {
+  const trackRow = getTrackRowElement(track);
+  if (!trackRow) {
+    return;
+  }
+
+  const activeChip = trackRow.querySelector('[data-state="active"]');
+  const mutedChip = trackRow.querySelector('[data-state="muted"]');
+  const fxChip = trackRow.querySelector('[data-state="fx"]');
+  const soloChip = trackRow.querySelector('[data-control="solo"]');
+
+  if (activeChip) {
+    activeChip.classList.toggle("is-on", !track.muted);
+  }
+  if (mutedChip) {
+    mutedChip.classList.toggle("is-on", !!track.muted);
+  }
+  if (fxChip) {
+    fxChip.classList.toggle("is-on", hasNonDefaultFx(track) || !!track.showAdvanced);
+  }
+  if (soloChip) {
+    soloChip.classList.toggle("is-on", !!track.solo);
+    soloChip.setAttribute("aria-pressed", String(!!track.solo));
+  }
+}
+
+function applyTrackModeChipsToAll() {
+  tracks.forEach(updateTrackModeChips);
+}
 
 function refreshTrackLookup() {
   TRACK_LOOKUP.clear();
@@ -269,6 +375,11 @@ function syncArrangementTrackHeights() {
     return;
   }
 
+  const compactHeightCap = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--arr-track-height-cap"),
+  );
+  const maxTrackHeight = Number.isFinite(compactHeightCap) && compactHeightCap > 0 ? compactHeightCap : Number.POSITIVE_INFINITY;
+
   tracks.forEach((track) => {
     const trackRow = getTrackRowElement(track);
     const arrangementRow = playerPanel.querySelector(`.arrangement-track-row[data-track-id="${track.id}"]`);
@@ -281,7 +392,8 @@ function syncArrangementTrackHeights() {
       return;
     }
 
-    arrangementRow.style.setProperty("--arr-track-height", `${Math.max(22, nextHeight)}px`);
+    const syncedHeight = Math.max(16, Math.min(nextHeight, maxTrackHeight));
+    arrangementRow.style.setProperty("--arr-track-height", `${syncedHeight}px`);
   });
 }
 
@@ -470,7 +582,7 @@ function resyncTrackTiming(track) {
     return;
   }
 
-  const beatMs = 60000 / transport.bpm;
+  const beatMs = transport?.beatMs || 60000 / transport.bpm;
   const barMs = beatMs * 4;
   track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
   track.nextTriggerAt = Math.max(performance.now(), transport.nextBeatAt || performance.now());
@@ -1028,6 +1140,7 @@ function renderWorkstation() {
   invalidateUiNodeCache();
   bindWorkstationControls();
   tracks.forEach(applyTrackControlVisibility);
+  tracks.forEach(updateTrackModeChips);
   syncArrangementTrackHeights();
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
@@ -1046,6 +1159,7 @@ function applyTrackControlVisibility(track) {
   trackRow.querySelectorAll(".control-advanced").forEach((control) => {
     control.classList.toggle("is-hidden", !track.showAdvanced);
   });
+  updateTrackModeChips(track);
   syncArrangementTrackHeights();
 }
 
@@ -1109,7 +1223,10 @@ function renderArrangementPanel() {
 }
 
 function renderArrangementStepLabels() {
-  return Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("");
+  return `
+    <span class="arrangement-corner" aria-hidden="true"></span>
+    ${Array.from({ length: arrangementStepCount }, (_, index) => renderArrangementStepLabel(index)).join("")}
+  `;
 }
 
 function renderDebugPanel() {
@@ -1203,36 +1320,74 @@ function renderTrackControlRow(track) {
     ? [track.source.creator, track.source.year].filter(Boolean).join(" - ") || track.source.mediaFormat
     : "Search to load video";
   const sourceControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.source);
-  const basicControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.basic);
+  const timingControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.timing);
+  const densityControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.density);
+  const levelControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.performance);
   const advancedControls = TRACK_CONTROL_SECTIONS.advanced
     .map((control) => renderTrackControlField(track, control))
     .join("");
+  const activeChip = track.muted ? "" : " is-on";
 
   return `
     <article class="track-row ${track.color}" data-track-row-id="${track.id}">
       <div class="track-row-label">
-        <strong>${escapeHtml(track.name)}</strong>
-        <span>${escapeHtml(track.role)}</span>
-      </div>
-      <div class="track-source">
-    ${sourceControls}
-        <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
-          <strong>${escapeHtml(sourceTitle)}</strong>
-          <span>${escapeHtml(sourceMeta)}</span>
+        <div class="track-row-title">
+          <strong>${escapeHtml(track.name)}</strong>
+          <span>${escapeHtml(track.role)}</span>
         </div>
-        <div class="track-results" id="results-${track.id}" hidden></div>
+        <div class="track-state-chips" aria-label="Track states">
+          <span class="track-state-chip${activeChip}" data-state="active">Active</span>
+          <span class="track-state-chip" data-state="muted">Muted</span>
+          <span class="track-state-chip" data-state="fx">FX</span>
+          <button
+            class="track-state-chip"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="solo"
+            data-state="solo"
+            aria-pressed="${!!track.solo}"
+            title="Solo this channel"
+          >
+            Solo
+          </button>
+        </div>
       </div>
-    ${basicControls}
+      <div class="track-channel-row track-channel-row--top">
+        <div class="track-source">
+          ${sourceControls}
+          <div class="track-source-name" title="${escapeHtml(sourceTitle)}">
+            <strong>${escapeHtml(sourceTitle)}</strong>
+            <span>${escapeHtml(sourceMeta)}</span>
+          </div>
+          <div class="track-results" id="results-${track.id}" hidden></div>
+        </div>
+        ${densityControls}
+        <button
+          class="track-toggle"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="muted"
+          aria-pressed="${track.muted}"
+          title="${track.muted ? "Unmute this channel" : "Mute this channel"}"
+        >
+          ${track.muted ? "Mute" : "On"}
+        </button>
+      </div>
+      <div class="track-channel-row track-channel-row--bottom">
+        ${timingControls}
+        ${levelControls}
+        <button
+          class="track-advanced-toggle"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="advanced"
+          aria-pressed="${!!track.showAdvanced}"
+          title="Reveal advanced controls"
+        >
+          ${track.showAdvanced ? "Less" : "More"}
+        </button>
+      </div>
       ${advancedControls}
-      <button
-        class="track-toggle"
-        type="button"
-        data-track-control="${track.id}"
-        data-control="muted"
-        aria-pressed="${track.muted}"
-      >
-        ${track.muted ? "Muted" : "On"}
-      </button>
     </article>
   `;
 }
@@ -1241,6 +1396,13 @@ function renderTrackControls(track, controls) {
   return controls
     .map((control) => renderTrackControlField(track, control))
     .join("");
+}
+
+function renderTrackControlLabel(control) {
+  const label = control.label ? escapeHtml(control.label) : "";
+  const tooltip = control.tooltip || control.label || "";
+  const icon = control.icon ? `<span class="control-field-icon" aria-hidden="true">${escapeHtml(control.icon)}</span>` : "";
+  return `<span class="control-field-label" title="${escapeHtml(tooltip)}">${icon}${label}</span>`;
 }
 
 function renderTrackControlField(track, control) {
@@ -1253,7 +1415,7 @@ function renderTrackControlField(track, control) {
   if (control.type === "search") {
     return `
       <label class="control-field ${control.fieldClass}">
-        <span>${control.label}</span>
+        ${renderTrackControlLabel(control)}
         <input
           type="${control.attrs.type}"
           placeholder="${control.attrs.placeholder}"
@@ -1270,7 +1432,7 @@ function renderTrackControlField(track, control) {
   if (control.type === "select") {
     return `
       <label class="${className}">
-        <span>${control.label}</span>
+        ${renderTrackControlLabel(control)}
         <select class="${visibilityClass}" ${trackAttributes}>
           ${control.options
             .map(
@@ -1286,7 +1448,7 @@ function renderTrackControlField(track, control) {
   if (control.type === "range" || control.type === "number") {
     return `
       <label class="${className}">
-        <span>${control.label}</span>
+        ${renderTrackControlLabel(control)}
         <input
           type="${control.type}"
           min="${control.inputProps.min}"
@@ -1365,15 +1527,6 @@ function renderTrackControlField(track, control) {
                 aria-label="${escapeHtml(`${track.name} Speed`)}"
               >
             </label>
-            <button
-              class="track-advanced-toggle fx-advanced-toggle"
-              type="button"
-              data-track-control="${track.id}"
-              data-control="advanced"
-              aria-pressed="${!!track.showAdvanced}"
-            >
-              ${track.showAdvanced ? "Less" : "More"}
-            </button>
           </div>
         </div>
         ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
@@ -1458,12 +1611,14 @@ function handleTrackControl(event) {
   if (controlName === "blendMode") {
     track.blendMode = control.value;
     applyTrackBlend(track);
+    updateTrackModeChips(track);
     return;
   }
 
   if (controlName === "opacity") {
     track.opacity = clamp(Number(control.value), 0, 1);
     applyTrackOpacity(track);
+    updateTrackModeChips(track);
     return;
   }
 
@@ -1485,6 +1640,7 @@ function handleTrackControl(event) {
       valueEl.textContent = `${displayPitch > 0 ? "+" : ""}${displayPitch}`;
     }
     applyTrackPitchAndSpeed(track);
+    updateTrackModeChips(track);
     return;
   }
 
@@ -1530,7 +1686,7 @@ function handleTrackControl(event) {
     const valueEl = control.parentElement?.querySelector(".fx-value");
     const fxDefinition = FX_CONTROL_INDEX[controlName];
     if (valueEl && fxDefinition) {
-      const value =
+    const value =
         Number.isInteger(fxDefinition.step) || fxDefinition.step >= 1
           ? Math.round(track.fx[controlName])
           : track.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
@@ -1538,13 +1694,21 @@ function handleTrackControl(event) {
     }
     applyTrackFx(track);
     applyVideoFx(track);
+    updateTrackModeChips(track);
   }
 
   if (controlName === "muted") {
     track.muted = !track.muted;
     control.textContent = track.muted ? "Muted" : "On";
     control.setAttribute("aria-pressed", String(track.muted));
+    updateTrackModeChips(track);
     applyTrackVolume(track);
+  }
+
+  if (controlName === "solo") {
+    track.solo = !track.solo;
+    control.setAttribute("aria-pressed", String(track.solo));
+    updateTrackModeChips(track);
   }
 
   if (controlName === "advanced") {
@@ -1552,6 +1716,7 @@ function handleTrackControl(event) {
     control.textContent = track.showAdvanced ? "Less" : "More";
     control.setAttribute("aria-pressed", String(track.showAdvanced));
     applyTrackControlVisibility(track);
+    updateTrackModeChips(track);
   }
 
   if (controlName !== "sourceSearch") {
@@ -1865,9 +2030,13 @@ function startTransportWithState() {
 
   const now = performance.now();
   const startAt = now;
+  const beatMs = 60000 / resolvePreferredBpm();
+  const barMs = beatMs * 4;
   transport = {
     active: true,
     bpm: resolvePreferredBpm(),
+    beatMs,
+    barMs,
     startedAt: startAt,
     nextBeatAt: startAt,
     beatIndex: 0,
@@ -1892,6 +2061,11 @@ function stopTransport(resetVideos = true, bumpToken = true) {
     startTransport.bootToken += 1;
   }
   startTransport.runningPromise = null;
+
+  if (arrangementPlayheadUpdateFrame !== null) {
+    window.cancelAnimationFrame(arrangementPlayheadUpdateFrame);
+    arrangementPlayheadUpdateFrame = null;
+  }
 
   if (transport?.frameId) {
     cancelAnimationFrame(transport.frameId);
@@ -1943,8 +2117,8 @@ function tickTransport() {
   }
 
   const now = performance.now();
-  const beatMs = 60000 / transport.bpm;
-  const barMs = beatMs * 4;
+  const beatMs = transport.beatMs || 60000 / transport.bpm;
+  const barMs = transport.barMs || beatMs * 4;
 
   while (now >= transport.nextBeatAt) {
     const beat = transport.beatIndex % 4;
@@ -1965,8 +2139,14 @@ function tickTransport() {
     if (!track.source || !track.stepMs) {
       return;
     }
+    const canPlay = isTrackAudibleInMix(track);
 
     while (now >= track.nextTriggerAt) {
+      if (!canPlay) {
+        track.nextTriggerAt += track.stepMs;
+        continue;
+      }
+
       triggerTrack(track, track.arrangementClip ?? track);
       track.nextTriggerAt += track.stepMs;
     }
@@ -2003,6 +2183,9 @@ function triggerTrack(track, clip = track) {
 
 function previewTrack(track) {
   if (!track.source || transport?.active) {
+    return;
+  }
+  if (!isTrackAudibleInMix(track)) {
     return;
   }
 
@@ -2374,8 +2557,8 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
     return;
   }
 
-  const beatMs = 60000 / transport.bpm;
-  const barMs = beatMs * 4;
+  const beatMs = transport?.beatMs || 60000 / transport.bpm;
+  const barMs = transport?.barMs || beatMs * 4;
   tracks.forEach((track) => {
     track.arrangementClip = null;
     track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
@@ -2614,7 +2797,7 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     transport.arrangementStartStep = stepIndex;
   }
   arrangement.step = stepIndex;
-  const beatMs = 60000 / transport.bpm;
+  const beatMs = transport?.beatMs || 60000 / transport.bpm;
   const barMs = beatMs * 4;
   const step = arrangement.clips[stepIndex];
 
@@ -2626,7 +2809,18 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     track.lastStep = -1;
   });
 
-  renderArrangementPlayhead();
+  scheduleArrangementPlayheadUpdate();
+}
+
+function scheduleArrangementPlayheadUpdate() {
+  if (arrangementPlayheadUpdateFrame !== null) {
+    return;
+  }
+
+  arrangementPlayheadUpdateFrame = window.requestAnimationFrame(() => {
+    arrangementPlayheadUpdateFrame = null;
+    renderArrangementPlayhead();
+  });
 }
 
 function selectArrangementStep(stepIndex) {
@@ -2656,14 +2850,19 @@ function renderArrangementPlayhead() {
     return;
   }
 
+  const cells = getArrangementCells();
   if (Number.isFinite(arrangementPlayheadStep)) {
-    playerPanel.querySelectorAll(`.arrangement-cell[data-arr-step="${arrangementPlayheadStep}"]`).forEach((cell) => {
-      cell.classList.remove("playing");
+    cells.forEach((cell) => {
+      if (cell.dataset.arrStep === String(arrangementPlayheadStep)) {
+        cell.classList.remove("playing");
+      }
     });
   }
 
-  playerPanel.querySelectorAll(`.arrangement-cell[data-arr-step="${currentStep}"]`).forEach((cell) => {
-    cell.classList.add("playing");
+  cells.forEach((cell) => {
+    if (cell.dataset.arrStep === String(currentStep)) {
+      cell.classList.add("playing");
+    }
   });
   arrangementPlayheadStep = currentStep;
 }
@@ -2963,6 +3162,7 @@ function createTrackTemplate(index) {
     retriggersPerBar: TRACK_RETRIGGER_DEFAULTS[paletteIndex % TRACK_RETRIGGER_DEFAULTS.length],
     volume: 0.55,
     muted: false,
+    solo: false,
     blendMode: TRACK_BLEND_DEFAULTS[paletteIndex % TRACK_BLEND_DEFAULTS.length],
     opacity: 1,
     speed: 1,

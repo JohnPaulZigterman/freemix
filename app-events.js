@@ -61,6 +61,8 @@
     }
 
     transport.bpm = resolvePreferredBpm();
+    transport.beatMs = 60000 / transport.bpm;
+    transport.barMs = transport.beatMs * 4;
     const now = performance.now();
     transport.nextBeatAt = now;
     transport.beatIndex = 0;
