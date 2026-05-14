@@ -81,11 +81,15 @@ For early versions, an instrument can be as simple as retriggering a video momen
 
 The first truly musical version should be even simpler: four tracks share one clock, each track chooses a start moment in the video, and each track decides how often that moment retriggers inside a bar. One track might hit once per bar, another four times, another eight times. With only BPM, start time, and retrigger rate, the user can already make rhythm, structure, and visual motion without needing to learn a workstation.
 
+Effects should follow the same rule. Each track can have a compact chain inspired by familiar music tools: broad low, mid, and high tone shaping; warm tube-style distortion; simple delay; and reverb. The user should feel like they are turning a few meaningful knobs on a friendly piece of gear, not managing a plugin stack.
+
 ## Video As Instrument
 
 The video should always matter.
 
 Freemix is not a sampler that forgets where the sound came from. The visual layer should reinforce the musical layer. If audio is delayed, the video should echo or trail. If the sound is distorted, the image can fuzz, smear, crush, or glitch. If a filter removes high frequencies, the image might lose brightness, color range, or sharpness. If a sound is cropped tightly, the video can crop tightly with it.
+
+These audiovisual effects should be legible at beginner speed. Delay can create a visible ghost, reverb can add bloom or softness, distortion can increase contrast and grit, and tone controls can shift brightness, color, or saturation. The point is not photorealistic simulation. The point is that the user immediately understands that the sound and picture are responding together.
 
 The early visual layout should use a 2x2 grid, one video surface per track. This makes the four-part structure immediately visible and playable.
 

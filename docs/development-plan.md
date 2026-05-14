@@ -228,6 +228,7 @@ Core features:
 
 - Each track has an associated video cell.
 - Triggering a track triggers its video slice.
+- Each track has a simplified FX chain: EQ Three-style tone shaping, tube-style distortion, simple delay, and reverb.
 - Audio delay creates video echo or trail.
 - Distortion creates fuzz, noise, blur, or glitch.
 - Filters influence brightness, color, crop, or saturation.
@@ -239,6 +240,7 @@ Usability requirements:
 - Defaults should look good without adjustment.
 - Users should be able to disable or simplify visuals.
 - Visual behavior should stay predictable enough for performance.
+- FX controls should stay beginner-readable, omitting expert parameters unless they become clearly necessary.
 
 ## Phase 6: Scenes And Arrangement
 

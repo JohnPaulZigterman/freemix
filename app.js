@@ -29,6 +29,14 @@ const DURATION_FILTERS = {
   medium: { label: "15-30m", min: 15 * 60, max: 30 * 60 },
   long: { label: "30m+", min: 30 * 60, max: Infinity },
 };
+const FX_CONTROLS = [
+  { key: "eqLow", label: "Low", min: -12, max: 12, step: 1 },
+  { key: "eqMid", label: "Mid", min: -12, max: 12, step: 1 },
+  { key: "eqHigh", label: "High", min: -12, max: 12, step: 1 },
+  { key: "tube", label: "Tube", min: 0, max: 1, step: 0.01 },
+  { key: "delay", label: "Dly", min: 0, max: 1, step: 0.01 },
+  { key: "reverb", label: "Verb", min: 0, max: 1, step: 0.01 },
+];
 
 let selectedSource = null;
 let transport = null;
@@ -233,6 +241,7 @@ function renderVideoCell(track) {
               id="video-${track.id}"
               src="${track.source.mediaUrl}"
               preload="metadata"
+              crossorigin="anonymous"
               playsinline
             ></video>`
           : `<div class="track-empty-video">Ready</div>`
@@ -334,6 +343,10 @@ function renderTrackControlRow(track) {
           data-control="volume"
         >
       </label>
+      <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
+        <span class="fx-title">FX</span>
+        ${FX_CONTROLS.map((fxControl) => renderFxControl(track, fxControl)).join("")}
+      </div>
       <button
         class="track-toggle"
         type="button"
@@ -344,6 +357,23 @@ function renderTrackControlRow(track) {
         ${track.muted ? "Muted" : "On"}
       </button>
     </article>
+  `;
+}
+
+function renderFxControl(track, fxControl) {
+  return `
+    <label class="control-field fx-field">
+      <span>${fxControl.label}</span>
+      <input
+        type="range"
+        min="${fxControl.min}"
+        max="${fxControl.max}"
+        step="${fxControl.step}"
+        value="${track.fx[fxControl.key]}"
+        data-track-control="${track.id}"
+        data-control="${fxControl.key}"
+      >
+    </label>
   `;
 }
 
@@ -375,8 +405,11 @@ function bindWorkstationControls() {
   document.querySelectorAll(".track-video").forEach((video) => {
     video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
     video.addEventListener("error", () => setStatus("Media error", true));
-    video.muted = true;
+    video.muted = false;
+    video.volume = 1;
   });
+
+  tracks.forEach((track) => applyVideoFx(track));
 }
 
 function handleTrackControl(event) {
@@ -417,6 +450,12 @@ function handleTrackControl(event) {
   if (controlName === "volume") {
     track.volume = Number(control.value);
     applyTrackVolume(track);
+  }
+
+  if (controlName in track.fx) {
+    track.fx[controlName] = Number(control.value);
+    applyTrackFx(track);
+    applyVideoFx(track);
   }
 
   if (controlName === "muted") {
@@ -521,7 +560,10 @@ function triggerTrack(track) {
   }
 
   video.currentTime = safeStartTime(track, video);
+  setupTrackAudio(track, video);
   applyTrackVolume(track);
+  applyTrackFx(track);
+  applyVideoFx(track);
   video.play().catch(() => {
     setStatus("Tap play again", true);
   });
@@ -612,12 +654,157 @@ function syncStartControls(track) {
 
 function applyTrackVolume(track) {
   const video = getTrackVideo(track);
-  if (!video) {
+  if (track.audio?.output) {
+    track.audio.output.gain.value = track.muted ? 0 : track.volume;
+  }
+
+  if (video) {
+    video.muted = false;
+    video.volume = track.audio ? 1 : track.muted ? 0 : track.volume;
+  }
+}
+
+function setupTrackAudio(track, video) {
+  if (!audioContext || track.audio || !video) {
     return;
   }
 
-  video.muted = track.muted;
-  video.volume = track.muted ? 0 : track.volume;
+  try {
+    const source = audioContext.createMediaElementSource(video);
+    const low = audioContext.createBiquadFilter();
+    const mid = audioContext.createBiquadFilter();
+    const high = audioContext.createBiquadFilter();
+    const drive = audioContext.createWaveShaper();
+    const dryGain = audioContext.createGain();
+    const delay = audioContext.createDelay(1);
+    const delayGain = audioContext.createGain();
+    const reverb = audioContext.createConvolver();
+    const reverbGain = audioContext.createGain();
+    const output = audioContext.createGain();
+
+    low.type = "lowshelf";
+    low.frequency.value = 180;
+    mid.type = "peaking";
+    mid.frequency.value = 1100;
+    mid.Q.value = 0.8;
+    high.type = "highshelf";
+    high.frequency.value = 3600;
+    dryGain.gain.value = 1;
+    delay.delayTime.value = 0.25;
+    reverb.buffer = createReverbImpulse(audioContext);
+
+    source.connect(low).connect(mid).connect(high).connect(drive);
+    drive.connect(dryGain).connect(output);
+    drive.connect(delay).connect(delayGain).connect(output);
+    drive.connect(reverb).connect(reverbGain).connect(output);
+    output.connect(audioContext.destination);
+
+    track.audio = {
+      source,
+      low,
+      mid,
+      high,
+      drive,
+      delay,
+      delayGain,
+      reverb,
+      reverbGain,
+      output,
+    };
+  } catch (error) {
+    console.warn(error);
+    track.audio = null;
+  }
+}
+
+function applyTrackFx(track) {
+  const audio = track.audio;
+  if (!audio) {
+    return;
+  }
+
+  audio.low.gain.value = track.fx.eqLow;
+  audio.mid.gain.value = track.fx.eqMid;
+  audio.high.gain.value = track.fx.eqHigh;
+  audio.drive.curve = createTubeCurve(track.fx.tube);
+  audio.drive.oversample = "4x";
+  audio.delay.delayTime.value = 0.12 + track.fx.delay * 0.5;
+  audio.delayGain.gain.value = track.fx.delay * 0.42;
+  audio.reverbGain.gain.value = track.fx.reverb * 0.45;
+}
+
+function applyVideoFx(track) {
+  const cell = document.querySelector(`[data-track-id="${track.id}"]`);
+  if (!cell) {
+    return;
+  }
+
+  const lowLift = Math.max(track.fx.eqLow, 0) / 12;
+  const midCut = Math.max(-track.fx.eqMid, 0) / 12;
+  const highLift = Math.max(track.fx.eqHigh, 0) / 12;
+  const highCut = Math.max(-track.fx.eqHigh, 0) / 12;
+  const tube = track.fx.tube;
+  const delay = track.fx.delay;
+  const reverb = track.fx.reverb;
+
+  const brightness = 0.86 + highLift * 0.3 - highCut * 0.22 + lowLift * 0.06;
+  const contrast = 1 + tube * 0.45 + Math.max(track.fx.eqMid, 0) * 0.018;
+  const saturate = 0.92 + lowLift * 0.25 + highLift * 0.18 + tube * 0.75;
+  const blur = reverb * 2.2 + highCut * 1.4 + midCut * 0.6;
+  const hue = track.fx.eqMid * 1.6;
+
+  cell.style.setProperty("--delay-ghost", delay.toFixed(2));
+  cell.style.setProperty("--reverb-glow", reverb.toFixed(2));
+  cell.style.setProperty(
+    "--video-filter",
+    `brightness(${brightness}) contrast(${contrast}) saturate(${saturate}) blur(${blur}px) hue-rotate(${hue}deg)`,
+  );
+}
+
+function disposeTrackAudio(track) {
+  if (!track.audio) {
+    return;
+  }
+
+  Object.values(track.audio).forEach((node) => {
+    if (node?.disconnect) {
+      try {
+        node.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+  });
+
+  track.audio = null;
+}
+
+function createTubeCurve(amount) {
+  const samples = 256;
+  const curve = new Float32Array(samples);
+  const drive = 1 + amount * 36;
+
+  for (let index = 0; index < samples; index += 1) {
+    const x = (index * 2) / samples - 1;
+    curve[index] = ((1 + drive) * x) / (1 + drive * Math.abs(x));
+  }
+
+  return curve;
+}
+
+function createReverbImpulse(context) {
+  const seconds = 1.6;
+  const length = context.sampleRate * seconds;
+  const impulse = context.createBuffer(2, length, context.sampleRate);
+
+  for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
+    const data = impulse.getChannelData(channel);
+    for (let index = 0; index < length; index += 1) {
+      data[index] = (Math.random() * 2 - 1) * (1 - index / length) ** 2.4;
+    }
+  }
+
+  return impulse;
 }
 
 function safeStartTime(track, video) {
@@ -764,6 +951,7 @@ function renderTrackResultsMessage(track, message) {
 
 async function loadTrackSource(track, result) {
   stopTransport(false);
+  disposeTrackAudio(track);
   setStatus(`${track.name}: loading`);
   renderTrackResultsMessage(track, "Loading media...");
 
@@ -801,6 +989,15 @@ function createInitialTracks() {
     retriggersPerBar: [1, 2, 4, 8][index],
     volume: 0.55,
     muted: false,
+    fx: {
+      eqLow: 0,
+      eqMid: 0,
+      eqHigh: 0,
+      tube: 0,
+      delay: 0,
+      reverb: 0,
+    },
+    audio: null,
     lastStep: -1,
     nextTriggerAt: 0,
     stepMs: 0,
