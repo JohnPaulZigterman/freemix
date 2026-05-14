@@ -438,6 +438,17 @@ input[type="number"]:focus {
   opacity: 0.22;
 }
 
+.launch-pad.quick-launch {
+  margin-bottom: 2px;
+  padding: 2px 2px 3px;
+  background: color-mix(in srgb, var(--panel-alt) 78%, var(--panel) 22%);
+  border-color: color-mix(in srgb, var(--silver) 18%, var(--line));
+}
+
+.launch-pad.quick-launch .panel-label {
+  margin-bottom: 3px;
+}
+
 .launch-pad .panel-label {
   margin-bottom: 2px;
   font-size: 0.58rem;

@@ -1451,17 +1451,17 @@ function renderWorkstation() {
   const sourceMeta = allSameSource
     ? [loadedTracks[0].source.creator, loadedTracks[0].source.year].filter(Boolean).join(" - ")
     : "Search inside any track to swap its video";
+  const showQuickStart = appState.userOnboarding?.needsHint && loadedTracks.length === 0;
 
   playerPanel.innerHTML = `
     <section class="workstation" aria-label="Track video looper">
       ${
-        appState.userOnboarding?.needsHint
+        showQuickStart
           ? `
-        <section class="launch-pad">
-          <span class="panel-label">Quick launch</span>
+        <section class="launch-pad quick-launch">
+          <span class="panel-label">Quick start</span>
           <div class="launch-pad-actions">
             <button class="launch-button" type="button" data-launch-action="load-sample">Load sample</button>
-            <button class="launch-button" type="button" data-launch-action="place-bar">Seed bar</button>
             <button class="launch-button" type="button" data-launch-action="add-track">Add layer</button>
             <button class="launch-button launch-button-primary" type="button" data-launch-action="play">Play</button>
           </div>
