@@ -19,6 +19,7 @@
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
     const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
+    const arrangementDeleteButton = player.querySelector("#arrangementDeleteButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const timeSignatureSelect = player.querySelector("#timeSignatureSelect");
     const bpmInput = player.querySelector("#bpmInput");
@@ -52,6 +53,15 @@
       arrangementCopyButton.title = arrangementCopyMode
         ? "Copying section; click destination sections to paste"
         : "Copy current section";
+    }
+
+    if (arrangementDeleteButton) {
+      arrangementDeleteButton.textContent = arrangementDeleteMode ? "Deleting" : "Delete";
+      arrangementDeleteButton.classList.toggle("active", !!arrangementDeleteMode);
+      arrangementDeleteButton.setAttribute("aria-pressed", String(!!arrangementDeleteMode));
+      arrangementDeleteButton.title = arrangementDeleteMode
+        ? "Delete mode; click filled cells or scenes to remove them"
+        : "Delete scene clips";
     }
 
     if (arrangementLengthSelect) {

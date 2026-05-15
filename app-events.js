@@ -179,7 +179,7 @@
     }
 
     if (id === "metroButton") {
-      masterMuted = !masterMuted;
+      metronomeEnabled = !metronomeEnabled;
       window.freemixRender?.updateTransportRow?.();
       return true;
     }
@@ -203,9 +203,28 @@
       return true;
     }
 
+    if (id === "arrangementDeleteButton") {
+      toggleArrangementDeleteMode();
+      return true;
+    }
+
     if (id === "arrangementCopyAllButton") {
       if (typeof window.copyCurrentArrangementSectionToAll === "function") {
         window.copyCurrentArrangementSectionToAll();
+      }
+      return true;
+    }
+
+    if (id === "exportClipButton") {
+      if (typeof window.freemixExportClip === "function") {
+        window.freemixExportClip();
+      }
+      return true;
+    }
+
+    if (id === "exportArrangementButton") {
+      if (typeof window.freemixExportArrangement === "function") {
+        window.freemixExportArrangement();
       }
       return true;
     }

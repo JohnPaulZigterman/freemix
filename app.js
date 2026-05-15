@@ -18,7 +18,7 @@ const SEARCH_RESULT_FIELDS = Object.freeze([
   "downloads",
 ]);
 const SEARCHABLE_TEXT_FIELDS = Object.freeze(["title", "creator", "description", "subject", "identifier", "collection"]);
-const SEARCH_QUERY_VARIANT_TARGET = 24;
+const SEARCH_QUERY_VARIANT_TARGET = 28;
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -43,16 +43,50 @@ const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
     "opacity",
   ]),
 );
+const SCENE_EDITABLE_CONTROLS = Object.freeze(
+  new Set([
+    "durationFilter",
+    "blendMode",
+    "opacity",
+    "speed",
+    "pitch",
+    "startTime",
+    "startNumber",
+    "retriggersPerBar",
+    "volume",
+    "muted",
+    "eqLow",
+    "eqMid",
+    "eqHigh",
+    "tube",
+    "delay",
+    "reverb",
+  ]),
+);
 const REVERB_BUFFER_CACHE = new WeakMap();
 const TUBE_CURVE_CACHE = new Map();
 let metronomeGain = null;
+const EXPORT_FRAME_RATE = 30;
+const EXPORT_CANVAS_MAX_WIDTH = 1280;
+const EXPORT_CANVAS_MAX_HEIGHT = 720;
+const EXPORT_BLEND_MODE_MAP = Object.freeze({
+  normal: "source-over",
+  screen: "screen",
+  multiply: "multiply",
+  add: "lighter",
+  difference: "difference",
+  exclusion: "exclusion",
+  dodge: "color-dodge",
+  hard: "hard-light",
+});
+const EXPORT_MEDIA_TYPES = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
 const TRACK_LOOKUP = new Map();
 const UI_NODE_CACHE = {
   beatLights: null,
 };
-const SEARCH_ROWS_PER_REQUEST = 24;
-const SEARCH_RESULTS_LIMIT = 8;
-const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 2;
+const SEARCH_ROWS_PER_REQUEST = 40;
+const SEARCH_RESULTS_LIMIT = 12;
+const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 3;
 const SEARCH_RESULT_CACHE_STORAGE_KEY = "freemix.searchResultCache.v1";
 const SEARCH_RESULT_CACHE_PERSIST_TTL_MS = 6 * 60 * 60 * 1000;
 const SOURCE_METADATA_CACHE_STORAGE_KEY = "freemix.sourceMetadataCache.v1";
@@ -65,6 +99,7 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
   "audioContext",
   "webAudioDisabled",
   "masterMuted",
+  "metronomeEnabled",
   "arrangementStepCount",
   "arrangementCopyMode",
   "arrangementCopySourceStep",
@@ -73,7 +108,12 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
   "trackSearchRequestCounter",
   "userOnboarding",
 ]);
-const APP_STATE_PROXY_DIRTY_KEYS = new Set(["arrangementStepCount", "masterMuted", "userOnboarding"]);
+const APP_STATE_PROXY_DIRTY_KEYS = new Set([
+  "arrangementStepCount",
+  "masterMuted",
+  "metronomeEnabled",
+  "userOnboarding",
+]);
 const DEFAULT_BPM = 92;
 const DEFAULT_ARRANGEMENT_STEPS = 8;
 const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
@@ -235,6 +275,8 @@ const appState = window.freemixState || {};
 const appStateManager = window.freemixStateManager || {};
 const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
 let arrangementHasClips = false;
+let arrangementDeleteMode = false;
+let isExportingVideo = false;
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -654,25 +696,27 @@ function hasSoloTracksEnabled() {
 }
 
 function hasNonDefaultFx(track) {
-  if (track?.blendMode !== TRACK_BLEND_DEFAULTS[0]) {
+  const targetState = track && typeof track === "object" ? track : {};
+
+  if (targetState.blendMode !== TRACK_BLEND_DEFAULTS[0]) {
     return true;
   }
-  if (Number(track?.opacity) !== 1) {
+  if (Number(targetState?.opacity) !== 1) {
     return true;
   }
-  if (Number(track?.pitch) !== 0 || Number(track?.speed) !== 1) {
+  if (Number(targetState?.pitch) !== 0 || Number(targetState?.speed) !== 1) {
     return true;
   }
-  return Object.values(track?.fx || {}).some((value) => Number(value) !== 0);
+  return Object.values(targetState?.fx || {}).some((value) => Number(value) !== 0);
 }
 
 function isTrackAudibleInMix(track, playbackState) {
-  if (!track || track.muted) {
+  if (!track) {
     return false;
   }
 
-  const activeClip = getTrackPlaybackState(track, playbackState) || track.arrangementClip || track;
-  if (activeClip !== track && activeClip?.muted) {
+  const activeClip = getTrackPlaybackState(track, playbackState) || track;
+  if (activeClip?.muted) {
     return false;
   }
 
@@ -702,15 +746,16 @@ function updateTrackModeChips(track) {
   const mutedChip = trackRow.querySelector('[data-state="muted"]');
   const fxChip = trackRow.querySelector('[data-state="fx"]');
   const soloChip = trackRow.querySelector('[data-control="solo"]');
+  const activeState = getTrackActiveControlState(track);
 
   if (activeChip) {
-    activeChip.classList.toggle("is-on", !track.muted);
+    activeChip.classList.toggle("is-on", !activeState?.muted);
   }
   if (mutedChip) {
-    mutedChip.classList.toggle("is-on", !!track.muted);
+    mutedChip.classList.toggle("is-on", !!activeState?.muted);
   }
   if (fxChip) {
-    fxChip.classList.toggle("is-on", hasNonDefaultFx(track) || !!track.showAdvanced);
+    fxChip.classList.toggle("is-on", hasNonDefaultFx(activeState) || !!track.showAdvanced);
   }
   if (soloChip) {
     soloChip.classList.toggle("is-on", !!track.solo);
@@ -903,12 +948,143 @@ function getTrackVideo(track) {
   return video;
 }
 
+function getArrangementStepIndex(stepIndex = arrangement?.step) {
+  if (!arrangement?.clips || !Number.isFinite(Number(stepIndex))) {
+    return null;
+  }
+
+  if (arrangement.clips.length === 0) {
+    return null;
+  }
+
+  const safeIndex = Math.floor(Number(stepIndex));
+  return clamp(safeIndex, 0, arrangement.clips.length - 1);
+}
+
+function getArrangementStepClip(track, stepIndex = arrangement?.step) {
+  if (!track?.id || !arrangement?.clips) {
+    return null;
+  }
+
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  const step = arrangement.clips[resolvedStep];
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return null;
+  }
+
+  const clip = step[track.id];
+  if (!clip || typeof clip !== "object" || Array.isArray(clip)) {
+    return null;
+  }
+
+  return clip;
+}
+
+function getArrangementStepClipForTrack(track, options = {}) {
+  if (!track?.id || !arrangement?.clips) {
+    return null;
+  }
+
+  const resolvedStep = getArrangementStepIndex(Object.prototype.hasOwnProperty.call(options, "stepIndex") ? options.stepIndex : arrangement.step);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  const step = arrangement.clips[resolvedStep];
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return null;
+  }
+
+  const clip = step[track.id];
+  if (clip && typeof clip === "object" && !Array.isArray(clip)) {
+    track.arrangementClip = clip;
+    return clip;
+  }
+
+  if (options.create === false) {
+    return null;
+  }
+
+  const nextClip = captureTrackClip(track);
+  step[track.id] = nextClip;
+  track.arrangementClip = nextClip;
+  refreshArrangementHasClipsState();
+  if (window.freemixRender?.updateArrangementCell) {
+    window.freemixRender.updateArrangementCell(track, resolvedStep);
+  }
+
+  return nextClip;
+}
+
+function bindTracksToArrangementStep(stepIndex, options = {}) {
+  const shouldSyncTiming = !!options.syncTriggerTiming;
+  const targetStep = getArrangementStepIndex(stepIndex);
+  if (targetStep === null || !arrangement?.clips) {
+    return;
+  }
+
+  const target = arrangement.clips[targetStep];
+  if (!target || typeof target !== "object" || Array.isArray(target)) {
+    return;
+  }
+
+  const beatMs = transport ? getTransportBeatMs(transport) : null;
+  const barMs = Number.isFinite(beatMs) ? beatMs * getTransportBeatsPerBar(transport) : null;
+  const nextTriggerAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
+
+  tracks.forEach((track) => {
+    const clip = target[track.id] ?? null;
+    track.arrangementClip = clip;
+    track.stepMs = clip && Number.isFinite(barMs)
+      ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar)
+      : 0;
+    if (shouldSyncTiming && Number.isFinite(track.stepMs) && track.stepMs > 0) {
+      track.nextTriggerAt = nextTriggerAt;
+    }
+    track.lastStep = -1;
+  });
+}
+
 function getTrackActiveControlState(track) {
   if (!track || typeof track !== "object") {
     return track;
   }
 
-  return track.arrangementClip || track;
+  if (!arrangement?.enabled) {
+    return track;
+  }
+
+  const clip = getArrangementStepClip(track, arrangement.step);
+  if (clip) {
+    track.arrangementClip = clip;
+  }
+
+  return clip || track;
+}
+
+function getTrackRenderState(track) {
+  return getArrangementStepClip(track, arrangement?.step) || getTrackActiveControlState(track) || track;
+}
+
+function getTrackSceneEditableState(track, controlName) {
+  const baseState = getTrackActiveControlState(track);
+  if (!track || !controlName) {
+    return baseState;
+  }
+
+  if (!SCENE_EDITABLE_CONTROLS.has(controlName)) {
+    return baseState;
+  }
+
+  const stepIndex = getArrangementStepIndex(arrangement?.step);
+  if (stepIndex === null || !arrangement?.clips) {
+    return baseState;
+  }
+  return getArrangementStepClipForTrack(track, { stepIndex, create: true }) || baseState;
 }
 
 function getTrackPlaybackState(track, overrideState) {
@@ -917,7 +1093,7 @@ function getTrackPlaybackState(track, overrideState) {
     return null;
   }
 
-  const activeState = overrideState || baseTrack.arrangementClip;
+  const activeState = overrideState || getTrackActiveControlState(baseTrack);
   if (activeState && typeof activeState === "object") {
     return activeState;
   }
@@ -1229,9 +1405,10 @@ function resyncTrackTiming(track) {
     return;
   }
 
+  const timingState = getTrackActiveControlState(track) || track;
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
-  track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
+  track.stepMs = barMs / normalizeRetriggersPerBar(timingState?.retriggersPerBar);
   const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
   track.nextTriggerAt = getAlignedTrackTriggerTime(track, rearmAt);
   track.lastStep = -1;
@@ -1508,6 +1685,12 @@ function buildArchiveSearchQueryVariants(rawQuery) {
     const tokenClause = uniqueTokens.map((token) => toFieldClause(`"${token}"`)).join(" OR ");
     addQuery(mediaScoped(tokenClause));
     addQuery(mediaScoped(uniqueTokens.map((token) => toFieldClause(token)).join(" OR ")));
+    uniqueTokens.forEach((token) => {
+      if (token.length >= 3) {
+        addQuery(mediaScoped(`${toFieldClause(`${token}*`)}`));
+        addQuery(mediaScoped(`${titleCreatorClause(`${token}*`)}`));
+      }
+    });
 
     if (uniqueTokens.length > 1) {
       const titleCreatorTokens = uniqueTokens.slice(0, 4).map((token) => titleCreatorClause(`"${token}*"`)).join(" AND ");
@@ -1522,11 +1705,33 @@ function buildArchiveSearchQueryVariants(rawQuery) {
 
   addQuery(mediaScoped(`"${safeQuery}"`));
   addQuery(mediaScoped(safeQuery));
-  addQuery(toFieldClause(`"${safeQuery}*"`));
+  if (!safeQuery.includes(" ")) {
+    addQuery(mediaScoped(`${safeQuery}*`));
+  }
+  addQuery(mediaScoped(`(${toFieldClause(`"${safeQuery}"`)})`));
+  if (!safeQuery.includes(" ")) {
+    addQuery(toFieldClause(`"${safeQuery}*"`));
+  }
   addQuery(toFieldClause(`"${safeQuery}"`));
-  addQuery(mediaScoped(toFieldClause(`${safeQuery}*`)));
+  if (!safeQuery.includes(" ")) {
+    addQuery(mediaScoped(toFieldClause(`${safeQuery}*`)));
+  }
   addQuery(identifierFallback(`${safeQuery}*`));
-  addQuery(`${toFieldClause(`${safeQuery}*`)}`);
+  addQuery(identifierFallback(safeQuery));
+  if (safeQuery.includes(" ")) {
+    addQuery(mediaScoped(`(${safeQuery})`));
+    addQuery(mediaScoped(`(${toFieldClause(safeQuery)})`));
+  } else {
+    addQuery(mediaScoped(`(${safeQuery} OR ${identifierFallback(safeQuery)})`));
+    addQuery(mediaScoped(`title:(${safeQuery}*)`));
+    addQuery(mediaScoped(`description:(${safeQuery}*)`));
+    addQuery(mediaScoped(`subject:(${safeQuery}*)`));
+    addQuery(`(${safeQuery}*)`);
+    addQuery(`title:(${safeQuery}*)`);
+  }
+  if (!safeQuery.includes(" ")) {
+    addQuery(`${toFieldClause(`${safeQuery}*`)}`);
+  }
 
   return Array.from(queries).slice(0, 12);
 }
@@ -1902,6 +2107,8 @@ function renderWorkstation() {
         <button class="transport-button metronome-button active" id="metroButton" type="button">
           Click
         </button>
+        <button class="transport-button export-button" id="exportClipButton" type="button">Export Clip</button>
+        <button class="transport-button export-button" id="exportArrangementButton" type="button">Export Arrangement</button>
         <div class="meter" aria-label="Bar position" style="--beat-count: ${getTransportBeatsPerBar()}">
           ${renderTransportMeter()}
         </div>
@@ -2001,6 +2208,14 @@ function renderArrangementPanel() {
             aria-pressed="${arrangementCopyMode}"
           >
             ${arrangementCopyMode ? "Copying" : "Copy"}
+          </button>
+          <button
+            class="arrangement-delete ${arrangementDeleteMode ? "active" : ""}"
+            type="button"
+            id="arrangementDeleteButton"
+            aria-pressed="${arrangementDeleteMode}"
+          >
+            ${arrangementDeleteMode ? "Deleting" : "Delete"}
           </button>
           <button
             class="arrangement-action"
@@ -2106,14 +2321,16 @@ function renderArrangementGrid() {
 }
 
 function renderVideoCell(track, index) {
+  const renderState = getTrackRenderState(track);
+  const renderSource = renderState.source || track.source;
   return `
-    <div class="video-cell ${track.color} blend-${track.blendMode} ${track.source ? "has-source" : "no-source"}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
+    <div class="video-cell ${track.color} blend-${renderState.blendMode || TRACK_BLEND_DEFAULTS[0]} ${renderSource ? "has-source" : "no-source"}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
       ${
-        track.source
+        renderSource
         ? `<video
               class="track-video"
               id="video-${track.id}"
-              src="${track.source.mediaUrl}"
+              src="${renderSource.mediaUrl}"
               preload="auto"
                playsinline
              ></video>`
@@ -2129,9 +2346,11 @@ function renderVideoCell(track, index) {
 }
 
 function renderTrackControlRow(track) {
-  const sourceTitle = track.source?.title ?? "Empty slot";
-  const sourceMeta = track.source
-    ? [track.source.creator, track.source.year].filter(Boolean).join(" - ") || track.source.mediaFormat
+  const renderState = getTrackRenderState(track);
+  const renderSource = renderState.source || track.source;
+  const sourceTitle = renderSource?.title ?? "Empty slot";
+  const sourceMeta = renderSource
+    ? [renderSource.creator, renderSource.year].filter(Boolean).join(" - ") || renderSource.mediaFormat
     : "Search to load video";
   const sourceControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.source);
   const timingControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.timing);
@@ -2140,7 +2359,7 @@ function renderTrackControlRow(track) {
   const advancedControls = TRACK_CONTROL_SECTIONS.advanced
     .map((control) => renderTrackControlField(track, control))
     .join("");
-  const activeChip = track.muted ? "" : " is-on";
+  const activeChip = renderState.muted ? "" : " is-on";
 
   return `
     <article class="track-row ${track.color}${track.collapsed ? " is-collapsed" : ""}" data-track-row-id="${track.id}">
@@ -2215,10 +2434,10 @@ function renderTrackControlRow(track) {
             type="button"
             data-track-control="${track.id}"
             data-control="muted"
-            aria-pressed="${track.muted}"
-            title="${track.muted ? "Unmute this channel" : "Mute this channel"}"
+            aria-pressed="${renderState.muted}"
+            title="${renderState.muted ? "Unmute this channel" : "Mute this channel"}"
           >
-            ${track.muted ? "Mute" : "On"}
+            ${renderState.muted ? "Muted" : "On"}
           </button>
         </div>
         <div class="track-channel-row track-channel-row--bottom">
@@ -2245,6 +2464,7 @@ function renderTrackControlLabel(control) {
 }
 
 function renderTrackControlField(track, control) {
+  const renderState = getTrackRenderState(track);
   const isAdvanced = control.visibility === "advanced";
   const className = `control-field ${control.fieldClass || ""}`.trim();
   const trackAttributes = `data-track-control="${track.id}" data-control="${control.control}"`;
@@ -2252,7 +2472,9 @@ function renderTrackControlField(track, control) {
   const resolvedValue =
     control.control === "startTime" || control.control === "startNumber"
       ? getTrackStartControlValue(track)
-      : track[control.control];
+      : control.control === "durationFilter"
+        ? renderState.durationFilter ?? track.durationFilter
+        : renderState?.[control.control];
 
   if (control.type === "search") {
     return `
@@ -2277,11 +2499,11 @@ function renderTrackControlField(track, control) {
         ${renderTrackControlLabel(control)}
         <select class="${visibilityClass}" ${trackAttributes}>
           ${control.options
-            .map(
-              (option) =>
-                `<option value="${option.value}" ${String(option.value) === String(track[control.control]) ? "selected" : ""}>${option.label}</option>`,
-            )
-            .join("")}
+                .map(
+                  (option) =>
+                `<option value="${option.value}" ${String(option.value) === String(resolvedValue) ? "selected" : ""}>${option.label}</option>`,
+                )
+                .join("")}
         </select>
       </label>
     `;
@@ -2305,8 +2527,8 @@ function renderTrackControlField(track, control) {
   }
 
   if (control.type === "fx-chain") {
-    const speedValue = Number.isFinite(track.speed) ? track.speed : 1;
-    const pitchValue = Number.isFinite(track.pitch) ? track.pitch : 0;
+    const speedValue = Number.isFinite(renderState.speed) ? renderState.speed : 1;
+    const pitchValue = Number.isFinite(renderState.pitch) ? renderState.pitch : 0;
 
     return `
       <div class="fx-chain" aria-label="${escapeHtml(track.name)} effects chain">
@@ -2321,7 +2543,7 @@ function renderTrackControlField(track, control) {
                 data-control="blendMode"
               >
                 ${BLEND_MODE_OPTIONS.map(
-                  (option) => `<option value="${option.value}" ${String(option.value) === String(track.blendMode) ? "selected" : ""}>${option.label}</option>`,
+                  (option) => `<option value="${option.value}" ${String(option.value) === String(renderState.blendMode) ? "selected" : ""}>${option.label}</option>`,
                 ).join("")}
               </select>
             </label>
@@ -2333,7 +2555,7 @@ function renderTrackControlField(track, control) {
                 min="0"
                 max="1"
                 step="0.01"
-                value="${Number.isFinite(track.opacity) ? track.opacity : 1}"
+                value="${Number.isFinite(renderState.opacity) ? renderState.opacity : 1}"
                 data-track-control="${track.id}"
                 data-control="opacity"
                 aria-label="${escapeHtml(`${track.name} Opacity`)}"
@@ -2390,7 +2612,8 @@ function renderTrackControlField(track, control) {
 }
 
 function renderFxControl(track, fxControl) {
-  const fxValue = Number(track.fx[fxControl.key] ?? 0);
+  const renderState = getTrackRenderState(track);
+  const fxValue = Number(renderState.fx?.[fxControl.key] ?? 0);
   const fxDisplay = Number.isInteger(fxControl.step)
     ? Math.round(fxValue)
     : fxValue.toFixed(2).replace(/\.?0+$/, "");
@@ -2405,7 +2628,7 @@ function renderFxControl(track, fxControl) {
         min="${fxControl.min}"
         max="${fxControl.max}"
         step="${fxControl.step}"
-        value="${track.fx[fxControl.key]}"
+        value="${fxValue}"
         data-track-control="${track.id}"
         data-control="${fxControl.key}"
         aria-label="${escapeHtml(`${track.name} ${fxControl.label}`)}"
@@ -2447,7 +2670,7 @@ function handleTrackControl(event) {
   }
 
   const controlName = control.dataset.control;
-  const activeTrackState = getTrackPlaybackState(track);
+  const editableState = getTrackSceneEditableState(track, controlName);
   const isInputEvent = event?.type === "input";
 
   if (controlName === "sourceSearch") {
@@ -2456,67 +2679,63 @@ function handleTrackControl(event) {
   }
 
   if (controlName === "durationFilter") {
-    track.durationFilter = control.value;
+    editableState.durationFilter = control.value;
+    applyArrangementClipControlValue(track, "durationFilter", editableState.durationFilter, editableState);
     const [sourceSearch] = getTrackControls(track, "sourceSearch");
     queueTrackSearch(track, sourceSearch?.value.trim() ?? "");
     return;
   }
 
   if (controlName === "blendMode") {
-    track.blendMode = control.value;
-    applyArrangementClipControlValue(track, "blendMode", track.blendMode);
-    applyTrackBlend(track);
+    editableState.blendMode = control.value;
+    applyArrangementClipControlValue(track, "blendMode", editableState.blendMode, editableState);
+    applyTrackBlend(track, editableState);
     updateTrackModeChips(track);
     return;
   }
 
   if (controlName === "opacity") {
-    track.opacity = clamp(Number(control.value), 0, 1);
-    applyArrangementClipControlValue(track, "opacity", track.opacity);
-    applyTrackOpacity(track);
+    editableState.opacity = clamp(Number(control.value), 0, 1);
+    applyArrangementClipControlValue(track, "opacity", editableState.opacity, editableState);
+    applyTrackOpacity(track, editableState);
     updateTrackModeChips(track);
     return;
   }
 
   if (controlName === "speed") {
-    track.speed = clamp(Number(control.value), 0.5, 2);
-    applyArrangementClipControlValue(track, "speed", track.speed);
+    editableState.speed = clamp(Number(control.value), 0.5, 2);
+    applyArrangementClipControlValue(track, "speed", editableState.speed, editableState);
     const valueEl = control.parentElement?.querySelector(".fx-mini-value");
     if (valueEl) {
-      valueEl.textContent = `${Number(track.speed).toFixed(2)}x`;
+      valueEl.textContent = `${Number(editableState.speed).toFixed(2)}x`;
     }
-    applyTrackPitchAndSpeed(track, activeTrackState);
+    applyTrackPitchAndSpeed(track, editableState);
     return;
   }
 
   if (controlName === "pitch") {
-    track.pitch = clamp(Number(control.value), -12, 12);
-    applyArrangementClipControlValue(track, "pitch", track.pitch);
+    editableState.pitch = clamp(Number(control.value), -12, 12);
+    applyArrangementClipControlValue(track, "pitch", editableState.pitch, editableState);
     const valueEl = control.parentElement?.querySelector(".fx-mini-value");
     if (valueEl) {
-      const displayPitch = Number(track.pitch);
+      const displayPitch = Number(editableState.pitch);
       valueEl.textContent = `${displayPitch > 0 ? "+" : ""}${displayPitch}`;
     }
-    applyTrackPitchAndSpeed(track, activeTrackState);
+    applyTrackPitchAndSpeed(track, editableState);
     updateTrackModeChips(track);
     return;
   }
 
   if (controlName === "startTime" || controlName === "startNumber") {
     const video = getTrackVideo(track);
-    const activeTrackState = getTrackPlaybackState(track) || track;
-    const nextStartTime = normalizeStartTimeInput(control.value, activeTrackState, video);
+    const nextStartTime = normalizeStartTimeInput(control.value, editableState, video);
     if (!Number.isFinite(nextStartTime)) {
       return;
     }
 
-    if (activeTrackState === track) {
-      track.startTime = nextStartTime;
-    } else {
-      activeTrackState.startTime = nextStartTime;
-    }
+    editableState.startTime = nextStartTime;
 
-    applyArrangementClipControlValue(track, "startTime", nextStartTime);
+    applyArrangementClipControlValue(track, "startTime", nextStartTime, editableState);
 
     syncStartControls(track);
     if (video && transport?.active) {
@@ -2525,7 +2744,7 @@ function handleTrackControl(event) {
     }
 
     if (video) {
-      const activeClipState = getTrackPlaybackState(track) || track;
+      const activeClipState = getTrackPlaybackState(track) || editableState;
       safeSetCurrentTime(video, activeClipState, track, { force: true });
       applyTrackPitchAndSpeed(track, activeClipState);
       applyTrackVolume(track, activeClipState);
@@ -2545,43 +2764,43 @@ function handleTrackControl(event) {
   }
 
   if (controlName === "retriggersPerBar") {
-    track.retriggersPerBar = normalizeRetriggersPerBar(control.value);
-    applyArrangementClipControlValue(track, "retriggersPerBar", track.retriggersPerBar);
+    editableState.retriggersPerBar = normalizeRetriggersPerBar(control.value);
+    applyArrangementClipControlValue(track, "retriggersPerBar", editableState.retriggersPerBar, editableState);
     track.lastStep = -1;
     resyncTrackTiming(track);
     previewTrack(track);
   }
 
   if (controlName === "volume") {
-    track.volume = Number(control.value);
-    applyArrangementClipControlValue(track, "volume", track.volume);
-    applyTrackVolume(track, activeTrackState);
+    editableState.volume = Number(control.value);
+    applyArrangementClipControlValue(track, "volume", editableState.volume, editableState);
+    applyTrackVolume(track, editableState);
   }
 
-  if (controlName in track.fx) {
-    track.fx[controlName] = Number(control.value);
-    applyArrangementClipControlValue(track, controlName, track.fx[controlName]);
+  if (editableState.fx && Object.prototype.hasOwnProperty.call(editableState.fx, controlName)) {
+    editableState.fx[controlName] = Number(control.value);
+    applyArrangementClipControlValue(track, controlName, editableState.fx[controlName], editableState);
     const valueEl = control.parentElement?.querySelector(".fx-value");
     const fxDefinition = FX_CONTROL_INDEX[controlName];
     if (valueEl && fxDefinition) {
       const value =
         Number.isInteger(fxDefinition.step) || fxDefinition.step >= 1
-          ? Math.round(track.fx[controlName])
-          : track.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
+          ? Math.round(editableState.fx[controlName])
+          : editableState.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
       valueEl.textContent = String(value);
     }
-    applyTrackFx(track, activeTrackState);
-    applyVideoFx(track, activeTrackState);
+    applyTrackFx(track, editableState);
+    applyVideoFx(track, editableState);
     updateTrackModeChips(track);
   }
 
   if (controlName === "muted") {
-    track.muted = !track.muted;
-    applyArrangementClipControlValue(track, "muted", track.muted);
-    control.textContent = track.muted ? "Muted" : "On";
-    control.setAttribute("aria-pressed", String(track.muted));
+    editableState.muted = !editableState.muted;
+    applyArrangementClipControlValue(track, "muted", editableState.muted, editableState);
+    control.textContent = editableState.muted ? "Muted" : "On";
+    control.setAttribute("aria-pressed", String(editableState.muted));
     updateTrackModeChips(track);
-    applyTrackVolume(track, activeTrackState);
+    applyTrackVolume(track, editableState);
   }
 
   if (controlName === "solo") {
@@ -2691,6 +2910,8 @@ async function startTransport() {
       }
     }
   })();
+
+  return startTransport.runningPromise;
 }
 
 const pendingAnchorSeeks = new Map();
@@ -3283,6 +3504,462 @@ function hardStopPlayback(reason = "stopped") {
   setStatus("Audio stopped");
 }
 
+function isWebmTypeSupported(candidateTypes = EXPORT_MEDIA_TYPES) {
+  if (typeof MediaRecorder === "undefined") {
+    return null;
+  }
+
+  for (const type of candidateTypes) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  return "video/webm";
+}
+
+function computeExportBars(mode = "clip") {
+  if (mode === "arrangement" && hasArrangementClips() && arrangement?.clips) {
+    return Math.max(1, arrangement.clips.length);
+  }
+
+  return 1;
+}
+
+function computeExportDurationMs(mode = "clip") {
+  const bars = computeExportBars(mode);
+  return Math.max(1, bars) * getTransportBeatMs() * getTransportBeatsPerBar();
+}
+
+function getExportBlendMode(track) {
+  const trackState = getTrackActiveControlState(track) || track;
+  return EXPORT_BLEND_MODE_MAP[trackState?.blendMode] || "source-over";
+}
+
+function getTrackExportOpacity(track) {
+  const cell = getTrackCell(track);
+  if (!cell) {
+    return 1;
+  }
+
+  const styleOpacity = Number.parseFloat(cell.style.opacity);
+  if (!Number.isFinite(styleOpacity)) {
+    return 1;
+  }
+
+  return clamp(styleOpacity, 0, 1);
+}
+
+function getTrackExportFilter(track) {
+  const cell = getTrackCell(track);
+  if (!cell) {
+    return "none";
+  }
+
+  const cellFilter = window.getComputedStyle(cell).getPropertyValue("--video-filter");
+  return cellFilter ? cellFilter.trim() || "none" : "none";
+}
+
+function getExportCanvasDimensions(targetRect = null) {
+  const width = Number.isFinite(targetRect?.width)
+    ? Math.max(1, Math.floor(targetRect.width))
+    : EXPORT_CANVAS_MAX_WIDTH;
+  const height = Number.isFinite(targetRect?.height)
+    ? Math.max(1, Math.floor(targetRect.height))
+    : EXPORT_CANVAS_MAX_HEIGHT;
+  if (width >= height) {
+    const scale = Math.min(1, EXPORT_CANVAS_MAX_WIDTH / width, EXPORT_CANVAS_MAX_HEIGHT / height);
+    return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))];
+  }
+
+  return [Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))];
+}
+
+function drawTrackFrame(context, track, width, height) {
+  const video = getTrackVideo(track);
+  if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+    return;
+  }
+
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+  const scale = Math.max(width / videoWidth, height / videoHeight);
+  const drawWidth = videoWidth * scale;
+  const drawHeight = videoHeight * scale;
+  const offsetX = (width - drawWidth) / 2;
+  const offsetY = (height - drawHeight) / 2;
+
+  context.globalAlpha = getTrackExportOpacity(track);
+  context.globalCompositeOperation = getExportBlendMode(track);
+  context.filter = getTrackExportFilter(track);
+  context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
+}
+
+function createExportCanvasSession() {
+  const matrix = playerPanel?.querySelector(".video-matrix");
+  const bounds = matrix?.getBoundingClientRect();
+  const [width, height] = getExportCanvasDimensions(bounds);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context unavailable");
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  canvas.style.position = "fixed";
+  canvas.style.inset = "0";
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.style.opacity = "0";
+  canvas.style.pointerEvents = "none";
+  canvas.style.zIndex = "-1";
+  document.body?.appendChild(canvas);
+
+  const drawFrame = () => {
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.filter = "none";
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "black";
+    context.fillRect(0, 0, width, height);
+
+    tracks.forEach((track) => {
+      drawTrackFrame(context, track, width, height);
+    });
+
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.filter = "none";
+  };
+
+  return { canvas, context, width, height, drawFrame };
+}
+
+function createExportAudioTap() {
+  const fallbackAudioTracks = [];
+
+  if (audioContext && !webAudioDisabled && audioContext.state === "running") {
+    const destination = audioContext.createMediaStreamDestination();
+    const disconnects = [];
+    let connectedAny = false;
+
+    tracks.forEach((track) => {
+      const video = getTrackVideo(track);
+      if (!video) {
+        return;
+      }
+
+      setupTrackAudio(track, video);
+      const output = track.audio?.output;
+      if (!output) {
+        return;
+      }
+
+      try {
+        output.connect(destination);
+        connectedAny = true;
+        disconnects.push(() => {
+          try {
+            output.disconnect(destination);
+          } catch {
+            // Already disconnected.
+          }
+        });
+      } catch (error) {
+        console.warn("Failed to connect export audio tap", error);
+      }
+    });
+
+    if (connectedAny) {
+      return { destination, disconnects, fallbackAudioTracks };
+    }
+  }
+
+  tracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    if (!video || typeof video.captureStream !== "function") {
+      return;
+    }
+
+    try {
+      const videoStream = video.captureStream();
+      videoStream.getAudioTracks().forEach((audioTrack) => {
+        if (audioTrack) {
+          fallbackAudioTracks.push(audioTrack);
+        }
+      });
+    } catch (error) {
+      console.warn("Failed to capture export fallback audio", error);
+    }
+  });
+
+  if (!fallbackAudioTracks.length) {
+    return null;
+  }
+
+  return { destination: null, disconnects: [], fallbackAudioTracks };
+}
+
+function releaseExportAudioTap(tap) {
+  if (!tap) {
+    return;
+  }
+
+  tap.disconnects?.forEach((disconnect) => {
+    if (typeof disconnect === "function") {
+      disconnect();
+    }
+  });
+
+  if (tap.destination?.stream) {
+    tap.destination.stream.getTracks().forEach((audioTrack) => audioTrack.stop());
+  }
+
+  if (Array.isArray(tap.fallbackAudioTracks)) {
+    tap.fallbackAudioTracks.forEach((audioTrack) => {
+      if (audioTrack?.stop) {
+        audioTrack.stop();
+      }
+    });
+  }
+}
+
+async function exportComposition(mode = "clip") {
+  if (isExportingVideo) {
+    setStatus("Export already running", true);
+    return;
+  }
+
+  if (!window.MediaRecorder) {
+    setStatus("MediaRecorder not available in this browser", true);
+    return;
+  }
+
+  if (!window.HTMLCanvasElement || !HTMLCanvasElement.prototype.captureStream) {
+    setStatus("Canvas capture not supported", true);
+    return;
+  }
+
+  const renderTracks = tracks.filter((track) => {
+    const renderState = getTrackRenderState(track);
+    return track.source || renderState?.source;
+  });
+  if (renderTracks.length === 0) {
+    setStatus("Load at least one source before exporting", true);
+    return;
+  }
+
+  if (mode === "arrangement" && !hasArrangementClips()) {
+    setStatus("No arrangement clips to export", true);
+    return;
+  }
+
+  if (transport?.active) {
+    setStatus("Stop playback before exporting", true);
+    return;
+  }
+
+  isExportingVideo = true;
+  window.freemixRender?.updateTransportRow?.();
+
+  let canvasSession = null;
+  let audioTap = null;
+  let timerId = null;
+  let recorder = null;
+  let frameId = null;
+  let mediaStream = null;
+  const chunks = [];
+  const exportMode = mode === "arrangement" ? "arrangement" : "clip";
+  const restoreArrangementEnabled = exportMode === "arrangement" && hasArrangementClips() && !arrangement.enabled;
+  let exportError = null;
+  let exportCompleted = false;
+  let timeoutId = null;
+  let recorderFinished;
+  const recorderStopped = new Promise((resolve, reject) => {
+    recorderFinished = { resolve, reject };
+  });
+  if (restoreArrangementEnabled) {
+    arrangement.enabled = true;
+    updateArrangementStep(arrangement.step, performance.now(), true);
+  }
+
+  try {
+    canvasSession = createExportCanvasSession();
+    mediaStream = canvasSession.canvas.captureStream(EXPORT_FRAME_RATE);
+    audioTap = createExportAudioTap();
+    if (audioTap?.destination?.stream) {
+      audioTap.destination.stream.getAudioTracks().forEach((audioTrack) => {
+        if (audioTrack) {
+          mediaStream.addTrack(audioTrack);
+        }
+      });
+    } else if (Array.isArray(audioTap?.fallbackAudioTracks)) {
+      audioTap.fallbackAudioTracks.forEach((audioTrack) => {
+        if (audioTrack) {
+          mediaStream.addTrack(audioTrack);
+        }
+      });
+    }
+
+    const mimeType = isWebmTypeSupported();
+    recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        chunks.push(event.data);
+      }
+    };
+    recorder.onstop = () => {
+      if (recorderFinished?.resolve) {
+        recorderFinished.resolve();
+        recorderFinished = null;
+      }
+    };
+    recorder.onerror = (error) => {
+      if (recorderFinished?.reject) {
+        recorderFinished.reject(error?.error || error || new Error("Export recorder error"));
+        recorderFinished = null;
+      }
+    };
+
+    const durationMs = computeExportDurationMs(exportMode);
+    recorder.start(200);
+
+    const renderLoop = () => {
+      if (!canvasSession) {
+        return;
+      }
+      canvasSession.drawFrame();
+      frameId = requestAnimationFrame(renderLoop);
+    };
+
+    frameId = requestAnimationFrame(renderLoop);
+    const startResult = startTransport();
+    if (startResult && typeof startResult.then === "function") {
+      await startResult;
+    }
+
+    if (!transport?.active) {
+      throw new Error("Playback failed to start");
+    }
+
+    const exportLabel = exportMode === "arrangement" ? "arrangement" : "clip";
+    setStatus(`Exporting ${exportLabel}...`);
+
+    timerId = window.setTimeout(() => {
+      if (!isExportingVideo) {
+        return;
+      }
+
+      stopTransport(false);
+      if (recorder && recorder.state === "recording") {
+        recorder.stop();
+      }
+      if (frameId) {
+        cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+    }, durationMs + 300);
+
+    await Promise.race([
+      recorderStopped,
+      new Promise((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error("Export timed out"));
+        }, durationMs + 12000);
+      }),
+    ]);
+  } catch (error) {
+    exportError = error;
+    console.warn(error);
+    if (recorder && recorder.state === "recording") {
+      recorder.stop();
+    }
+    if (frameId) {
+      cancelAnimationFrame(frameId);
+    }
+    setStatus("Export failed", true);
+  } finally {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
+      timerId = null;
+    }
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (recorder && recorder.state === "recording") {
+      recorder.stop();
+    }
+
+    if (frameId) {
+      cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((streamTrack) => {
+        if (streamTrack?.stop) {
+          streamTrack.stop();
+        }
+      });
+    }
+    if (canvasSession?.canvas) {
+      canvasSession.canvas.remove();
+    }
+    if (audioTap) {
+      releaseExportAudioTap(audioTap);
+    }
+
+    if (isExportingVideo) {
+      if (recorder && chunks.length > 0) {
+        const timestamp = new Date()
+          .toISOString()
+          .replace(/[-:]/g, "")
+          .replace(/\.\d+Z$/g, "")
+          .replace("T", "-");
+        const exportName = `freemix-${exportMode}-${timestamp || "export"}.webm`;
+        const blob = new Blob(chunks, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        const download = document.createElement("a");
+        download.href = url;
+        download.download = exportName;
+        download.style.display = "none";
+        document.body.appendChild(download);
+        download.click();
+        window.setTimeout(() => {
+          URL.revokeObjectURL(url);
+          download.remove();
+        }, 0);
+        exportCompleted = true;
+      } else {
+        exportCompleted = false;
+      }
+    }
+
+    isExportingVideo = false;
+    if (restoreArrangementEnabled) {
+      arrangement.enabled = false;
+      window.freemixRender?.updateTransportRow?.();
+    }
+    window.freemixRender?.updateTransportRow?.();
+    if (exportError) {
+      setStatus("Export failed", true);
+    } else if (exportCompleted) {
+      setStatus("Export complete");
+    } else {
+      setStatus("No export data received", true);
+    }
+    if (transport?.active) {
+      stopTransport(true);
+    }
+  }
+}
+
+window.freemixIsExportingVideo = () => isExportingVideo;
+window.freemixExportClip = () => exportComposition("clip");
+window.freemixExportArrangement = () => exportComposition("arrangement");
+
 function tickTransport() {
   if (!transport?.active) {
     return;
@@ -3464,7 +4141,7 @@ function renderBeat(beat) {
 }
 
 function playMetronome(beat, beatsPerBar = getTransportBeatsPerBar(transport)) {
-  if (masterMuted || !audioContext) {
+  if (!metronomeEnabled || masterMuted || !audioContext) {
     return;
   }
 
@@ -3595,8 +4272,11 @@ function syncStartControls(track) {
   });
 }
 
-function applyArrangementClipControlValue(track, controlName, value) {
-  const clip = track?.arrangementClip;
+function applyArrangementClipControlValue(track, controlName, value, clipState = null) {
+  const isSceneControl = SCENE_EDITABLE_CONTROLS.has(controlName);
+  const clip = clipState && clipState !== track
+    ? clipState
+    : (isSceneControl ? getArrangementStepClipForTrack(track, { create: false }) : arrangement?.enabled ? getArrangementStepClipForTrack(track, { create: false }) : track);
   if (!clip || !tracks.includes(track)) {
     return;
   }
@@ -3623,6 +4303,11 @@ function applyArrangementClipControlValue(track, controlName, value) {
 
   if (controlName === "opacity") {
     clip.opacity = clamp(Number(value), 0, 1);
+    return;
+  }
+
+  if (controlName === "durationFilter") {
+    clip.durationFilter = DURATION_FILTERS[value] ? value : "quick";
     return;
   }
 
@@ -3653,7 +4338,7 @@ function applyArrangementClipControlValue(track, controlName, value) {
 
 function applyTrackVolume(track, state = track) {
   const effectiveState = state || track;
-  const isMuted = !!(effectiveState?.muted || track?.muted);
+  const isMuted = !!(effectiveState?.muted);
   const stateVolume = Number.isFinite(Number(effectiveState.volume))
     ? Number(effectiveState.volume)
     : Number.isFinite(Number(track.volume))
@@ -4001,6 +4686,42 @@ function handleArrangementCell(event) {
     return;
   }
 
+  if (arrangementDeleteMode) {
+    const step = arrangement.clips?.[stepIndex];
+    if (!step || !Object.prototype.hasOwnProperty.call(step, track.id)) {
+      setStatus(`No clip to delete in scene ${stepIndex + 1} for ${track.name}`);
+      selectArrangementStep(stepIndex);
+      return;
+    }
+
+    delete step[track.id];
+    if (!Object.keys(step).length) {
+      arrangement.clips[stepIndex] = {};
+    }
+
+    refreshArrangementHasClipsState();
+    selectArrangementStep(stepIndex);
+    if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+      rebindArrangementClipsForActiveTransport();
+    }
+
+    if (window.freemixRender?.updateArrangementGrid) {
+      if (typeof window.freemixRender.updateArrangementCell === "function") {
+        window.freemixRender.updateArrangementCell(track, stepIndex);
+      } else {
+        window.freemixRender.updateArrangementGrid();
+      }
+      window.freemixRender.updateArrangementPlayhead?.();
+      markAppStateDirty();
+      return;
+    }
+
+    renderWorkstation();
+    setStatus(`Deleted ${track.name} from scene ${stepIndex + 1}`);
+    markAppStateDirty();
+    return;
+  }
+
   if (!track.source) {
     selectArrangementStep(stepIndex);
     setStatus(`Bar ${stepIndex + 1} selected`);
@@ -4044,12 +4765,46 @@ function handleArrangementStepLabel(event) {
     return;
   }
 
+  if (arrangementDeleteMode) {
+    if (!arrangement?.clips?.[stepIndex] || !Object.keys(arrangement.clips[stepIndex]).length) {
+      setStatus(`Scene ${stepIndex + 1} is already empty`);
+      return;
+    }
+
+    arrangement.clips[stepIndex] = {};
+    refreshArrangementHasClipsState();
+
+    if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+      rebindArrangementClipsForActiveTransport();
+    }
+
+    tracks.forEach((stepTrack) => {
+      if (window.freemixRender?.updateArrangementCell) {
+        window.freemixRender.updateArrangementCell(stepTrack, stepIndex);
+      }
+    });
+    setStatus(`Deleted scene ${stepIndex + 1}`);
+    selectArrangementStep(stepIndex);
+    if (window.freemixRender?.updateArrangementGrid) {
+      window.freemixRender.updateArrangementPlayhead?.();
+      markAppStateDirty();
+      return;
+    }
+
+    renderWorkstation();
+    markAppStateDirty();
+    return;
+  }
+
   selectArrangementStep(stepIndex);
 }
 
 function toggleArrangementCopyMode() {
   arrangementCopyMode = !arrangementCopyMode;
   if (arrangementCopyMode) {
+    if (arrangementDeleteMode) {
+      arrangementDeleteMode = false;
+    }
     arrangementCopySourceStep = arrangement.step;
     setStatus(`Copying section ${arrangementCopySourceStep + 1}; click destination sections`);
   } else {
@@ -4063,6 +4818,28 @@ function toggleArrangementCopyMode() {
     } else {
       window.freemixRender.updateArrangementGrid();
     }
+    window.freemixRender?.updateTransportRow?.();
+    markAppStateDirty();
+    return;
+  }
+
+  renderWorkstation();
+  markAppStateDirty();
+}
+
+function toggleArrangementDeleteMode() {
+  arrangementDeleteMode = !arrangementDeleteMode;
+  if (arrangementDeleteMode) {
+    if (arrangementCopyMode) {
+      arrangementCopyMode = false;
+      arrangementCopySourceStep = null;
+    }
+    setStatus("Delete mode on; click clips/scenes to remove them");
+  } else {
+    setStatus("Delete mode off");
+  }
+
+  if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender?.updateTransportRow?.();
     markAppStateDirty();
     return;
@@ -4172,31 +4949,14 @@ function rebindArrangementClipsForActiveTransport() {
     return;
   }
 
-  const activeStep = Number.isFinite(Number(transport.arrangementStep))
-    ? Number(transport.arrangementStep)
-    : Number.isFinite(Number(arrangement.step))
-    ? Number(arrangement.step)
-    : 0;
-
-  const activeClips = arrangement.clips?.[activeStep];
-  if (!activeClips || typeof activeClips !== "object" || Array.isArray(activeClips)) {
+  const activeStep = getArrangementStepIndex(
+    Number.isFinite(Number(transport.arrangementStep)) ? transport.arrangementStep : arrangement.step,
+  );
+  if (activeStep === null) {
     return;
   }
 
-  const beatMs = getTransportBeatMs(transport);
-  const barMs = beatMs * getTransportBeatsPerBar(transport);
-  const nextBeatAt = Number.isFinite(transport.nextBeatAt)
-    ? transport.nextBeatAt
-    : performance.now();
-
-  tracks.forEach((track) => {
-    const clip = activeClips[track.id] ?? null;
-    track.arrangementClip = clip;
-    track.stepMs = clip ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar) : 0;
-    if (!Number.isFinite(track.nextTriggerAt) || track.nextTriggerAt < nextBeatAt) {
-      track.nextTriggerAt = nextBeatAt;
-    }
-  });
+  bindTracksToArrangementStep(activeStep, { syncTriggerTiming: true });
 }
 
 function toggleArrangement() {
@@ -4207,6 +4967,22 @@ function toggleArrangement() {
       updateArrangementStep(arrangement.step, now, true);
     } else {
       updateTrackTriggerGrid(now);
+    }
+  }
+
+  if (!transport?.active) {
+    if (arrangement.enabled) {
+      bindTracksToArrangementStep(arrangement.step);
+    } else {
+      tracks.forEach((track) => {
+        track.arrangementClip = null;
+      });
+    }
+
+    if (window.freemixRender?.updateTrackRow) {
+      tracks.forEach((track) => {
+        window.freemixRender.updateTrackRow(track);
+      });
     }
   }
 
@@ -4224,6 +5000,7 @@ function toggleArrangement() {
 function clearArrangement() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
+  arrangementDeleteMode = false;
   syncArrangementState(createInitialArrangement());
   refreshArrangementHasClipsState();
   closeArrangementClearMenu();
@@ -4297,6 +5074,7 @@ function updateArrangementStepCount(event) {
   }
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
+  arrangementDeleteMode = false;
   arrangementStepCount = nextLength;
   syncArrangementState(createInitialArrangement(nextLength));
   if (previousArrangement?.clips) {
@@ -4308,9 +5086,17 @@ function updateArrangementStepCount(event) {
 
   const previousStep = Number(previousArrangement?.step) || 0;
   arrangement.step = Math.min(previousStep, nextLength - 1);
+  if (!transport?.active && arrangement.enabled) {
+    bindTracksToArrangementStep(arrangement.step);
+  }
 
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
+    if (window.freemixRender?.updateTrackRow) {
+      tracks.forEach((track) => {
+        window.freemixRender.updateTrackRow(track);
+      });
+    }
     window.freemixRender.updateSourceStrip?.();
     window.freemixRender.updateTransportRow?.();
   } else {
@@ -4321,25 +5107,23 @@ function updateArrangementStepCount(event) {
 }
 
 function updateArrangementStep(stepIndex, barStartAt, force = false) {
-  if (!transport || (!force && transport.arrangementStep === stepIndex)) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
     return;
   }
 
-  transport.arrangementStep = stepIndex;
-  if (force) {
-    transport.arrangementStartStep = stepIndex;
+  if (!transport || (!force && transport.arrangementStep === resolvedStep)) {
+    return;
   }
-  arrangement.step = stepIndex;
-  const beatMs = getTransportBeatMs(transport);
-  const barMs = beatMs * getTransportBeatsPerBar(transport);
-  const step = arrangement.clips[stepIndex];
 
+  transport.arrangementStep = resolvedStep;
+  if (force) {
+    transport.arrangementStartStep = resolvedStep;
+  }
+  arrangement.step = resolvedStep;
+  bindTracksToArrangementStep(resolvedStep);
   tracks.forEach((track) => {
-    const clip = step[track.id] ?? null;
-    track.arrangementClip = clip;
-    track.stepMs = clip ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar) : 0;
     track.nextTriggerAt = barStartAt;
-    track.lastStep = -1;
   });
 
   scheduleArrangementPlayheadUpdate();
@@ -4357,15 +5141,26 @@ function scheduleArrangementPlayheadUpdate() {
 }
 
 function selectArrangementStep(stepIndex) {
-  arrangement.step = stepIndex;
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return;
+  }
+
+  arrangement.step = resolvedStep;
+  bindTracksToArrangementStep(resolvedStep);
+  tracks.forEach((track) => {
+    if (window.freemixRender?.updateTrackRow) {
+      window.freemixRender.updateTrackRow(track);
+    }
+  });
 
   if (transport?.active && arrangement.enabled && hasArrangementClips()) {
     const now = performance.now();
     transport.startedAt = now;
     transport.nextBeatAt = now;
     transport.beatIndex = 0;
-    transport.arrangementStartStep = stepIndex;
-    updateArrangementStep(stepIndex, now, true);
+    transport.arrangementStartStep = resolvedStep;
+    updateArrangementStep(resolvedStep, now, true);
     return;
   }
 
@@ -4418,6 +5213,7 @@ function refreshArrangementHasClipsState(targetArrangement = arrangement) {
 function captureTrackClip(track) {
   return {
     source: track.source,
+    durationFilter: track.durationFilter,
     startTime: track.startTime,
     retriggersPerBar: track.retriggersPerBar,
     volume: track.volume,
@@ -4607,7 +5403,9 @@ async function searchTrackSource(track, query) {
       return;
     }
 
-    const results = rankAndFilterResults(docs, track.durationFilter, query);
+    const renderTrackState = getTrackRenderState(track);
+    const filterKey = DURATION_FILTERS[renderTrackState?.durationFilter] ? renderTrackState.durationFilter : track.durationFilter;
+    const results = rankAndFilterResults(docs, filterKey, query);
     if (results.length) {
       renderTrackResults(track, results);
       return;
@@ -4636,19 +5434,14 @@ async function searchTrackSource(track, query) {
 
 function rankAndFilterResults(results, filterKey = "any", query = "") {
   const filter = DURATION_FILTERS[filterKey] ?? DURATION_FILTERS.any;
+  const filterDuration = filterKey !== "any";
 
   const sorted = results
     .map((result) => ({
       ...result,
       _searchScore: searchRelevance(result, query),
     }))
-    .filter((result) => {
-      if (filterKey === "any") {
-        return true;
-      }
-
-      return result.durationSeconds >= filter.min && result.durationSeconds < filter.max;
-    })
+    .filter((result) => Number.isFinite(result.durationSeconds) && result.durationSeconds > 0)
     .sort((a, b) => {
       if (b._searchScore !== a._searchScore) {
         return b._searchScore - a._searchScore;
@@ -4662,7 +5455,21 @@ function rankAndFilterResults(results, filterKey = "any", query = "") {
     })
     .map(({ _searchScore, ...result }) => result);
 
-  return diversifyRankedSearchResults(sorted, SEARCH_RESULTS_LIMIT);
+  const durationFiltered = filterDuration
+    ? sorted.filter((result) => result.durationSeconds >= filter.min && result.durationSeconds < filter.max)
+    : sorted;
+
+  if (!filterDuration || durationFiltered.length >= SEARCH_RESULTS_LIMIT) {
+    return diversifyRankedSearchResults(durationFiltered, SEARCH_RESULTS_LIMIT);
+  }
+
+  const durationFilteredIds = new Set(durationFiltered.map((result) => result.identifier));
+  const relaxed = [
+    ...durationFiltered,
+    ...sorted.filter((result) => !durationFilteredIds.has(result.identifier)),
+  ];
+
+  return diversifyRankedSearchResults(relaxed, SEARCH_RESULTS_LIMIT);
 }
 
 function renderTrackResults(track, results) {
@@ -4723,10 +5530,18 @@ async function loadTrackSource(track, result) {
 
   try {
     const source = await fetchPlayableSource(result);
-    track.source = source;
-    track.startTime = 0;
-    track.lastStep = -1;
+    const activeClip = arrangement?.enabled ? getArrangementStepClipForTrack(track, { create: true }) : null;
+    const targetState = activeClip && activeClip !== track ? activeClip : track;
+
+    targetState.source = source;
+    targetState.startTime = 0;
+    targetState.lastStep = -1;
     selectedSource = getFirstLoadedTrackSource() || source;
+    if (targetState !== track) {
+      track.startTime = 0;
+      track.lastStep = -1;
+      refreshArrangementHasClipsState();
+    }
     if (window.freemixRender?.updateTrackRow) {
       window.freemixRender.updateTrackRow(track);
       window.freemixRender.updateSourceStrip?.();
