@@ -4701,10 +4701,14 @@ function handleArrangementCell(event) {
   if (!track || !Number.isInteger(stepIndex)) {
     return;
   }
+  const step = arrangement.clips?.[stepIndex];
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return;
+  }
+  const hasTrackClip = Object.prototype.hasOwnProperty.call(step, track.id);
 
   if (arrangementDeleteMode) {
-    const step = arrangement.clips?.[stepIndex];
-    if (!step || !Object.prototype.hasOwnProperty.call(step, track.id)) {
+    if (!hasTrackClip) {
       setStatus(`No clip to delete in scene ${stepIndex + 1} for ${track.name}`);
       selectArrangementStep(stepIndex);
       return;
@@ -4744,10 +4748,15 @@ function handleArrangementCell(event) {
     return;
   }
 
-  arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
-  refreshArrangementHasClipsState();
+  if (!hasTrackClip) {
+    step[track.id] = captureTrackClip(track);
+    refreshArrangementHasClipsState();
+    setStatus(`${track.name}: placed in ${stepIndex + 1}`);
+  } else {
+    setStatus(`Bar ${stepIndex + 1} selected`);
+  }
+
   selectArrangementStep(stepIndex);
-  setStatus(`${track.name}: placed in ${stepIndex + 1}`);
   if (window.freemixRender?.updateArrangementGrid) {
     if (typeof window.freemixRender.updateArrangementCell === "function") {
       window.freemixRender.updateArrangementCell(track, stepIndex);
