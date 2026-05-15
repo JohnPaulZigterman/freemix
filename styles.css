@@ -1069,7 +1069,7 @@ input[type="number"]:focus {
   border: 1px solid var(--line);
   border-radius: 0;
   background: color-mix(in srgb, var(--panel-strong) 72%, #060708 28%);
-  color: var(--track-color);
+  color: var(--scene-track-color, var(--track-color));
   font-size: 0.58rem;
   line-height: 1;
   cursor: pointer;
@@ -1089,8 +1089,8 @@ input[type="number"]:focus {
 }
 
 .arrangement-cell.filled {
-  border-color: color-mix(in srgb, var(--track-color) 64%, var(--line));
-  background: color-mix(in srgb, var(--track-color) 22%, var(--panel-alt));
+  border-color: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 64%, var(--line));
+  background: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-alt));
 }
 
 .arrangement-cell.playing {

@@ -149,6 +149,14 @@
 
     const clip = arrangement.clips?.[stepIndex]?.[track.id];
     const isFilled = !!clip;
+    const sceneColor = typeof window.freemixGetArrangementSceneColor === "function"
+      ? window.freemixGetArrangementSceneColor(stepIndex)
+      : "";
+    if (sceneColor) {
+      cell.style.setProperty("--scene-track-color", sceneColor);
+    } else {
+      cell.style.removeProperty("--scene-track-color");
+    }
     cell.classList.toggle("filled", isFilled);
     cell.textContent = isFilled ? "x" : "";
     cell.title = isFilled

@@ -277,6 +277,10 @@ const persistState = appState.__persistState || appStateManager.persist || appSt
 let arrangementHasClips = false;
 let arrangementDeleteMode = false;
 let isExportingVideo = false;
+const arrangementSceneColorCache = new Map();
+const SCENE_COLOR_MIN_LIGHTNESS = 44;
+const SCENE_COLOR_MAX_LIGHTNESS = 58;
+const SCENE_COLOR_SATURATION = 76;
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -690,6 +694,7 @@ function getTrackById(trackId) {
 }
 
 window.freemixGetTrackById = getTrackById;
+window.freemixGetArrangementSceneColor = getArrangementSceneColor;
 
 function hasSoloTracksEnabled() {
   return tracks.some((track) => !!track?.solo);
@@ -1018,6 +1023,94 @@ function getArrangementStepClipForTrack(track, options = {}) {
   }
 
   return nextClip;
+}
+
+function normalizeSceneSignatureValue(value, precision = 6) {
+  if (!Number.isFinite(Number(value))) {
+    return "";
+  }
+
+  return Number(value).toFixed(precision);
+}
+
+function getTrackClipSignature(clip) {
+  if (!clip || typeof clip !== "object") {
+    return "empty";
+  }
+
+  const source = clip.source && typeof clip.source === "object" ? clip.source : {};
+  const sourceSignature = `${source.mediaUrl || ""}|${source.identifier || ""}`;
+  const fxState = clip.fx && typeof clip.fx === "object" ? clip.fx : {};
+  const fxSignature = Object.keys(fxState)
+    .sort()
+    .map((key) => `${key}:${normalizeSceneSignatureValue(fxState[key], 4)}`)
+    .join(",");
+
+  return [
+    sourceSignature,
+    clip.durationFilter || "quick",
+    normalizeSceneSignatureValue(clip.startTime, 3),
+    normalizeSceneSignatureValue(clip.retriggersPerBar, 0),
+    normalizeSceneSignatureValue(clip.volume, 3),
+    clip.muted ? 1 : 0,
+    clip.blendMode || TRACK_BLEND_DEFAULTS[0],
+    normalizeSceneSignatureValue(clip.opacity, 3),
+    normalizeSceneSignatureValue(clip.speed, 3),
+    normalizeSceneSignatureValue(clip.pitch, 3),
+    fxSignature || "default",
+  ].join("|");
+}
+
+function getArrangementStepSignature(step) {
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return "";
+  }
+
+  const trackIds = Object.keys(step)
+    .filter((trackId) => step[trackId] && typeof step[trackId] === "object")
+    .sort();
+  if (!trackIds.length) {
+    return "";
+  }
+
+  return trackIds
+    .map((trackId) => `${trackId}:${getTrackClipSignature(step[trackId])}`)
+    .join(";");
+}
+
+function hashSceneSignatureToHue(signature) {
+  let hash = 2166136261;
+  for (let index = 0; index < signature.length; index += 1) {
+    hash ^= signature.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+}
+
+function getArrangementSceneColor(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return "";
+  }
+
+  const step = arrangement?.clips?.[resolvedStep];
+  const signature = getArrangementStepSignature(step);
+  if (!signature) {
+    return "";
+  }
+
+  if (arrangementSceneColorCache.has(signature)) {
+    return arrangementSceneColorCache.get(signature);
+  }
+
+  const hue = hashSceneSignatureToHue(signature) % 360;
+  const hashShift = hashSceneSignatureToHue(`${signature}:shift`);
+  const lightness = SCENE_COLOR_MIN_LIGHTNESS
+    + (hashShift % (SCENE_COLOR_MAX_LIGHTNESS - SCENE_COLOR_MIN_LIGHTNESS + 1));
+  const sceneColor = `hsl(${hue} ${SCENE_COLOR_SATURATION}% ${lightness}%)`;
+  arrangementSceneColorCache.set(signature, sceneColor);
+  return sceneColor;
 }
 
 function bindTracksToArrangementStep(stepIndex, options = {}) {
@@ -2286,6 +2379,8 @@ function renderArrangementRow(track) {
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
+        const sceneColor = getArrangementSceneColor(index);
+        const sceneStyle = sceneColor ? ` style="--scene-track-color: ${sceneColor};"` : "";
         return `
           <button
             class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${arrangement.step === index ? "playing" : ""}"
@@ -2293,6 +2388,7 @@ function renderArrangementRow(track) {
             data-arr-track="${track.id}"
             data-arr-step="${index}"
             title="${clip ? escapeHtml(`${track.name} bar ${index + 1}`) : `Capture ${track.name}`}"
+            ${sceneStyle}
           >
             ${clip ? "x" : ""}
           </button>
@@ -2838,6 +2934,11 @@ function handleTrackControl(event) {
     track.name = normalizeTrackName(control.value, track.name);
     syncTrackNameUi(track);
     markAppStateDirty(true);
+  }
+
+  if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState !== track && arrangement?.clips) {
+    const stepToRefresh = safeStepIndex === null ? 0 : safeStepIndex;
+    refreshArrangementStepCells(stepToRefresh);
   }
 
   if (controlName !== "sourceSearch") {
@@ -4727,7 +4828,7 @@ function handleArrangementCell(event) {
 
     if (window.freemixRender?.updateArrangementGrid) {
       if (typeof window.freemixRender.updateArrangementCell === "function") {
-        window.freemixRender.updateArrangementCell(track, stepIndex);
+        refreshArrangementStepCells(stepIndex);
       } else {
         window.freemixRender.updateArrangementGrid();
       }
@@ -4759,7 +4860,7 @@ function handleArrangementCell(event) {
   selectArrangementStep(stepIndex);
   if (window.freemixRender?.updateArrangementGrid) {
     if (typeof window.freemixRender.updateArrangementCell === "function") {
-      window.freemixRender.updateArrangementCell(track, stepIndex);
+      refreshArrangementStepCells(stepIndex);
     } else {
       window.freemixRender.updateArrangementGrid();
     }
@@ -5233,6 +5334,21 @@ function refreshArrangementHasClipsState(targetArrangement = arrangement) {
   });
 
   return arrangementHasClips;
+}
+
+function refreshArrangementStepCells(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return;
+  }
+
+  if (!window.freemixRender?.updateArrangementCell) {
+    return;
+  }
+
+  tracks.forEach((stepTrack) => {
+    window.freemixRender.updateArrangementCell(stepTrack, resolvedStep);
+  });
 }
 
 function captureTrackClip(track) {
