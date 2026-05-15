@@ -23,14 +23,20 @@
     const timeSignatureSelect = player.querySelector("#timeSignatureSelect");
     const bpmInput = player.querySelector("#bpmInput");
     const meter = player.querySelector(".meter");
+    const exportClipButton = player.querySelector("#exportClipButton");
+    const exportArrangementButton = player.querySelector("#exportArrangementButton");
+    const isExporting = typeof window.freemixIsExportingVideo === "function" ? window.freemixIsExportingVideo() : false;
+    const hasSources = tracks.some((track) => track?.source);
+
     if (playButton) {
       playButton.classList.toggle("active", !!transport?.active);
-      playButton.removeAttribute("disabled");
+      playButton.disabled = isExporting;
       playButton.title = "Start transport";
     }
 
     if (metroButton) {
-      metroButton.classList.toggle("active", !masterMuted);
+      metroButton.classList.toggle("active", !!metronomeEnabled);
+      metroButton.disabled = isExporting;
     }
 
     if (arrangementToggle) {
@@ -53,6 +59,21 @@
     }
     if (timeSignatureSelect) {
       timeSignatureSelect.value = resolvePreferredTimeSignature().value;
+    }
+
+    if (exportClipButton) {
+      exportClipButton.disabled = isExporting || !hasSources;
+      exportClipButton.textContent = isExporting ? "Exporting..." : "Export Clip";
+      exportClipButton.title = hasSources ? "Export one bar as video" : "Load a source before exporting";
+    }
+
+    if (exportArrangementButton) {
+      const canExportArrangement = isExporting ? false : hasArrangementClips();
+      exportArrangementButton.disabled = !canExportArrangement;
+      exportArrangementButton.textContent = isExporting ? "Exporting..." : "Export Arrangement";
+      exportArrangementButton.title = canExportArrangement
+        ? "Export full arrangement as video"
+        : "Add clips to arrangement before exporting";
     }
 
     if (bpmInput && transport?.bpm) {
