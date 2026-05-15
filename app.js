@@ -665,10 +665,25 @@ function hasNonDefaultFx(track) {
   return Object.values(track?.fx || {}).some((value) => Number(value) !== 0);
 }
 
-function isTrackAudibleInMix(track) {
+function isTrackAudibleInMix(track, playbackState) {
   if (!track || track.muted) {
     return false;
   }
+
+  const activeClip = getTrackPlaybackState(track, playbackState) || track.arrangementClip || track;
+  if (activeClip !== track && activeClip?.muted) {
+    return false;
+  }
+
+  const activeVolume = Number.isFinite(Number(activeClip?.volume))
+    ? Number(activeClip.volume)
+    : Number.isFinite(Number(track?.volume))
+      ? Number(track.volume)
+      : 0;
+  if (activeVolume <= 0) {
+    return false;
+  }
+
   if (!hasSoloTracksEnabled()) {
     return true;
   }
@@ -887,6 +902,125 @@ function getTrackVideo(track) {
   return video;
 }
 
+function getTrackActiveControlState(track) {
+  if (!track || typeof track !== "object") {
+    return track;
+  }
+
+  return track.arrangementClip || track;
+}
+
+function getTrackPlaybackState(track, overrideState) {
+  const baseTrack = getTrackById(track?.id) || track;
+  if (!baseTrack || typeof baseTrack !== "object") {
+    return null;
+  }
+
+  const activeState = overrideState || baseTrack.arrangementClip;
+  if (activeState && typeof activeState === "object") {
+    return activeState;
+  }
+
+  return baseTrack;
+}
+
+function getTrackPlaybackSourceUrl(track, overrideState) {
+  const playbackState = getTrackPlaybackState(track, overrideState);
+  return playbackState?.source?.mediaUrl || track?.source?.mediaUrl || null;
+}
+
+function shouldDisableWebAudioForSource(sourceUrl) {
+  if (!sourceUrl) {
+    return true;
+  }
+
+  const isUnknownOrigin = window.location?.origin === "null" || !window.location?.origin;
+  if (window.location?.protocol === "file:" || isUnknownOrigin) {
+    return true;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    if (!mediaUrl.protocol.startsWith("http")) {
+      return false;
+    }
+
+    return mediaUrl.origin !== window.location.origin;
+  } catch {
+    return true;
+  }
+}
+
+function setVideoCorsPolicy(video, sourceUrl) {
+  if (!video || !sourceUrl) {
+    return;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    if (shouldDisableWebAudioForSource(sourceUrl)) {
+      if (video.removeAttribute) {
+        video.removeAttribute("crossorigin");
+      }
+      return;
+    }
+
+    if (mediaUrl.protocol.startsWith("http")) {
+      video.crossOrigin = "anonymous";
+      return;
+    }
+  } catch {
+    // Best effort.
+  }
+
+  if (video.removeAttribute) {
+    video.removeAttribute("crossorigin");
+  }
+}
+
+function shouldIgnoreLifecycleAutoStop() {
+  return window.location?.protocol === "file:" || window.location?.origin === "null" || !window.location?.origin;
+}
+
+function getTrackStartControlValue(track) {
+  const activeState = getTrackActiveControlState(track) || track;
+  const parsedStartTime = Number(activeState?.startTime);
+  if (Number.isFinite(parsedStartTime)) {
+    return parsedStartTime;
+  }
+
+  const trackStartTime = Number(track?.startTime);
+  return Number.isFinite(trackStartTime) ? trackStartTime : 0;
+}
+
+function createAnchorSeekState(targetTrack, overrideState) {
+  const track = targetTrack?.id ? getTrackById(targetTrack.id) || targetTrack : targetTrack;
+  if (!track || typeof track !== "object") {
+    return null;
+  }
+
+  const playbackState = getTrackPlaybackState(track, overrideState);
+  if (!playbackState || typeof playbackState !== "object") {
+    return null;
+  }
+
+  const rawSourceUrl = playbackState.source?.mediaUrl || track.source?.mediaUrl;
+  const sourceUrl = typeof rawSourceUrl === "string" && rawSourceUrl.length > 0 ? rawSourceUrl : null;
+  const rawStart = Number(playbackState.startTime);
+  const startTime = Number.isFinite(rawStart)
+    ? rawStart
+    : Number.isFinite(Number(track.startTime))
+      ? Number(track.startTime)
+      : 0;
+
+  return {
+    trackId: track.id,
+    sourceUrl,
+    startTime,
+    sourceState: playbackState,
+  };
+}
+
 window.addEventListener("resize", queueArrangementTrackHeightSync, { passive: true });
 
 function getBeatLights() {
@@ -1024,7 +1158,7 @@ function queueControlStatePersist(delayMs = LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_
 }
 
 async function primeTrackForTransport(track, sessionToken = startTransport.bootToken) {
-  if (!track?.source) {
+  if (!track) {
     return;
   }
 
@@ -1033,8 +1167,15 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
     return;
   }
 
-  if (track.source?.mediaUrl && video.src !== track.source.mediaUrl) {
-    video.src = track.source.mediaUrl;
+  const playbackState = getTrackPlaybackState(track) || track;
+  const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+  if (!sourceUrl) {
+    return;
+  }
+
+  setVideoCorsPolicy(video, sourceUrl);
+  if (video.src !== sourceUrl) {
+    video.src = sourceUrl;
     video.load();
   }
 
@@ -1047,11 +1188,39 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
     return;
   }
 
+  const primingState = getTrackPlaybackState(track) || track;
   track.__transportPrimedFor = sessionToken;
-  safeSetCurrentTime(video, track);
+  safeSetCurrentTime(video, primingState);
   setupTrackAudio(track, video);
-  applyTrackVolume(track, track);
-  applyTrackPitchAndSpeed(track, track);
+  applyTrackVolume(track, primingState);
+  applyTrackPitchAndSpeed(track, primingState);
+}
+
+function ensureTransportTrackPrimed(track, sessionToken = transport?.sessionToken) {
+  if (!track || !sessionToken || !getTrackPlaybackSourceUrl(track)) {
+    return;
+  }
+
+  if (track.__transportPrimedFor === sessionToken) {
+    return;
+  }
+
+  if (track.__transportPrimeAttempt === sessionToken) {
+    return;
+  }
+
+  track.__transportPrimeAttempt = sessionToken;
+  primeTrackForTransport(track, sessionToken)
+    .catch((error) => {
+      if (error?.name !== "AbortError") {
+        console.warn(error);
+      }
+    })
+    .finally(() => {
+      if (track.__transportPrimeAttempt === sessionToken) {
+        delete track.__transportPrimeAttempt;
+      }
+    });
 }
 
 function resyncTrackTiming(track) {
@@ -1062,7 +1231,8 @@ function resyncTrackTiming(track) {
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
   track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
-  track.nextTriggerAt = Math.max(performance.now(), transport.nextBeatAt || performance.now());
+  const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
+  track.nextTriggerAt = getAlignedTrackTriggerTime(track, rearmAt);
   track.lastStep = -1;
 }
 
@@ -1181,17 +1351,19 @@ async function handleLaunchPadAction(action) {
 
 window.freemixHandleLaunchPadAction = handleLaunchPadAction;
 
-window.addEventListener("pagehide", () => {
-  hardStopPlayback("page hidden");
-});
-window.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    hardStopPlayback("tab hidden");
-  }
-});
-window.addEventListener("beforeunload", () => {
-  hardStopPlayback("unloading");
-});
+if (!shouldIgnoreLifecycleAutoStop()) {
+  window.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      hardStopPlayback("tab hidden");
+    }
+  });
+  window.addEventListener("beforeunload", () => {
+    hardStopPlayback("unloading");
+  });
+  window.addEventListener("pagehide", () => {
+    hardStopPlayback("page hidden");
+  });
+}
 
 renderWorkstation();
 setStatus("Ready");
@@ -1932,8 +2104,8 @@ function renderVideoCell(track, index) {
               id="video-${track.id}"
               src="${track.source.mediaUrl}"
               preload="auto"
-              playsinline
-            ></video>`
+               playsinline
+             ></video>`
           : `<div class="track-empty-video" aria-hidden="true"></div>`
       }
       <div class="track-badge">
@@ -2066,7 +2238,10 @@ function renderTrackControlField(track, control) {
   const className = `control-field ${control.fieldClass || ""}`.trim();
   const trackAttributes = `data-track-control="${track.id}" data-control="${control.control}"`;
   const visibilityClass = isAdvanced ? "control-advanced" : "";
-  const resolvedValue = control.control === "startNumber" ? track.startTime : track[control.control];
+  const resolvedValue =
+    control.control === "startTime" || control.control === "startNumber"
+      ? getTrackStartControlValue(track)
+      : track[control.control];
 
   if (control.type === "search") {
     return `
@@ -2261,6 +2436,7 @@ function handleTrackControl(event) {
   }
 
   const controlName = control.dataset.control;
+  const activeTrackState = getTrackPlaybackState(track);
 
   if (controlName === "sourceSearch") {
     queueTrackSearch(track, control.value.trim());
@@ -2297,7 +2473,7 @@ function handleTrackControl(event) {
     if (valueEl) {
       valueEl.textContent = `${Number(track.speed).toFixed(2)}x`;
     }
-    applyTrackPitchAndSpeed(track);
+    applyTrackPitchAndSpeed(track, activeTrackState);
     return;
   }
 
@@ -2309,28 +2485,48 @@ function handleTrackControl(event) {
       const displayPitch = Number(track.pitch);
       valueEl.textContent = `${displayPitch > 0 ? "+" : ""}${displayPitch}`;
     }
-    applyTrackPitchAndSpeed(track);
+    applyTrackPitchAndSpeed(track, activeTrackState);
     updateTrackModeChips(track);
     return;
   }
 
   if (controlName === "startTime" || controlName === "startNumber") {
     const video = getTrackVideo(track);
-    const nextStartTime = normalizeStartTimeInput(control.value, track, video);
+    const activeTrackState = getTrackPlaybackState(track) || track;
+    const nextStartTime = normalizeStartTimeInput(control.value, activeTrackState, video);
     if (!Number.isFinite(nextStartTime)) {
       return;
     }
 
-    track.startTime = nextStartTime;
+    if (activeTrackState === track) {
+      track.startTime = nextStartTime;
+    } else {
+      activeTrackState.startTime = nextStartTime;
+    }
+
     applyArrangementClipControlValue(track, "startTime", nextStartTime);
 
     syncStartControls(track);
     if (video && transport?.active) {
-      track.nextTriggerAt = performance.now();
+      const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
+      track.nextTriggerAt = getAlignedTrackTriggerTime(track, rearmAt);
     }
 
     if (video) {
-      safeSetCurrentTime(video, track.arrangementClip ?? track);
+      const activeClipState = getTrackPlaybackState(track) || track;
+      safeSetCurrentTime(video, activeClipState, track, { force: true });
+      applyTrackPitchAndSpeed(track, activeClipState);
+      applyTrackVolume(track, activeClipState);
+
+      if (transport?.active && isTrackAudibleInMix(track, activeClipState)) {
+        const nextAlignedTrigger = track.nextTriggerAt;
+        triggerTrack(track, activeClipState, transport.sessionToken);
+        if (Number.isFinite(track.stepMs) && track.stepMs > 0) {
+          const fallbackRearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
+          const nextTriggerAt = Number.isFinite(nextAlignedTrigger) ? nextAlignedTrigger : fallbackRearmAt;
+          track.nextTriggerAt = nextTriggerAt + track.stepMs;
+        }
+      }
     }
 
     if (!transport?.active && event?.type !== "input") {
@@ -2352,7 +2548,7 @@ function handleTrackControl(event) {
   if (controlName === "volume") {
     track.volume = Number(control.value);
     applyArrangementClipControlValue(track, "volume", track.volume);
-    applyTrackVolume(track);
+    applyTrackVolume(track, activeTrackState);
   }
 
   if (controlName in track.fx) {
@@ -2367,8 +2563,8 @@ function handleTrackControl(event) {
           : track.fx[controlName].toFixed(2).replace(/\.?0+$/, "");
       valueEl.textContent = String(value);
     }
-    applyTrackFx(track, track.arrangementClip ?? track);
-    applyVideoFx(track, track.arrangementClip ?? track);
+    applyTrackFx(track, activeTrackState);
+    applyVideoFx(track, activeTrackState);
     updateTrackModeChips(track);
   }
 
@@ -2378,7 +2574,7 @@ function handleTrackControl(event) {
     control.textContent = track.muted ? "Muted" : "On";
     control.setAttribute("aria-pressed", String(track.muted));
     updateTrackModeChips(track);
-    applyTrackVolume(track);
+    applyTrackVolume(track, activeTrackState);
   }
 
   if (controlName === "solo") {
@@ -2433,6 +2629,7 @@ async function startTransport() {
 
   const bootToken = (startTransport.bootToken ?? 0) + 1;
   startTransport.bootToken = bootToken;
+  masterMuted = false;
 
   stopTransport(false, false);
   const startToken = bootToken;
@@ -2448,12 +2645,18 @@ async function startTransport() {
   startTransport.runningPromise = (async () => {
     try {
       if (typeof ensureAudioContext === "function") {
-        await ensureAudioContext();
+        try {
+          await ensureAudioContext();
+        } catch (error) {
+          webAudioDisabled = true;
+          console.warn(error);
+          setStatus("Audio context failed, using native playback", true);
+        }
       }
 
       await Promise.all(
         tracks
-          .filter((track) => track.source)
+          .filter((track) => getTrackPlaybackSourceUrl(track))
           .map((track) =>
             primeTrackForTransport(track, startToken).catch((error) => {
               console.warn(error);
@@ -2473,9 +2676,8 @@ async function startTransport() {
 
       startTransportWithState(startToken);
     } catch (error) {
-      webAudioDisabled = true;
       console.warn(error);
-      setStatus("Audio unavailable, trying again natively", true);
+      setStatus("Playback start failed", true);
     } finally {
       if (startTransport.bootToken === startToken) {
         startTransport.runningPromise = null;
@@ -2500,9 +2702,15 @@ function normalizeStartTimeInput(rawValue, track, video) {
   return Math.min(clampedMinimum, Math.max(video.duration - 0.2, 0));
 }
 
-function queueStartTimeSeek(video, track) {
-  const trackId = track?.id;
+function queueStartTimeSeek(video, track, ownerTrack = null) {
+  const owner = ownerTrack || track;
+  const trackId = owner?.id;
   if (!video || !trackId) {
+    return;
+  }
+
+  const seekState = createAnchorSeekState(owner, track);
+  if (!seekState) {
     return;
   }
 
@@ -2524,6 +2732,7 @@ function queueStartTimeSeek(video, track) {
   const context = {
     requestId,
     trackId,
+    seekState,
     frameId: null,
     onLoadedMetadata: null,
     onError: null,
@@ -2541,7 +2750,16 @@ function queueStartTimeSeek(video, track) {
       return;
     }
 
-    safeSetCurrentTime(video, currentTrack.arrangementClip ?? currentTrack);
+    if (latest.seekState?.sourceUrl) {
+      setVideoCorsPolicy(video, latest.seekState.sourceUrl);
+    }
+    if (latest.seekState?.sourceUrl && video.src !== latest.seekState.sourceUrl) {
+      video.src = latest.seekState.sourceUrl;
+      video.load();
+    }
+
+    const seekPlaybackState = getTrackPlaybackState(currentTrack, latest.seekState?.sourceState) || currentTrack;
+    safeSetCurrentTime(video, seekPlaybackState, currentTrack, { force: true });
   };
 
   context.onError = () => {
@@ -2567,30 +2785,35 @@ function queueStartTimeSeek(video, track) {
   }
 }
 
-function safeSetCurrentTime(video, track) {
+function safeSetCurrentTime(video, track, ownerTrack = null, options = {}) {
   if (!video || !track) {
     return;
   }
 
+  const force = !!options.force;
   const nextTime = safeStartTime(track, video);
   if (!Number.isFinite(nextTime)) {
     return;
   }
 
   if (video.readyState < 1) {
-    queueStartTimeSeek(video, track);
+    queueStartTimeSeek(video, track, ownerTrack || track);
     return;
   }
 
   try {
-    if (almostEqual(video.currentTime, nextTime, 0.001)) {
+    if (video.readyState >= 1 && !video.paused && typeof video.pause === "function") {
+      video.pause();
+    }
+
+    if (!force && almostEqual(video.currentTime, nextTime, 0.001)) {
       return;
     }
 
     video.currentTime = nextTime;
     return;
   } catch (error) {
-    queueStartTimeSeek(video, track);
+    queueStartTimeSeek(video, track, ownerTrack || track);
   }
 }
 
@@ -2616,14 +2839,50 @@ function waitForTrackReady(video, timeoutMs = AV_READY_TIMEOUT_MS) {
   });
 }
 
-function attemptVideoPlay(video, track, clipState) {
+function awaitVideoSeek(video, targetTime, timeoutMs = AV_READY_TIMEOUT_MS) {
+  if (!video || !Number.isFinite(targetTime)) {
+    return Promise.resolve();
+  }
+
+  if (!video.seeking && almostEqual(video.currentTime, targetTime, 0.001)) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (resolved) {
+        return;
+      }
+      resolved = true;
+      video.removeEventListener("seeked", done);
+      video.removeEventListener("error", done);
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+
+    const timeoutId = window.setTimeout(done, timeoutMs);
+    video.addEventListener("seeked", done, { once: true });
+    video.addEventListener("error", done, { once: true });
+  });
+}
+
+function attemptVideoPlay(video, track, clipState, playbackToken = track?.__playbackToken) {
   const shouldBeMuted = !!clipState?.muted || !!track.muted;
   const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
   const clip = clipState || track;
   const clipVolume = clamp(targetVolume, 0, 1);
+  const clipSourceUrl = clip.source?.mediaUrl || track?.source?.mediaUrl;
+  const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : 0;
+  const isCurrentPlaybackAttempt = () => track?.__playbackToken === tokenAtStart;
 
-  if (clip?.source?.mediaUrl && clip.source.mediaUrl !== video.src) {
-    video.src = clip.source.mediaUrl;
+  if (!isCurrentPlaybackAttempt()) {
+    return Promise.resolve(false);
+  }
+
+  if (clipSourceUrl && clipSourceUrl !== video.src) {
+    setVideoCorsPolicy(video, clipSourceUrl);
+    video.src = clipSourceUrl;
     video.load();
   }
 
@@ -2632,8 +2891,29 @@ function attemptVideoPlay(video, track, clipState) {
   }
 
   const playWithState = async (muted) => {
+    if (!isCurrentPlaybackAttempt()) {
+      return muted;
+    }
+    if (track.audio && !webAudioDisabled && audioContext && audioContext.state !== "running") {
+      try {
+        await ensureAudioContext();
+      } catch (error) {
+        console.warn(error);
+      }
+    }
+    if (!webAudioDisabled && audioContext?.state === "running") {
+      setupTrackAudio(track, video);
+    }
+    if (!isCurrentPlaybackAttempt()) {
+      return muted;
+    }
+
     const hasLiveAudioGraph =
-      !!track.audio && !webAudioDisabled && audioContext?.state === "running" && track.audio.mediaElement;
+      !!track.audio &&
+      !webAudioDisabled &&
+      audioContext?.state === "running" &&
+      track.audio.mediaElement &&
+      track.audio.source?.context === audioContext;
     if (video.muted !== muted) {
       video.muted = muted;
     }
@@ -2658,13 +2938,45 @@ function attemptVideoPlay(video, track, clipState) {
     }
 
     await waitForTrackReady(video);
+    if (!isCurrentPlaybackAttempt()) {
+      return muted;
+    }
+
+    const clipStartTime = safeStartTime(clip, video);
+    if (Number.isFinite(clipStartTime)) {
+      if (!video.paused && typeof video.pause === "function") {
+        try {
+          video.pause();
+        } catch (error) {
+          console.warn(error);
+        }
+      }
+
+      try {
+        video.currentTime = clipStartTime;
+      } catch (error) {
+        console.warn(error);
+      }
+
+      await awaitVideoSeek(video, clipStartTime);
+      if (!isCurrentPlaybackAttempt()) {
+        return muted;
+      }
+    }
+
     await video.play();
+    if (!isCurrentPlaybackAttempt()) {
+      return muted;
+    }
 
     return muted;
   };
 
   return playWithState(shouldBeMuted)
     .catch(async (error) => {
+      if (!isCurrentPlaybackAttempt()) {
+        return false;
+      }
       if (shouldBeMuted || !(error instanceof DOMException)) {
         if (error instanceof DOMException) {
           setStatus(`Playback blocked: ${error.name}`, true);
@@ -2677,6 +2989,9 @@ function attemptVideoPlay(video, track, clipState) {
       }
 
       const nativeRetry = async () => {
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
         if (track.audio) {
           disposeTrackAudio(track);
         }
@@ -2688,19 +3003,34 @@ function attemptVideoPlay(video, track, clipState) {
           video.volume = fallbackVolume;
         }
         await waitForTrackReady(video);
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
         await video.play();
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
         return shouldBeMuted;
       };
 
       try {
         const wasMuted = await playWithState(true);
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
         if (wasMuted) {
           video.muted = false;
           applyTrackVolume(track, clipState);
 
           try {
             await waitForTrackReady(video);
+            if (!isCurrentPlaybackAttempt()) {
+              return false;
+            }
             await video.play();
+            if (!isCurrentPlaybackAttempt()) {
+              return false;
+            }
             return false;
           } catch {
             // Fall through to native retry path.
@@ -2709,6 +3039,9 @@ function attemptVideoPlay(video, track, clipState) {
 
         return wasMuted;
       } catch (fallbackError) {
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
         if (fallbackError instanceof DOMException) {
           setStatus(`Playback blocked: ${fallbackError.name}`, true);
         } else {
@@ -2727,7 +3060,10 @@ function attemptVideoPlay(video, track, clipState) {
         }
       }
     })
-    .then((wasMuted) => {
+  .then((wasMuted) => {
+      if (!isCurrentPlaybackAttempt()) {
+        return false;
+      }
       if (wasMuted && !shouldBeMuted) {
         video.muted = false;
         applyTrackVolume(track, clipState);
@@ -2735,9 +3071,26 @@ function attemptVideoPlay(video, track, clipState) {
         applyTrackVolume(track, clipState);
       }
 
+      const nativeVolume = shouldBeMuted ? 0 : clipVolume;
+      if (video.muted !== shouldBeMuted) {
+        video.muted = shouldBeMuted;
+      }
+      if (!shouldBeMuted && !almostEqual(video.volume, nativeVolume)) {
+        video.volume = nativeVolume;
+      }
+      if (!shouldBeMuted && track.audio?.output?.gain) {
+        const targetGain = nativeVolume;
+        if (!almostEqual(track.audio.output.gain.value, targetGain)) {
+          track.audio.output.gain.value = targetGain;
+        }
+      }
+
       return true;
     })
     .catch((error) => {
+      if (!isCurrentPlaybackAttempt()) {
+        return false;
+      }
       const hasName = error instanceof DOMException ? error.name : "";
       if (error instanceof DOMException) {
         setStatus(`Playback failed: ${error.name}`, true);
@@ -2768,17 +3121,21 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
 
   tracks.forEach((track) => {
     const video = getTrackVideo(track);
-    if (!video || !track.source) {
+    const playbackState = getTrackPlaybackState(track) || track;
+    const sourceUrl = playbackState?.source?.mediaUrl || track?.source?.mediaUrl;
+
+    if (!video || !sourceUrl) {
       return;
     }
 
-    if (track.source?.mediaUrl && video.src !== track.source.mediaUrl) {
-      video.src = track.source.mediaUrl;
+    setVideoCorsPolicy(video, sourceUrl);
+    if (sourceUrl && video.src !== sourceUrl) {
+      video.src = sourceUrl;
       video.load();
     }
-    safeSetCurrentTime(video, track);
+    safeSetCurrentTime(video, playbackState);
     setupTrackAudio(track, video);
-    applyTrackVolume(track, track);
+    applyTrackVolume(track, playbackState);
   });
 
   const now = performance.now();
@@ -2968,12 +3325,16 @@ function tickTransport() {
   }
 
   tracks.forEach((track) => {
-    if (!track.source || !track.stepMs) {
+    const playbackState = getTrackPlaybackState(track) || track;
+    const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+
+    if (!sourceUrl || !track.stepMs) {
       return;
     }
 
     if (track.__transportPrimedFor !== transport.sessionToken) {
-      track.nextTriggerAt = now;
+      ensureTransportTrackPrimed(track, transport.sessionToken);
+      track.nextTriggerAt = getAlignedTrackTriggerTime(track, now);
       return;
     }
 
@@ -2983,7 +3344,8 @@ function tickTransport() {
       return;
     }
 
-    const canPlay = isTrackAudibleInMix(track);
+    const activePlaybackState = playbackState;
+    const canPlay = isTrackAudibleInMix(track, activePlaybackState);
     let triggerBudget = MAX_TRACK_TRIGGER_BURST_PER_FRAME;
 
     while (now >= track.nextTriggerAt) {
@@ -2997,7 +3359,7 @@ function tickTransport() {
         continue;
       }
 
-      triggerTrack(track, track.arrangementClip ?? track, transport.sessionToken);
+      triggerTrack(track, activePlaybackState, transport.sessionToken);
       track.nextTriggerAt += track.stepMs;
     }
 
@@ -3018,35 +3380,46 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   const video = getTrackVideo(track);
-  const cell = getTrackCell(track);
-  if (!video || !cell) {
+  const playbackState = getTrackPlaybackState(track, clip) || track;
+  if (!playbackState?.source?.mediaUrl && !track?.source?.mediaUrl) {
     return;
   }
 
-  if (clip.source?.mediaUrl && video.src !== clip.source.mediaUrl) {
-    video.src = clip.source.mediaUrl;
+  if (!video) {
+    return;
+  }
+
+  const sourceUrl = playbackState.source?.mediaUrl || track?.source?.mediaUrl;
+  setVideoCorsPolicy(video, sourceUrl);
+  if (sourceUrl && video.src !== sourceUrl) {
+    video.src = sourceUrl;
     video.load();
   }
 
-  safeSetCurrentTime(video, clip);
-  setupTrackAudio(track, video);
-  applyTrackVolume(track, clip);
-  applyTrackFx(track, clip);
-  applyVideoFx(track, clip);
-  applyTrackBlend(track, clip);
-  applyTrackOpacity(track, clip);
-  applyTrackPitchAndSpeed(track, clip);
-  void attemptVideoPlay(video, track, clip);
+  track.__playbackToken = Number.isFinite(track.__playbackToken) ? track.__playbackToken + 1 : 1;
+  const playbackToken = track.__playbackToken;
 
-  cell.classList.remove("triggered");
-  window.requestAnimationFrame(() => cell.classList.add("triggered"));
+  setupTrackAudio(track, video);
+  applyTrackVolume(track, playbackState);
+  applyTrackFx(track, playbackState);
+  applyVideoFx(track, playbackState);
+  applyTrackBlend(track, playbackState);
+  applyTrackOpacity(track, playbackState);
+  applyTrackPitchAndSpeed(track, playbackState);
+  void attemptVideoPlay(video, track, playbackState, playbackToken);
+
+  const cell = getTrackCell(track);
+  if (cell) {
+    cell.classList.remove("triggered");
+    window.requestAnimationFrame(() => cell.classList.add("triggered"));
+  }
 }
 
 function previewTrack(track) {
   if (!track.source || transport?.active) {
     return;
   }
-  if (!isTrackAudibleInMix(track)) {
+  if (!isTrackAudibleInMix(track, getTrackPlaybackState(track) || track)) {
     return;
   }
 
@@ -3185,29 +3558,33 @@ function updateTrackDuration(video) {
     return;
   }
 
-  const safeStart = safeStartTime(track, video);
+  const activeState = getTrackPlaybackState(track) || track;
+  const safeStart = safeStartTime(activeState, video);
   if (!Number.isFinite(safeStart)) {
     return;
   }
 
-  if (track.startTime !== safeStart) {
-    track.startTime = safeStart;
-    if (track.arrangementClip) {
-      track.arrangementClip.startTime = safeStart;
-    }
-    syncStartControls(track);
+  if (activeState.startTime !== safeStart) {
+    activeState.startTime = safeStart;
   }
 
-  safeSetCurrentTime(video, track.arrangementClip ?? track);
+  if (activeState === track) {
+    track.startTime = safeStart;
+  }
+
+  syncStartControls(track);
+  safeSetCurrentTime(video, activeState, track);
 }
 
 function syncStartControls(track) {
+  const startTime = getTrackStartControlValue(track);
+
   getTrackControls(track, "startTime").forEach((range) => {
-    range.value = String(track.startTime);
+    range.value = String(startTime);
   });
 
   getTrackControls(track, "startNumber").forEach((number) => {
-    number.value = track.startTime.toFixed(1);
+    number.value = startTime.toFixed(1);
   });
 }
 
@@ -3268,10 +3645,20 @@ function applyArrangementClipControlValue(track, controlName, value) {
 }
 
 function applyTrackVolume(track, state = track) {
-  const isMuted = !!state.muted;
-  const volume = clamp(Number(state.volume), 0, 1);
+  const effectiveState = state || track;
+  const isMuted = !!(effectiveState?.muted || track?.muted);
+  const stateVolume = Number.isFinite(Number(effectiveState.volume))
+    ? Number(effectiveState.volume)
+    : Number.isFinite(Number(track.volume))
+      ? Number(track.volume)
+      : 0;
+  const volume = clamp(stateVolume, 0, 1);
   const hasLiveAudioGraph =
-    !!track.audio && !webAudioDisabled && audioContext?.state === "running" && track.audio.mediaElement;
+    !!track.audio &&
+    !webAudioDisabled &&
+    audioContext?.state === "running" &&
+    track.audio.mediaElement &&
+    track.audio.source?.context === audioContext;
 
   if (!hasLiveAudioGraph && track.audio) {
     disposeTrackAudio(track);
@@ -3302,9 +3689,21 @@ function setupTrackAudio(track, video) {
     return false;
   }
 
+  if (shouldDisableWebAudioForSource(getTrackPlaybackSourceUrl(track))) {
+    if (track.audio) {
+      disposeTrackAudio(track);
+    }
+    return false;
+  }
+
   if (track.audio && track.audio.mediaElement !== video) {
     disposeTrackAudio(track);
   }
+
+  if (track.audio && track.audio.source && track.audio.source.context !== audioContext) {
+    disposeTrackAudio(track);
+  }
+
   if (track.audio) {
     return true;
   }
@@ -3355,10 +3754,9 @@ function setupTrackAudio(track, video) {
     return true;
   } catch (error) {
     console.warn(error);
-    webAudioDisabled = true;
-    tracks.forEach((trackItem) => {
-      disposeTrackAudio(trackItem);
-    });
+    if (track?.audio) {
+      disposeTrackAudio(track);
+    }
     track.audio = null;
     setStatus("WebAudio failed; using native clip audio");
     return false;
@@ -3542,6 +3940,29 @@ function safeStartTime(track, video) {
   }
 
   return Math.min(track.startTime, Math.max(video.duration - 0.2, 0));
+}
+
+function getAlignedTrackTriggerTime(track, referenceTime = performance.now()) {
+  if (!track || !transport) {
+    return Number.isFinite(referenceTime) ? referenceTime : performance.now();
+  }
+
+  const stepMs = Number(track.stepMs);
+  if (!Number.isFinite(stepMs) || stepMs <= 0) {
+    return Number.isFinite(referenceTime) ? referenceTime : performance.now();
+  }
+
+  const transportStart = Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now();
+  const delta = referenceTime - transportStart;
+  if (!Number.isFinite(delta)) {
+    return transportStart;
+  }
+
+  const baseStepIndex = Math.floor(delta / stepMs);
+  const nextStepIndex = Math.max(baseStepIndex, 0);
+  const aligned = transportStart + nextStepIndex * stepMs;
+
+  return aligned < referenceTime ? aligned + stepMs : aligned;
 }
 
 function updateTrackTriggerGrid(startAt = performance.now()) {
