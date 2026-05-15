@@ -2437,6 +2437,7 @@ function handleTrackControl(event) {
 
   const controlName = control.dataset.control;
   const activeTrackState = getTrackPlaybackState(track);
+  const isInputEvent = event?.type === "input";
 
   if (controlName === "sourceSearch") {
     queueTrackSearch(track, control.value.trim());
@@ -2518,14 +2519,9 @@ function handleTrackControl(event) {
       applyTrackPitchAndSpeed(track, activeClipState);
       applyTrackVolume(track, activeClipState);
 
-      if (transport?.active && isTrackAudibleInMix(track, activeClipState)) {
-        const nextAlignedTrigger = track.nextTriggerAt;
-        triggerTrack(track, activeClipState, transport.sessionToken);
-        if (Number.isFinite(track.stepMs) && track.stepMs > 0) {
-          const fallbackRearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
-          const nextTriggerAt = Number.isFinite(nextAlignedTrigger) ? nextAlignedTrigger : fallbackRearmAt;
-          track.nextTriggerAt = nextTriggerAt + track.stepMs;
-        }
+      if (!isInputEvent && transport?.active && isTrackAudibleInMix(track, activeClipState) && Number.isFinite(track.stepMs) && track.stepMs > 0) {
+        const scheduleFrom = Number.isFinite(track.nextTriggerAt) ? track.nextTriggerAt : performance.now();
+        track.nextTriggerAt = getAlignedTrackTriggerTime(track, scheduleFrom);
       }
     }
 
@@ -3942,7 +3938,8 @@ function safeStartTime(track, video) {
   return Math.min(track.startTime, Math.max(video.duration - 0.2, 0));
 }
 
-function getAlignedTrackTriggerTime(track, referenceTime = performance.now()) {
+function getAlignedTrackTriggerTime(track, referenceTime = performance.now(), options = {}) {
+  const alignAfterReference = !!options.alignAfterReference;
   if (!track || !transport) {
     return Number.isFinite(referenceTime) ? referenceTime : performance.now();
   }
@@ -3958,11 +3955,13 @@ function getAlignedTrackTriggerTime(track, referenceTime = performance.now()) {
     return transportStart;
   }
 
-  const baseStepIndex = Math.floor(delta / stepMs);
-  const nextStepIndex = Math.max(baseStepIndex, 0);
-  const aligned = transportStart + nextStepIndex * stepMs;
-
-  return aligned < referenceTime ? aligned + stepMs : aligned;
+  const stepOffset = delta / stepMs;
+  const epsilon = 1e-6;
+  const computedStepIndex = alignAfterReference
+    ? Math.floor(stepOffset + epsilon) + 1
+    : Math.ceil(stepOffset - epsilon);
+  const alignedStepIndex = Math.max(computedStepIndex, 0);
+  return transportStart + alignedStepIndex * stepMs;
 }
 
 function updateTrackTriggerGrid(startAt = performance.now()) {
