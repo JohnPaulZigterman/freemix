@@ -5,7 +5,8 @@ const IA_SEARCH_URL = "https://archive.org/advancedsearch.php";
 const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
 const SEARCH_DELAY_MS = 280;
-const SEARCH_QUERY_MIN_LENGTH = 2;
+const SEARCH_QUERY_MIN_LENGTH = 1;
+const SEARCH_QUERY_TOKEN_MIN_LENGTH = 2;
 const SEARCH_RESULT_FIELDS = Object.freeze([
   "identifier",
   "title",
@@ -1446,7 +1447,7 @@ function tokenizeSearchQuery(value) {
   return normalized
     .split(" ")
     .map((token) => token.trim())
-    .filter((token) => token.length >= SEARCH_QUERY_MIN_LENGTH && !stopWords.has(token));
+    .filter((token) => token.length >= SEARCH_QUERY_TOKEN_MIN_LENGTH && !stopWords.has(token));
 }
 
 function escapeArchiveQueryValue(value) {
@@ -1490,21 +1491,28 @@ function buildArchiveSearchQueryVariants(rawQuery) {
 
   const toFieldClause = (value) =>
     `(${SEARCHABLE_TEXT_FIELDS.map((field) => `${field}:(${value})`).join(" OR ")})`;
+  const toIdentifierClause = (value) => `identifier:(${value})`;
   const titleCreatorClause = (value) => `(title:(${value}) OR creator:(${value}))`;
   const mediaScoped = (query) => `mediatype:(movies) AND (${query})`;
+  const identifierFallback = (query) => `(title:(${query}) OR creator:(${query}) OR description:(${query}) OR subject:(${query}) OR ${toIdentifierClause(query)})`;
   const wildcardValue = safeQuery.includes(" ") ? "" : `${safeQuery}*`;
+  const relaxedWildcard = wildcardValue || safeQuery;
 
   addQuery(
     mediaScoped(`${toFieldClause(`"${safeQuery}"`)}${wildcardValue ? ` OR ${toFieldClause(wildcardValue)}` : ""}`),
   );
+  addQuery(mediaScoped(identifierFallback(`"${safeQuery}"`)));
+  addQuery(mediaScoped(identifierFallback(relaxedWildcard)));
 
   if (uniqueTokens.length > 0) {
     const tokenClause = uniqueTokens.map((token) => toFieldClause(`"${token}"`)).join(" OR ");
     addQuery(mediaScoped(tokenClause));
+    addQuery(mediaScoped(uniqueTokens.map((token) => toFieldClause(token)).join(" OR ")));
 
     if (uniqueTokens.length > 1) {
       const titleCreatorTokens = uniqueTokens.slice(0, 4).map((token) => titleCreatorClause(`"${token}*"`)).join(" AND ");
       addQuery(mediaScoped(`(${titleCreatorTokens})`));
+      addQuery(mediaScoped(uniqueTokens.slice(0, 3).map((token) => titleCreatorClause(token)).join(" AND ")));
     }
   }
 
@@ -1516,8 +1524,11 @@ function buildArchiveSearchQueryVariants(rawQuery) {
   addQuery(mediaScoped(safeQuery));
   addQuery(toFieldClause(`"${safeQuery}*"`));
   addQuery(toFieldClause(`"${safeQuery}"`));
+  addQuery(mediaScoped(toFieldClause(`${safeQuery}*`)));
+  addQuery(identifierFallback(`${safeQuery}*`));
+  addQuery(`${toFieldClause(`${safeQuery}*`)}`);
 
-  return Array.from(queries).slice(0, 7);
+  return Array.from(queries).slice(0, 12);
 }
 
 function searchRelevance(result, rawQuery) {
@@ -4444,7 +4455,7 @@ function queueTrackSearch(track, query) {
     }
   }
 
-  if (normalizedQuery.length < SEARCH_QUERY_MIN_LENGTH) {
+  if (!normalizedQuery.length) {
     renderTrackResults(track, []);
     track.searchRequestId = (track.searchRequestId ?? 0) + 1;
     return;
