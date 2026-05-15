@@ -8,6 +8,7 @@
     preferredBpm: 92,
     preferredTimeSignature: "4/4",
     masterMuted: false,
+    metronomeEnabled: true,
     arrangementStepCount: 8,
     arrangementCopyMode: false,
     arrangementCopySourceStep: null,
@@ -23,6 +24,7 @@
     "preferredBpm",
     "preferredTimeSignature",
     "masterMuted",
+    "metronomeEnabled",
     "arrangementStepCount",
     "arrangementCopyMode",
     "userOnboarding",
@@ -57,6 +59,7 @@
     "preferredBpm",
     "preferredTimeSignature",
     "masterMuted",
+    "metronomeEnabled",
     "arrangementStepCount",
     "arrangementCopyMode",
     "userOnboarding",
@@ -106,6 +109,7 @@
     state.preferredTimeSignature ?? defaultsFromSaved.preferredTimeSignature,
   );
   state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
+  state.metronomeEnabled = state.metronomeEnabled ?? defaultsFromSaved.metronomeEnabled;
   state.arrangementStepCount = Number(state.arrangementStepCount) || Number(defaultsFromSaved.arrangementStepCount) || 8;
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
   state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
@@ -354,6 +358,7 @@
         state: {
           preferredBpm: Number(state.preferredBpm) || 92,
           preferredTimeSignature: state.preferredTimeSignature || "4/4",
+          metronomeEnabled: !!state.metronomeEnabled,
           arrangementStepCount: state.arrangementStepCount || 8,
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
@@ -416,6 +421,7 @@
     "preferredBpm",
     "preferredTimeSignature",
     "masterMuted",
+    "metronomeEnabled",
     "arrangementStepCount",
     "arrangementCopyMode",
     "arrangementCopySourceStep",

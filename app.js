@@ -1061,30 +1061,35 @@ function getTrackActiveControlState(track) {
   const clip = getArrangementStepClip(track, arrangement.step);
   if (clip) {
     track.arrangementClip = clip;
+  } else {
+    track.arrangementClip = null;
   }
 
   return clip || track;
 }
 
 function getTrackRenderState(track) {
-  return getArrangementStepClip(track, arrangement?.step) || getTrackActiveControlState(track) || track;
+  const arrangementClip = getArrangementStepClip(track, arrangement?.step);
+  if (arrangementClip) {
+    return arrangementClip;
+  }
+
+  return getTrackActiveControlState(track) || track;
 }
 
 function getTrackSceneEditableState(track, controlName) {
-  const baseState = getTrackActiveControlState(track);
-  if (!track || !controlName) {
-    return baseState;
+  const sceneEditable = SCENE_EDITABLE_CONTROLS.has(controlName);
+  if (!track || !controlName || !sceneEditable) {
+    return getTrackActiveControlState(track);
   }
 
-  if (!SCENE_EDITABLE_CONTROLS.has(controlName)) {
-    return baseState;
+  if (!arrangement?.clips) {
+    return getTrackActiveControlState(track);
   }
 
   const stepIndex = getArrangementStepIndex(arrangement?.step);
-  if (stepIndex === null || !arrangement?.clips) {
-    return baseState;
-  }
-  return getArrangementStepClipForTrack(track, { stepIndex, create: true }) || baseState;
+  const safeStepIndex = stepIndex === null ? 0 : stepIndex;
+  return getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex, create: true }) || getTrackActiveControlState(track);
 }
 
 function getTrackPlaybackState(track, overrideState) {
@@ -2670,7 +2675,11 @@ function handleTrackControl(event) {
   }
 
   const controlName = control.dataset.control;
-  const editableState = getTrackSceneEditableState(track, controlName);
+  let editableState = getTrackSceneEditableState(track, controlName);
+  if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState === track) {
+    const safeStepIndex = getArrangementStepIndex(arrangement?.step);
+    editableState = getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex === null ? 0 : safeStepIndex, create: true }) || editableState;
+  }
   const isInputEvent = event?.type === "input";
 
   if (controlName === "sourceSearch") {
@@ -4274,9 +4283,16 @@ function syncStartControls(track) {
 
 function applyArrangementClipControlValue(track, controlName, value, clipState = null) {
   const isSceneControl = SCENE_EDITABLE_CONTROLS.has(controlName);
-  const clip = clipState && clipState !== track
-    ? clipState
-    : (isSceneControl ? getArrangementStepClipForTrack(track, { create: false }) : arrangement?.enabled ? getArrangementStepClipForTrack(track, { create: false }) : track);
+  const resolvedStep = getArrangementStepIndex(arrangement?.step);
+  const effectiveStep = resolvedStep === null ? 0 : resolvedStep;
+  const clip =
+    clipState && clipState !== track
+      ? clipState
+      : isSceneControl
+        ? getArrangementStepClipForTrack(track, { stepIndex: effectiveStep, create: true })
+        : arrangement?.enabled
+          ? getArrangementStepClipForTrack(track, { stepIndex: effectiveStep, create: true })
+          : track;
   if (!clip || !tracks.includes(track)) {
     return;
   }
