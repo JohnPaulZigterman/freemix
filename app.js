@@ -230,6 +230,57 @@ const TRACK_MEDIA_STATUS_LABELS = Object.freeze({
   "video-only": "Video only",
 });
 const TRACK_MEDIA_STATUSES = Object.freeze(new Set(Object.keys(TRACK_MEDIA_STATUS_LABELS)));
+const TRACK_MEDIA_READINESS_LABELS = Object.freeze({
+  "audio-only": "Audio only",
+  empty: "No media",
+  failed: "Media failed",
+  "fx-ready": "FX ready",
+  limited: "Limited route",
+  loading: "Loading media",
+  playing: "Playing",
+  ready: "Ready",
+  stopped: "Stopped",
+  unsupported: "Unsupported media",
+  "video-only": "Video only",
+});
+const TRACK_AUDIO_ROUTE_LABELS = Object.freeze({
+  "capture-failed": "Capture failed",
+  "capture-fx": "Capture FX",
+  empty: "No audio",
+  failed: "Audio failed",
+  "fx-unavailable": "FX unavailable",
+  "native-audio": "Native audio",
+  unrouted: "Unrouted",
+  waiting: "Preparing FX",
+  webaudio: "WebAudio FX",
+});
+const TRACK_AUDIO_ROUTE_READINESS = Object.freeze({
+  "capture-failed": "failed",
+  "capture-fx": "fx-ready",
+  empty: "empty",
+  failed: "failed",
+  "fx-unavailable": "limited",
+  "native-audio": "limited",
+  unrouted: "limited",
+  waiting: "loading",
+  webaudio: "fx-ready",
+});
+const TRACK_MEDIA_STATUS_READINESS = Object.freeze({
+  "audio-only": "audio-only",
+  "clean-frame-ready": "ready",
+  "cors-limited": "limited",
+  empty: "empty",
+  failed: "failed",
+  "fx-routed": "fx-ready",
+  "fx-unavailable": "limited",
+  loading: "loading",
+  playing: "playing",
+  prerolling: "loading",
+  ready: "ready",
+  stopped: "stopped",
+  unsupported: "unsupported",
+  "video-only": "video-only",
+});
 const PLAYBACK_PHASES = Object.freeze({
   idle: "idle",
   loading: "loading",
@@ -345,6 +396,7 @@ const TRACK_CONTROL_SECTIONS = {
 const appState = window.freemixState || {};
 const appStateManager = window.freemixStateManager || {};
 const persistState = appState.__persistState || appStateManager.persist || appStateManager.persistState;
+const SESSION_SCHEMA_VERSION = 2;
 let arrangementHasClips = false;
 let arrangementDeleteMode = false;
 let isExportingVideo = false;
@@ -368,6 +420,11 @@ const TEXT_FONT_OPTIONS = Object.freeze([
   { value: "'Courier New', Courier, monospace", label: "Mono" },
   { value: "'Arial Black', Arial, sans-serif", label: "Block" },
   { value: "'Brush Script MT', cursive", label: "Script" },
+  { value: "'Press Start 2P', 'Pixel Emulator', 'Small Fonts', 'Courier New', monospace", label: "8 Bit" },
+  { value: "'VT323', 'Perfect DOS VGA 437', 'Px437 IBM VGA8', 'Courier New', monospace", label: "16 Bit" },
+  { value: "'Akbar', 'Simpsonfont', 'Comic Sans MS', 'Cooper Black', 'Arial Black', cursive", label: "Springfield Bootleg" },
+  { value: "'Playbill', 'Rockwell Extra Bold', 'Cooper Black', 'Georgia', serif", label: "Space Cowboy Bootleg" },
+  { value: "'Algerian', 'Wide Latin', 'Rockwell Extra Bold', 'Arial Black', serif", label: "Bootleg Poster" },
 ]);
 const TEXT_ALIGN_OPTIONS = Object.freeze(["left", "center", "right"]);
 const TEXT_DEFAULT_COLOR = "#f4f1df";
@@ -5766,10 +5823,11 @@ function renderVideoCell(track, index) {
   const renderSource = renderState.source || track.source;
   const mediaStatus = getTrackMediaStatus(track, renderSource);
   const mediaStatusLabel = getTrackMediaStatusLabel(mediaStatus);
+  const mediaReadiness = getTrackMediaReadiness(track, renderState);
   const playbackUrl = renderSource ? getMediaPlaybackUrl(renderSource.mediaUrl, renderState) : "";
   const corsAttribute = playbackUrl && !shouldDisableWebAudioForSource(playbackUrl) ? `crossorigin="anonymous"` : "";
   return `
-    <div class="video-cell ${track.color} blend-${renderState.blendMode || TRACK_BLEND_DEFAULTS[0]} ${renderSource ? "has-source" : "no-source"}" data-track-id="${track.id}" data-media-status="${escapeHtml(mediaStatus)}" style="--layer-index: ${index + 1}">
+    <div class="video-cell ${track.color} blend-${renderState.blendMode || TRACK_BLEND_DEFAULTS[0]} ${renderSource ? "has-source" : "no-source"}" data-track-id="${track.id}" data-media-status="${escapeHtml(mediaStatus)}" data-media-readiness="${escapeHtml(mediaReadiness.readiness)}" style="--layer-index: ${index + 1}">
       ${
         renderSource
         ? `<video
@@ -5786,7 +5844,7 @@ function renderVideoCell(track, index) {
         <strong>${escapeHtml(track.name)}</strong>
         ${track.role ? `<span>${escapeHtml(track.role)}</span>` : ""}
       </div>
-      <div class="media-status-badge">${escapeHtml(mediaStatusLabel)}</div>
+      <div class="media-status-badge" title="${escapeHtml(`${mediaReadiness.label}: ${mediaReadiness.detail}`)}">${escapeHtml(mediaStatusLabel)}</div>
       <div class="trigger-flash" aria-hidden="true"></div>
     </div>
   `;
@@ -5869,9 +5927,12 @@ function setTrackMediaStatus(trackOrId, status, options = {}) {
     const renderState = getTrackRenderState(track);
     const displayStatus = getTrackMediaStatus(track, renderState?.source || track.source);
     cell.dataset.mediaStatus = displayStatus;
+    cell.dataset.mediaReadiness = getTrackMediaReadiness(track, renderState).readiness;
     const badge = cell.querySelector(".media-status-badge");
     if (badge) {
+      const readiness = getTrackMediaReadiness(track, renderState);
       badge.textContent = getTrackMediaStatusLabel(displayStatus);
+      badge.title = `${readiness.label}: ${readiness.detail}`;
     }
   }
 
@@ -6117,68 +6178,143 @@ function recoverMediaPlaybackError(trackOrId, video) {
 
 window.freemixRecoverMediaPlaybackError = recoverMediaPlaybackError;
 
-function getTrackMediaPrepState(track, renderState = getTrackRenderState(track)) {
+function getTrackAudioRouteState(track) {
+  if (!track?.source) {
+    return {
+      status: "empty",
+      route: "empty",
+      readiness: TRACK_AUDIO_ROUTE_READINESS.empty,
+      label: TRACK_AUDIO_ROUTE_LABELS.empty,
+      detail: "Search to load",
+      hasFx: false,
+    };
+  }
+
+  let status = typeof track.audioFxStatus === "string" ? track.audioFxStatus : "waiting";
+  let route = track.audio?.route || status;
+  if (track.audio?.route === "capture-stream") {
+    status = "capture-fx";
+    route = "capture-stream";
+  } else if (track.audio?.route === "media-element") {
+    status = "webaudio";
+    route = "media-element";
+  }
+
+  const normalizedStatus = Object.prototype.hasOwnProperty.call(TRACK_AUDIO_ROUTE_LABELS, status)
+    ? status
+    : "unrouted";
+  const readiness = TRACK_AUDIO_ROUTE_READINESS[normalizedStatus] || "limited";
+  const label = TRACK_AUDIO_ROUTE_LABELS[normalizedStatus] || TRACK_AUDIO_ROUTE_LABELS.unrouted;
+  const details = {
+    "capture-failed": "Capture stream could not provide audio",
+    "capture-fx": "Capture FX graph",
+    empty: "Search to load",
+    failed: "Audio route failed",
+    "fx-unavailable": "FX route unavailable",
+    "native-audio": "Native audio fallback",
+    unrouted: "FX route unavailable",
+    waiting: "Preparing FX route",
+    webaudio: "WebAudio FX graph",
+  };
+
+  return {
+    status: normalizedStatus,
+    route,
+    readiness,
+    label,
+    detail: details[normalizedStatus] || "Route pending",
+    hasFx: readiness === "fx-ready",
+  };
+}
+
+function getTrackAudioRouteDetail(track) {
+  return getTrackAudioRouteState(track).detail;
+}
+
+function getTrackMediaReadiness(track, renderState = getTrackRenderState(track)) {
   const sourceUrl = renderState?.source?.mediaUrl || track?.source?.mediaUrl || "";
   if (!sourceUrl) {
     return {
+      readiness: "empty",
       status: "empty",
-      label: "No media",
+      label: TRACK_MEDIA_READINESS_LABELS.empty,
       detail: "Search to load",
     };
   }
 
   const mediaStatus = getTrackMediaStatus(track, renderState?.source || track.source);
+  const readiness = TRACK_MEDIA_STATUS_READINESS[mediaStatus] || "ready";
+  const sourceIsRemote = sourceUrl && isRemoteHttpMediaUrl(sourceUrl);
+  const audioRoute = getTrackAudioRouteState(track);
+  const routeDetail = audioRoute.detail;
 
-  if (mediaStatus === "failed" || mediaStatus === "unsupported" || track?.audioFxStatus === "failed") {
+  if (mediaStatus === "failed" || mediaStatus === "unsupported" || audioRoute.readiness === "failed") {
+    const failedReadiness = mediaStatus === "unsupported" ? "unsupported" : "failed";
     return {
-      status: "failed",
-      label: mediaStatus === "unsupported" ? "Unsupported media" : "Media failed",
+      readiness: failedReadiness,
+      status: failedReadiness,
+      label: TRACK_MEDIA_READINESS_LABELS[failedReadiness],
       detail: track?.mediaStatusDetails?.reason || "Try another source",
     };
   }
 
-  if (mediaStatus === "loading" || mediaStatus === "prerolling" || track?.audioFxStatus === "waiting") {
+  if (mediaStatus === "loading" || mediaStatus === "prerolling" || audioRoute.readiness === "loading") {
     return {
+      readiness: "loading",
       status: "loading",
       label: mediaStatus === "prerolling" ? "Cueing media" : "Loading media",
-      detail: mediaStatus === "prerolling" ? "Waiting for clean frame" : "Opening source",
+      detail: mediaStatus === "prerolling" ? "Waiting for clean frame" : routeDetail,
     };
   }
 
   if (mediaStatus === "playing" || mediaStatus === "clean-frame-ready") {
     return {
-      status: "ready",
+      readiness: mediaStatus === "playing" ? "playing" : "ready",
+      status: mediaStatus === "playing" ? "playing" : "ready",
       label: mediaStatus === "playing" ? "Playing" : "Clean frame ready",
-      detail: `Anchor ${Number(renderState?.startTime || 0).toFixed(1)}s`,
+      detail: `${routeDetail}; anchor ${Number(renderState?.startTime || 0).toFixed(1)}s`,
     };
   }
 
   if (mediaStatus === "fx-routed") {
     return {
-      status: "ready",
-      label: "FX routed",
-      detail: track?.audio?.route === "capture-stream" ? "Capture graph" : "WebAudio graph",
+      readiness: "fx-ready",
+      status: "fx-ready",
+      label: TRACK_MEDIA_READINESS_LABELS["fx-ready"],
+      detail: routeDetail,
     };
   }
 
-  if (mediaStatus === "fx-unavailable") {
+  if (mediaStatus === "fx-unavailable" || mediaStatus === "cors-limited" || audioRoute.readiness === "limited") {
     return {
-      status: "failed",
-      label: "FX route unavailable",
-      detail: "Audio cannot hit FX yet",
+      readiness: "limited",
+      status: "limited",
+      label: mediaStatus === "cors-limited" ? "CORS limited" : TRACK_MEDIA_READINESS_LABELS.limited,
+      detail: mediaStatus === "cors-limited" ? "FX may need proxy route" : routeDetail,
     };
   }
 
-  if (sourceUrl && isRemoteHttpMediaUrl(sourceUrl) && canUseLocalMediaProxy()) {
+  if (mediaStatus === "audio-only" || mediaStatus === "video-only") {
     return {
-      status: "ready",
-      label: "Live transcoder",
+      readiness,
+      status: readiness,
+      label: TRACK_MEDIA_READINESS_LABELS[readiness],
+      detail: mediaStatus === "audio-only" ? "No visible video route" : "No audible audio route",
+    };
+  }
+
+  if (sourceIsRemote && canUseLocalMediaProxy()) {
+    return {
+      readiness: "fx-ready",
+      status: "fx-ready",
+      label: "Proxy ready",
       detail: "FX-ready stream",
     };
   }
 
-  if (sourceUrl && isRemoteHttpMediaUrl(sourceUrl)) {
+  if (sourceIsRemote) {
     return {
+      readiness: "loading",
       status: "loading",
       label: "Proxy offline",
       detail: "Start local server",
@@ -6186,16 +6322,24 @@ function getTrackMediaPrepState(track, renderState = getTrackRenderState(track))
   }
 
   return {
-    status: "ready",
-    label: "Ready",
-    detail: "Local media",
+    readiness,
+    status: readiness === "stopped" ? "ready" : readiness,
+    label: TRACK_MEDIA_READINESS_LABELS[readiness] || "Ready",
+    detail: readiness === "stopped" ? `Parked at anchor ${Number(renderState?.startTime || 0).toFixed(1)}s` : routeDetail,
   };
 }
+
+function getTrackMediaPrepState(track, renderState = getTrackRenderState(track)) {
+  return getTrackMediaReadiness(track, renderState);
+}
+
+window.freemixGetTrackAudioRouteState = getTrackAudioRouteState;
+window.freemixGetTrackMediaReadiness = getTrackMediaReadiness;
 
 function renderTrackMediaPrep(track, renderState = getTrackRenderState(track)) {
   const prep = getTrackMediaPrepState(track, renderState);
   return `
-    <div class="track-media-prep" data-media-prep="${escapeHtml(prep.status)}" aria-live="polite">
+    <div class="track-media-prep" data-media-prep="${escapeHtml(prep.status)}" data-media-readiness="${escapeHtml(prep.readiness)}" aria-live="polite" title="${escapeHtml(`${prep.label}: ${prep.detail}`)}">
       <div class="track-media-prep-copy">
         <span>${escapeHtml(prep.label)}</span>
         <small>${escapeHtml(prep.detail)}</small>
@@ -8036,6 +8180,8 @@ function stopAllPlaybackOutputs() {
         // Best effort hard stop for any media element not tied to a track row.
       }
     }
+    media.muted = true;
+    media.removeAttribute("data-export-playing");
   });
 }
 
@@ -8123,32 +8269,12 @@ function hardStopPlayback(reason = "stopped") {
   window.freemixRender?.updateTransportRow?.();
 
   stopTransport(true);
-  tracks.forEach((track) => {
-    const video = getTrackVideo(track);
-    if (video) {
-      video.muted = true;
-      video.pause();
-    }
-  });
 
   setStatus("Audio stopped");
 }
 
 function stopVideosAfterExport() {
-  tracks.forEach((track) => {
-    const video = getTrackVideo(track);
-    if (!video) {
-      return;
-    }
-
-    try {
-      video.pause();
-    } catch {
-      // Ignore pause failures during export teardown.
-    }
-    video.muted = true;
-    video.removeAttribute("data-export-playing");
-  });
+  stopAllPlaybackOutputs();
 }
 
 function isWebmTypeSupported(candidateTypes = EXPORT_MEDIA_TYPES) {
@@ -8165,37 +8291,60 @@ function isWebmTypeSupported(candidateTypes = EXPORT_MEDIA_TYPES) {
   return "video/webm";
 }
 
-function computeExportBars(mode = "clip") {
-  if (mode === "arrangement" && hasArrangementClips() && arrangement?.clips) {
-    return Math.max(1, arrangement.clips.length);
-  }
+function createExportTimelineSnapshot(mode = "clip") {
+  const exportMode = mode === "arrangement" ? "arrangement" : "clip";
+  const arrangementLength = Math.max(1, Number(arrangementStepCount) || arrangement?.clips?.length || 1);
+  const stepCount = exportMode === "arrangement" && hasArrangementClips() && arrangement?.clips
+    ? arrangementLength
+    : 1;
+  const startStep = exportMode === "arrangement"
+    ? 0
+    : getArrangementStepIndex(arrangement?.step) ?? 0;
+  const beatMs = getTransportBeatMs();
+  const beatsPerBar = getTransportBeatsPerBar();
+  return {
+    mode: exportMode,
+    startStep,
+    stepCount,
+    stepIndexes: Array.from({ length: stepCount }, (_, offset) => (startStep + offset) % arrangementLength),
+    beatMs,
+    beatsPerBar,
+    durationMs: Math.max(1, stepCount) * beatMs * beatsPerBar,
+  };
+}
 
-  return 1;
+function computeExportBars(mode = "clip") {
+  return createExportTimelineSnapshot(mode).stepCount;
 }
 
 function computeExportDurationMs(mode = "clip") {
-  const bars = computeExportBars(mode);
-  return Math.max(1, bars) * getTransportBeatMs() * getTransportBeatsPerBar();
+  return createExportTimelineSnapshot(mode).durationMs;
+}
+
+function textClipHasVisibleText(clip) {
+  return !!normalizeTextClip(clip)?.fields?.some((field) => String(field.text || "").trim());
 }
 
 function getExportPreflightIssue(mode = "clip") {
-  const exportMode = mode === "arrangement" ? "arrangement" : "clip";
+  const exportTimeline = createExportTimelineSnapshot(mode);
+  const exportMode = exportTimeline.mode;
   if (exportMode === "arrangement") {
     if (!hasArrangementClips()) {
       return "No arrangement clips to export";
     }
 
-    const hasPlayableArrangementClip = arrangement?.clips?.some((step) =>
+    const hasPlayableArrangementClip = exportTimeline.stepIndexes.some((stepIndex) =>
       tracks.some((track) => {
+        const step = arrangement?.clips?.[stepIndex];
         const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
         return !!getTrackPlaybackSourceUrl(track, clip);
       }),
     );
-    return hasPlayableArrangementClip || arrangement?.textClips?.some((clip) => !!normalizeTextClip(clip)) ? "" : "Arrangement has no playable media";
+    return hasPlayableArrangementClip || exportTimeline.stepIndexes.some((stepIndex) => textClipHasVisibleText(getArrangementTextClip(stepIndex))) ? "" : "Arrangement has no playable media";
   }
 
   const hasPlayableTrack = tracks.some((track) => !!getTrackPlaybackSourceUrl(track, getTrackPlaybackState(track) || track));
-  return hasPlayableTrack || !!getArrangementTextClip(arrangement?.step) ? "" : "Load a source before exporting";
+  return hasPlayableTrack || textClipHasVisibleText(getArrangementTextClip(arrangement?.step)) ? "" : "Load a source before exporting";
 }
 
 function getExportBlendMode(track) {
@@ -8947,12 +9096,13 @@ function playArrangementDrums(now, currentStep, currentStepStartAt, barMs) {
   drumTransportState.lastPulse = Math.max(drumTransportState.lastPulse, currentPulse);
 }
 
-function trackHasArrangementExportSource(track) {
+function trackHasArrangementExportSource(track, exportTimeline = createExportTimelineSnapshot("arrangement")) {
   if (!track?.id || !Array.isArray(arrangement?.clips)) {
     return false;
   }
 
-  return arrangement.clips.some((step) => {
+  return exportTimeline.stepIndexes.some((stepIndex) => {
+    const step = arrangement.clips[stepIndex];
     const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
     return !!getTrackPlaybackSourceUrl(track, clip);
   });
@@ -8981,17 +9131,18 @@ async function exportComposition(mode = "clip") {
   }
 
   const requestedExportMode = mode === "arrangement" ? "arrangement" : "clip";
+  const exportTimeline = createExportTimelineSnapshot(requestedExportMode);
   const renderTracks = tracks.filter((track) => {
     if (requestedExportMode === "arrangement") {
-      return trackHasArrangementExportSource(track);
+      return trackHasArrangementExportSource(track, exportTimeline);
     }
 
     const renderState = getTrackRenderState(track);
     return track.source || renderState?.source;
   });
   const hasExportText = requestedExportMode === "arrangement"
-    ? arrangement?.textClips?.some((clip) => !!normalizeTextClip(clip))
-    : !!getArrangementTextClip(arrangement?.step);
+    ? exportTimeline.stepIndexes.some((stepIndex) => textClipHasVisibleText(getArrangementTextClip(stepIndex)))
+    : textClipHasVisibleText(getArrangementTextClip(arrangement?.step));
   if (renderTracks.length === 0 && !hasExportText) {
     setStatus("Load at least one source before exporting", true);
     return;
@@ -9024,17 +9175,18 @@ async function exportComposition(mode = "clip") {
   let waitForFinalExportData = () => Promise.resolve();
   const chunks = [];
   const exportMode = mode === "arrangement" ? "arrangement" : "clip";
-  const restoreArrangementEnabled = exportMode === "arrangement" && hasArrangementClips() && !arrangement.enabled;
   let exportError = null;
   let exportCompleted = false;
   let timeoutId = null;
   let recorderFinished;
+  const restoreArrangementStep = getArrangementStepIndex(arrangement?.step) ?? 0;
+  const restoreArrangementEnabled = !!arrangement.enabled;
   const recorderStopped = new Promise((resolve, reject) => {
     recorderFinished = { resolve, reject };
   });
-  if (restoreArrangementEnabled) {
+  if (exportMode === "arrangement") {
     arrangement.enabled = true;
-    updateArrangementStep(arrangement.step, performance.now(), true);
+    updateArrangementStep(exportTimeline.startStep, performance.now(), true);
   }
 
   try {
@@ -9137,7 +9289,7 @@ async function exportComposition(mode = "clip") {
       });
     };
 
-    const durationMs = computeExportDurationMs(exportMode);
+    const durationMs = exportTimeline.durationMs;
     recorder.start(200);
 
     renderExportFrame = () => {
@@ -9260,15 +9412,15 @@ async function exportComposition(mode = "clip") {
     }
 
     isExportingVideo = false;
-    if (restoreArrangementEnabled) {
-      arrangement.enabled = false;
-      window.freemixRender?.updateTransportRow?.();
-    }
     if (transport?.active) {
       stopTransport(true);
     }
     stopTransport(false);
     stopVideosAfterExport();
+    if (exportMode === "arrangement") {
+      arrangement.enabled = restoreArrangementEnabled;
+      updateArrangementStep(restoreArrangementStep, performance.now(), true);
+    }
     window.freemixRender?.updateTransportRow?.();
     if (exportError) {
       setStatus("Export failed", true);
@@ -12137,7 +12289,7 @@ function captureTrackSessionSnapshot(track) {
 
 function captureSessionSnapshot(name = "") {
   return {
-    version: 1,
+    version: SESSION_SCHEMA_VERSION,
     app: "freemix-vm-420",
     name: normalizeSessionName(name || getCurrentSessionName() || "Untitled Session"),
     savedAt: new Date().toISOString(),
@@ -12255,7 +12407,77 @@ function normalizeSessionTrack(rawTrack, index) {
 
 function resolveSessionSnapshotPayload(rawSnapshot) {
   const snapshot = rawSnapshot?.snapshot || rawSnapshot;
-  return snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : null;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return null;
+  }
+
+  return migrateSessionSnapshot(snapshot);
+}
+
+function cloneSessionPayload(payload) {
+  try {
+    return JSON.parse(JSON.stringify(payload));
+  } catch {
+    return null;
+  }
+}
+
+function migrateSessionSnapshot(rawSnapshot) {
+  const snapshot = cloneSessionPayload(rawSnapshot);
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return null;
+  }
+
+  let version = Number.isFinite(Number(snapshot.version)) ? Math.floor(Number(snapshot.version)) : 1;
+  if (version < 2) {
+    migrateSessionV1ToV2(snapshot);
+    version = 2;
+  }
+
+  snapshot.version = SESSION_SCHEMA_VERSION;
+  return snapshot;
+}
+
+function migrateSessionV1ToV2(snapshot) {
+  snapshot.state = snapshot.state && typeof snapshot.state === "object" && !Array.isArray(snapshot.state)
+    ? snapshot.state
+    : {};
+  const arrangementSource = snapshot.arrangement && typeof snapshot.arrangement === "object" && !Array.isArray(snapshot.arrangement)
+    ? snapshot.arrangement
+    : {};
+  const savedStepCount = Number(snapshot.state.arrangementStepCount);
+  const clipStepCount = Array.isArray(arrangementSource.clips) ? arrangementSource.clips.length : null;
+  const stepCount = clamp(
+    Number.isInteger(savedStepCount)
+      ? savedStepCount
+      : Number.isInteger(clipStepCount)
+        ? clipStepCount
+        : DEFAULT_ARRANGEMENT_STEPS,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
+  snapshot.state.arrangementStepCount = stepCount;
+  snapshot.arrangement = {
+    ...createInitialArrangement(stepCount),
+    ...arrangementSource,
+    clips: Array.isArray(arrangementSource.clips) ? arrangementSource.clips.slice(0, stepCount) : [],
+    textClips: Array.isArray(arrangementSource.textClips) ? arrangementSource.textClips.slice(0, stepCount) : [],
+    drumClips: Array.isArray(arrangementSource.drumClips) ? arrangementSource.drumClips.slice(0, stepCount) : [],
+    sceneColors: Array.isArray(arrangementSource.sceneColors) ? arrangementSource.sceneColors.slice(0, stepCount) : [],
+  };
+  while (snapshot.arrangement.clips.length < stepCount) {
+    snapshot.arrangement.clips.push({});
+  }
+  while (snapshot.arrangement.textClips.length < stepCount) {
+    snapshot.arrangement.textClips.push(null);
+  }
+  while (snapshot.arrangement.drumClips.length < stepCount) {
+    snapshot.arrangement.drumClips.push(null);
+  }
+  while (snapshot.arrangement.sceneColors.length < stepCount) {
+    snapshot.arrangement.sceneColors.push(DEFAULT_SCENE_COLOR_INDEX);
+  }
+  snapshot.tracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length ? snapshot.tracks : [];
 }
 
 function hydrateSessionSnapshot(rawSnapshot, options = {}) {

@@ -288,16 +288,29 @@
 
   function getMediaDiagnosticSummary() {
     const trackCount = tracks.length;
+    const readiness = tracks.map((track) =>
+      typeof window.freemixGetTrackMediaReadiness === "function"
+        ? window.freemixGetTrackMediaReadiness(track).readiness
+        : track.mediaStatus || "empty",
+    );
     const loadedCount = tracks.filter((track) => !!track.source).length;
-    const readyCount = tracks.filter((track) => ["ready", "fx-ready", "proxy-ready"].includes(track.mediaStatus)).length;
-    const failedCount = tracks.filter((track) => ["failed", "unsupported"].includes(track.mediaStatus)).length;
-    return `${loadedCount}/${trackCount} loaded, ${readyCount} ready, ${failedCount} failed`;
+    const readyCount = readiness.filter((state) => ["ready", "fx-ready", "playing", "stopped"].includes(state)).length;
+    const failedCount = readiness.filter((state) => ["failed", "unsupported"].includes(state)).length;
+    const limitedCount = readiness.filter((state) => ["limited", "audio-only", "video-only"].includes(state)).length;
+    return `${loadedCount}/${trackCount} loaded, ${readyCount} ready, ${failedCount} failed, ${limitedCount} limited`;
   }
 
   function getAudioDiagnosticSummary() {
-    const routedCount = tracks.filter((track) => !!track.audio?.output).length;
+    const routeStates = tracks.map((track) =>
+      typeof window.freemixGetTrackAudioRouteState === "function"
+        ? window.freemixGetTrackAudioRouteState(track)
+        : { readiness: track.audio?.output ? "fx-ready" : "empty" },
+    );
+    const fxReadyCount = routeStates.filter((route) => route.readiness === "fx-ready").length;
+    const limitedCount = routeStates.filter((route) => route.readiness === "limited").length;
+    const failedCount = routeStates.filter((route) => route.readiness === "failed").length;
     const mutedCount = tracks.filter((track) => track.muted).length;
-    return `${routedCount}/${tracks.length} routed, ${mutedCount} muted`;
+    return `${fxReadyCount}/${tracks.length} FX-ready, ${limitedCount} limited, ${failedCount} failed, ${mutedCount} muted`;
   }
 
   function getDrumDiagnosticSummary() {
@@ -335,7 +348,13 @@
     ];
     const trackRows = tracks.map((track, index) => [
       `T${index + 1}`,
-      `${track.mediaStatus || (track.source ? "ready" : "empty")} / ${track.audio?.output ? "audio routed" : "native/none"}`,
+      `${typeof window.freemixGetTrackMediaReadiness === "function" ? window.freemixGetTrackMediaReadiness(track).label : track.mediaStatus || (track.source ? "ready" : "empty")} / ${
+        typeof window.freemixGetTrackAudioRouteState === "function"
+          ? window.freemixGetTrackAudioRouteState(track).label
+          : track.audio?.output
+            ? "Audio routed"
+            : "Native/none"
+      }`,
     ]);
 
     return `

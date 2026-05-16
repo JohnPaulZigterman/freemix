@@ -1823,11 +1823,14 @@ input[type="number"]:focus {
 
 .track-media-prep[data-media-prep="rendering"] .track-media-prep-bar span,
 .track-media-prep[data-media-prep="loading"] .track-media-prep-bar span,
-.track-media-prep[data-media-prep="streaming"] .track-media-prep-bar span {
+.track-media-prep[data-media-prep="streaming"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="playing"] .track-media-prep-bar span {
   animation: media-prep-scan 1.15s linear infinite;
 }
 
-.track-media-prep[data-media-prep="ready"] .track-media-prep-bar span {
+.track-media-prep[data-media-prep="ready"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="fx-ready"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="stopped"] .track-media-prep-bar span {
   width: 100%;
   background: color-mix(in srgb, var(--track-color) 68%, var(--silver) 18%);
   transform: translateX(0);
@@ -1837,15 +1840,38 @@ input[type="number"]:focus {
   opacity: 0.62;
 }
 
-.track-media-prep[data-media-prep="failed"] {
+.track-media-prep[data-media-prep="limited"],
+.track-media-prep[data-media-prep="audio-only"],
+.track-media-prep[data-media-prep="video-only"] {
+  border-color: rgba(240, 180, 60, 0.48);
+}
+
+.track-media-prep[data-media-prep="limited"] .track-media-prep-copy span,
+.track-media-prep[data-media-prep="audio-only"] .track-media-prep-copy span,
+.track-media-prep[data-media-prep="video-only"] .track-media-prep-copy span {
+  color: var(--amber);
+}
+
+.track-media-prep[data-media-prep="limited"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="audio-only"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="video-only"] .track-media-prep-bar span {
+  width: 100%;
+  background: var(--amber);
+  transform: translateX(0);
+}
+
+.track-media-prep[data-media-prep="failed"],
+.track-media-prep[data-media-prep="unsupported"] {
   border-color: rgba(255, 98, 98, 0.48);
 }
 
-.track-media-prep[data-media-prep="failed"] .track-media-prep-copy span {
+.track-media-prep[data-media-prep="failed"] .track-media-prep-copy span,
+.track-media-prep[data-media-prep="unsupported"] .track-media-prep-copy span {
   color: #ff7c72;
 }
 
-.track-media-prep[data-media-prep="failed"] .track-media-prep-bar span {
+.track-media-prep[data-media-prep="failed"] .track-media-prep-bar span,
+.track-media-prep[data-media-prep="unsupported"] .track-media-prep-bar span {
   width: 100%;
   background: #ff625a;
   transform: translateX(0);
