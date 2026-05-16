@@ -45,7 +45,12 @@ const MAX_TRACK_TRIGGER_BURST_PER_FRAME = 8;
 const SOURCE_METADATA_REQUEST_TTL_MS = 60_000;
 const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
-const ARRANGEMENT_START_PREROLL_MS = 140;
+const ARRANGEMENT_START_PREROLL_MS = 650;
+const ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS = 0;
+const ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS = 260;
+const ARRANGEMENT_FINAL_PREROLL_LEAD_MS = 260;
+const TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS = 220;
+const TRANSPORT_CLOCK_CORRECTION_MIN_WINDOW_MS = 42;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
   new Set([
     "volume",
@@ -373,6 +378,7 @@ if (!appState.userOnboarding || !appState.userOnboarding.phase) {
 
 const tracks = appState.tracks;
 let arrangement = appState.arrangement;
+let arrangementPrerollRevealTimer = null;
 if (appState.transport && typeof appState.transport === "object") {
   if (appState.transport.active || appState.transport.frameId) {
     appState.transport = null;
@@ -1110,13 +1116,22 @@ function getTrackVideo(track) {
     return null;
   }
 
+  if (track.__activeVideoElement?.isConnected) {
+    return track.__activeVideoElement;
+  }
+
   if (track.__cacheVideoElement?.isConnected) {
+    track.__activeVideoElement = track.__cacheVideoElement;
     return track.__cacheVideoElement;
   }
 
   const video = playerPanel?.querySelector(`#video-${trackId}`) || null;
   if (video) {
+    video.dataset.playbackRole = "active";
+    video.classList.add("is-active");
+    video.classList.remove("is-standby");
     track.__cacheVideoElement = video;
+    track.__activeVideoElement = video;
   }
   return video;
 }
@@ -1555,6 +1570,216 @@ function silenceTrackForPreroll(track, video) {
   }
 }
 
+function getClipVolumeState(track, state = track) {
+  const effectiveState = state || track;
+  const isMuted = !!effectiveState?.muted;
+  const stateVolume = Number.isFinite(Number(effectiveState?.volume))
+    ? Number(effectiveState.volume)
+    : Number.isFinite(Number(track?.volume))
+      ? Number(track.volume)
+      : 0;
+  return {
+    muted: isMuted,
+    volume: clamp(stateVolume, 0, 1),
+  };
+}
+
+function armTrackForPrerollReveal(track, video) {
+  if (video) {
+    video.muted = false;
+    video.volume = 0;
+  }
+
+  if (track?.audio?.output?.gain) {
+    track.audio.output.gain.value = 0;
+  }
+}
+
+function applyPrerollStandbyRevealVolume(track, video, state = track) {
+  if (!video) {
+    return;
+  }
+
+  const { muted, volume } = getClipVolumeState(track, state);
+  const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
+  if (hasLiveAudioGraph) {
+    video.muted = false;
+    video.volume = 1;
+    if (track.audio?.output?.gain) {
+      track.audio.output.gain.value = muted ? 0 : volume;
+    }
+    return;
+  }
+
+  video.muted = muted;
+  video.volume = muted ? 0 : volume;
+}
+
+function setPlaybackVideoRole(video, role) {
+  if (!video) {
+    return;
+  }
+
+  const isActive = role === "active";
+  video.dataset.playbackRole = isActive ? "active" : "standby";
+  video.classList.toggle("is-active", isActive);
+  video.classList.toggle("is-standby", !isActive);
+  video.style.pointerEvents = "none";
+  if (!isActive) {
+    video.muted = true;
+    video.volume = 0;
+  }
+}
+
+function getTrackPlaybackPool(track) {
+  const active = getTrackVideo(track);
+  const cell = getTrackCell(track);
+  if (!track || !active || !cell) {
+    return { active, standby: null };
+  }
+
+  setPlaybackVideoRole(active, "active");
+  let standby = track.__standbyVideoElement;
+  if (!standby?.isConnected || standby.parentElement !== cell) {
+    standby = cell.querySelector(`.track-video[data-playback-role="standby"][data-track-id="${track.id}"]`);
+  }
+
+  if (!standby) {
+    standby = active.cloneNode(false);
+    standby.removeAttribute("id");
+    standby.removeAttribute("src");
+    standby.className = active.className;
+    standby.classList.remove("is-active");
+    standby.classList.add("is-standby");
+    standby.dataset.trackId = track.id;
+    standby.dataset.playbackRole = "standby";
+    standby.preload = "auto";
+    standby.playsInline = true;
+    standby.autoplay = false;
+    standby.controls = false;
+    standby.muted = true;
+    standby.volume = 0;
+    cell.insertBefore(standby, cell.querySelector(".track-badge") || null);
+  }
+
+  setPlaybackVideoRole(standby, "standby");
+  track.__standbyVideoElement = standby;
+  return { active, standby };
+}
+
+function getTrackStandbyVideo(track) {
+  return getTrackPlaybackPool(track).standby;
+}
+
+function silenceInactivePlaybackVideo(video) {
+  if (!video) {
+    return;
+  }
+
+  video.muted = true;
+  video.volume = 0;
+  try {
+    video.pause();
+  } catch {
+    // Best effort: inactive media must not contribute audio.
+  }
+}
+
+function activateTrackPlaybackVideo(track, nextVideo, state = track) {
+  const currentVideo = getTrackVideo(track);
+  if (!track || !nextVideo || currentVideo === nextVideo) {
+    if (nextVideo) {
+      setPlaybackVideoRole(nextVideo, "active");
+      track.__activeVideoElement = nextVideo;
+      track.__cacheVideoElement = nextVideo;
+      applyPrerollStandbyRevealVolume(track, nextVideo, state);
+    }
+    return nextVideo || currentVideo || null;
+  }
+
+  if (currentVideo) {
+    const currentId = currentVideo.id;
+    silenceInactivePlaybackVideo(currentVideo);
+    if (currentId) {
+      currentVideo.removeAttribute("id");
+      nextVideo.id = currentId;
+    }
+    setPlaybackVideoRole(currentVideo, "standby");
+    track.__standbyVideoElement = currentVideo;
+    if (track.audio?.mediaElement === currentVideo) {
+      disposeTrackAudio(track);
+    }
+  }
+
+  setPlaybackVideoRole(nextVideo, "active");
+  nextVideo.dataset.trackId = track.id;
+  track.__activeVideoElement = nextVideo;
+  track.__cacheVideoElement = nextVideo;
+  if (track.__standbyVideoElement === nextVideo) {
+    track.__standbyVideoElement = currentVideo || null;
+  }
+  setupTrackAudio(track, nextVideo, state);
+  applyPrerollStandbyRevealVolume(track, nextVideo, state);
+  applyTrackFx(track, state);
+  applyVideoFx(track, state);
+  applyTrackBlend(track, state);
+  applyTrackOpacity(track, state);
+  applyTrackPitchAndSpeed(track, state);
+  return nextVideo;
+}
+
+function removeTrackPrerollStandby(track) {
+  const standby = track?.__prerollStandbyVideo;
+  const pooledStandby = track?.__standbyVideoElement;
+
+  [standby, pooledStandby].forEach((video) => {
+    if (!video) {
+      return;
+    }
+
+    try {
+      video.pause();
+    } catch {
+      // Best effort cleanup.
+    }
+
+    setPlaybackVideoRole(video, "standby");
+  });
+
+  track.__preparedPlaybackVideo = null;
+  track.__preparedPlaybackSignature = null;
+  track.__prerollStandbyVideo = null;
+}
+
+function waitForVideoPlaybackAdvance(video, referenceTime, minAdvanceSeconds = 0.018, timeoutMs = ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS) {
+  if (!video || !Number.isFinite(referenceTime)) {
+    return Promise.resolve(false);
+  }
+
+  if (!video.paused && video.currentTime >= referenceTime + minAdvanceSeconds) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const startedAt = performance.now();
+    const check = () => {
+      if (!video.paused && !video.ended && video.currentTime >= referenceTime + minAdvanceSeconds) {
+        resolve(true);
+        return;
+      }
+
+      if (performance.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+
+      window.requestAnimationFrame(check);
+    };
+
+    check();
+  });
+}
+
 function getArrangementPrerollClipTargets(stepIndex = arrangement?.step) {
   if (!arrangement.enabled || !hasArrangementClips()) {
     return [];
@@ -1594,6 +1819,26 @@ function getPrerollStartState(clip, video, leadMs = ARRANGEMENT_START_PREROLL_MS
   };
 }
 
+function getPrerollStateForLead(clip, video, leadMs) {
+  const anchorTime = safeStartTime(clip, video);
+  if (!Number.isFinite(anchorTime)) {
+    return null;
+  }
+
+  const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
+  const mediaLeadSeconds = (Math.max(0, leadMs) / 1000) * speed;
+  const startTime = Math.max(0, anchorTime - mediaLeadSeconds);
+
+  return {
+    state: {
+      ...clip,
+      startTime,
+    },
+    anchorTime,
+    exact: anchorTime - startTime >= Math.min(mediaLeadSeconds, 0.025),
+  };
+}
+
 async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT_START_PREROLL_MS) {
   const targets = getArrangementPrerollClipTargets(arrangement.step);
   if (!Number.isFinite(sessionToken) || targets.length === 0) {
@@ -1603,10 +1848,13 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
   const preparedTargets = (
     await Promise.all(
       targets.map(async ({ track, clip, sourceUrl }) => {
-        const video = ensureTrackVideoElementForPlayback(track, clip);
-        if (!video) {
+        const activeVideo = ensureTrackVideoElementForPlayback(track, clip);
+        if (!activeVideo) {
           return null;
         }
+        removeTrackPrerollStandby(track);
+        silenceTrackForPreroll(track, activeVideo);
+        const video = activeVideo;
 
         setVideoCorsPolicy(video, sourceUrl);
         if (video.src !== sourceUrl) {
@@ -1632,6 +1880,7 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
         applyTrackBlend(track, clip);
         applyTrackOpacity(track, clip);
         applyTrackPitchAndSpeed(track, clip);
+        applyVideoPitchAndSpeed(video, clip);
         silenceTrackForPreroll(track, video);
         safeSetCurrentTime(video, preroll.state, track, { force: true });
         await awaitVideoSeek(video, safeStartTime(preroll.state, video));
@@ -1645,13 +1894,14 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
           return null;
         }
 
-        silenceTrackForPreroll(track, video);
+        armTrackForPrerollReveal(track, video);
         return {
           track,
           clip,
           video,
           sourceUrl,
           prerollState: preroll.state,
+          anchorTime: preroll.anchorTime,
           exact: preroll.exact,
         };
       }),
@@ -1663,7 +1913,7 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
   }
 
   preparedTargets.forEach(({ track, video, prerollState }) => {
-    silenceTrackForPreroll(track, video);
+    armTrackForPrerollReveal(track, video);
     safeSetCurrentTime(video, prerollState, track, { force: true });
   });
 
@@ -1675,15 +1925,193 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
     return null;
   }
 
-  preparedTargets.forEach(({ track, video, clip, sourceUrl, exact }) => {
-    silenceTrackForPreroll(track, video);
+  await Promise.all(
+    preparedTargets.map(async ({ track, video, prerollState }) => {
+      const prerollStartTime = safeStartTime(prerollState, video);
+      try {
+        await video.play();
+      } catch {
+        return false;
+      }
+
+      armTrackForPrerollReveal(track, video);
+      return waitForVideoPlaybackAdvance(video, prerollStartTime);
+    }),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  const finalPrerollLeadMs = Math.min(leadMs, ARRANGEMENT_FINAL_PREROLL_LEAD_MS);
+  preparedTargets.forEach((target) => {
+    const finalPreroll = getPrerollStateForLead(target.clip, target.video, finalPrerollLeadMs);
+    if (!finalPreroll) {
+      return;
+    }
+
+    target.prerollState = finalPreroll.state;
+    target.anchorTime = finalPreroll.anchorTime;
+    target.exact = finalPreroll.exact;
+    armTrackForPrerollReveal(target.track, target.video);
+    applyVideoPitchAndSpeed(target.video, target.clip);
+    safeSetCurrentTime(target.video, finalPreroll.state, target.track, { force: true });
+  });
+
+  await Promise.all(
+    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  await Promise.all(
+    preparedTargets.map(async ({ track, video, prerollState }) => {
+      const prerollStartTime = safeStartTime(prerollState, video);
+      try {
+        await video.play();
+      } catch {
+        return false;
+      }
+
+      armTrackForPrerollReveal(track, video);
+      return waitForVideoPlaybackAdvance(video, prerollStartTime);
+    }),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  const measuredLeadMs = preparedTargets.reduce((maxLeadMs, { clip, video, anchorTime, exact }) => {
+    if (!exact || !Number.isFinite(anchorTime) || !video) {
+      return maxLeadMs;
+    }
+
+    const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
+    const remainingMs = Math.max(0, ((anchorTime - video.currentTime) / speed) * 1000);
+    return Math.max(maxLeadMs, remainingMs);
+  }, 0);
+  const minimumRevealLeadMs = ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS + 8;
+  const startLeadMs = clamp(measuredLeadMs, minimumRevealLeadMs, Math.max(minimumRevealLeadMs, finalPrerollLeadMs));
+  preparedTargets.forEach((target) => {
+    if (!target.exact || !Number.isFinite(target.anchorTime)) {
+      return;
+    }
+
+    const speed = Math.max(0.1, Math.abs(Number(target.clip?.speed) || 1));
+    const startTime = Math.max(0, target.anchorTime - (startLeadMs / 1000) * speed);
+    target.prerollState = {
+      ...target.clip,
+      startTime,
+    };
+    armTrackForPrerollReveal(target.track, target.video);
+    safeSetCurrentTime(target.video, target.prerollState, target.track, { force: true });
+  });
+
+  await Promise.all(
+    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  await Promise.all(
+    preparedTargets.map(async ({ track, video, prerollState }) => {
+      const prerollStartTime = safeStartTime(prerollState, video);
+      try {
+        await video.play();
+      } catch {
+        return false;
+      }
+
+      armTrackForPrerollReveal(track, video);
+      return waitForVideoPlaybackAdvance(video, prerollStartTime, 0.006, 90);
+    }),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  preparedTargets.forEach(({ track, video, clip, sourceUrl }) => {
+    armTrackForPrerollReveal(track, video);
     track.__warmLaunchFor = sessionToken;
     track.__prerollRevealFor = sessionToken;
     track.__prerollPlaybackSignature = getPlaybackStateSignature(clip, sourceUrl);
-    track.__prerollRevealCanSkipSeek = !!exact;
+    track.__prerollRevealCanSkipSeek = true;
+    track.__preparedPlaybackVideo = video;
+    track.__preparedPlaybackSignature = getPlaybackStateSignature(clip, sourceUrl);
   });
 
-  return performance.now() + Math.max(0, leadMs);
+  return performance.now() + startLeadMs;
+}
+
+function clearArrangementPrerollRevealTimer() {
+  if (arrangementPrerollRevealTimer !== null) {
+    window.clearTimeout(arrangementPrerollRevealTimer);
+    window.cancelAnimationFrame(arrangementPrerollRevealTimer);
+    arrangementPrerollRevealTimer = null;
+  }
+}
+
+function revealArrangementPreroll(sessionToken) {
+  if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
+    return;
+  }
+
+  const resolvedStep = getArrangementStepIndex(arrangement.step);
+  if (resolvedStep === null) {
+    return;
+  }
+
+  tracks.forEach((track) => {
+    if (track.__prerollRevealFor !== sessionToken) {
+      return;
+    }
+
+    const clip = getArrangementStepClip(track, resolvedStep);
+    const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
+    if (!clip || !sourceUrl) {
+      return;
+    }
+
+    triggerTrack(track, clip, sessionToken);
+    track.__lastRetriggerPulse = 0;
+    track.__lastTransportClockCorrectionAt = 0;
+    track.__lastTransportClockCorrectionPulse = null;
+    if (Number.isFinite(Number(track.stepMs)) && track.stepMs > 0 && Number.isFinite(Number(transport.startedAt))) {
+      track.__transportClockCorrectionPulse = 0;
+      track.__transportClockCorrectionUntil = transport.startedAt + TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS;
+      track.nextTriggerAt = transport.startedAt + track.stepMs;
+    }
+  });
+}
+
+function scheduleArrangementPrerollReveal(sessionToken, startAt) {
+  clearArrangementPrerollRevealTimer();
+  if (!Number.isFinite(sessionToken) || !Number.isFinite(startAt)) {
+    return;
+  }
+
+  const revealAt = startAt - ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS;
+  const revealOnFrame = () => {
+    if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
+      arrangementPrerollRevealTimer = null;
+      return;
+    }
+
+    if (performance.now() >= revealAt) {
+      arrangementPrerollRevealTimer = null;
+      revealArrangementPreroll(sessionToken);
+      return;
+    }
+
+    arrangementPrerollRevealTimer = window.requestAnimationFrame(revealOnFrame);
+  };
+  arrangementPrerollRevealTimer = window.requestAnimationFrame(revealOnFrame);
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -4523,7 +4951,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
   });
 
   tracks.forEach((track) => {
-    const video = getTrackVideo(track);
+    const video = track.__preparedPlaybackVideo?.isConnected ? track.__preparedPlaybackVideo : getTrackVideo(track);
     const playbackState =
       arrangement.enabled && hasArrangementClips()
         ? getArrangementStepClip(track, arrangement.step)
@@ -4550,7 +4978,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
     }
     setupTrackAudio(track, video, playbackState);
     if (hasActivePreroll) {
-      silenceTrackForPreroll(track, video);
+      armTrackForPrerollReveal(track, video);
     } else {
       applyTrackVolume(track, playbackState);
     }
@@ -4581,6 +5009,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
 
   if (arrangement.enabled && hasArrangementClips()) {
     updateArrangementStep(arrangement.step, startAt, true);
+    scheduleArrangementPrerollReveal(sessionToken, startAt);
   } else {
     updateTrackTriggerGrid(startAt);
   }
@@ -4595,6 +5024,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
     startTransport.bootToken += 1;
   }
   startTransport.runningPromise = null;
+  clearArrangementPrerollRevealTimer();
 
   if (startTimeControlTrackers.size > 0) {
     startTimeControlTrackers.forEach((frameId) => {
@@ -4647,6 +5077,20 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.__prerollRevealFor = null;
       track.__prerollPlaybackSignature = null;
       track.__prerollRevealCanSkipSeek = false;
+      track.__lastTransportClockCorrectionAt = 0;
+      track.__lastTransportClockCorrectionPulse = null;
+      track.__transportClockCorrectionPulse = null;
+      track.__transportClockCorrectionUntil = null;
+      removeTrackPrerollStandby(track);
+      const standby = track.__standbyVideoElement;
+      if (standby) {
+        try {
+          standby.pause();
+        } catch {
+          // Best effort cleanup.
+        }
+        setPlaybackVideoRole(standby, "standby");
+      }
       delete track.__transportPrimedFor;
       delete track.__transportPrimeAttempt;
       if (track.__pendingPlaybackFrame) {
@@ -5278,8 +5722,18 @@ function tickTransport() {
       if (!isTrackAudibleInMix(track, activePlaybackState)) {
         return;
       }
+      track.__lastTransportClockCorrectionAt = 0;
+      track.__lastTransportClockCorrectionPulse = null;
+      if (pulseIndex === 0) {
+        track.__transportClockCorrectionPulse = pulseIndex;
+        track.__transportClockCorrectionUntil = transport.startedAt + pulseIndex * track.stepMs + TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS;
+      } else {
+        track.__transportClockCorrectionPulse = null;
+        track.__transportClockCorrectionUntil = null;
+      }
       triggerTrack(track, activePlaybackState, transport.sessionToken);
     }
+    syncTrackVideoToTransportClock(track, activePlaybackState, now, pulseIndex);
   });
 
   const beatCatchupLimit = Math.max(
@@ -5737,14 +6191,7 @@ function hasLiveTrackAudioGraph(track, video = null) {
 }
 
 function applyTrackVolume(track, state = track) {
-  const effectiveState = state || track;
-  const isMuted = !!(effectiveState?.muted);
-  const stateVolume = Number.isFinite(Number(effectiveState.volume))
-    ? Number(effectiveState.volume)
-    : Number.isFinite(Number(track.volume))
-      ? Number(track.volume)
-      : 0;
-  const volume = clamp(stateVolume, 0, 1);
+  const { muted: isMuted, volume } = getClipVolumeState(track, state);
   const video = getTrackVideo(track);
   const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
 
@@ -5821,6 +6268,7 @@ function setupTrackAudio(track, video, state = track) {
     dryGain.gain.value = 1;
     delay.delayTime.value = 0.25;
     reverb.buffer = getReverbImpulse(audioContext);
+    output.gain.value = 0;
 
     source.connect(low).connect(mid).connect(high).connect(drive);
     drive.connect(dryGain).connect(output);
@@ -5923,18 +6371,21 @@ function applyTrackOpacity(track, state = track) {
   }
 }
 
-function applyTrackPitchAndSpeed(track, state = track) {
-  const video = getTrackVideo(track);
+function applyVideoPitchAndSpeed(video, state = {}) {
   if (!video) {
     return;
   }
 
-  const speed = Number.isFinite(Number(state.speed)) ? Number(state.speed) : 1;
-  const pitch = Number.isFinite(Number(state.pitch)) ? Number(state.pitch) : 0;
+  const speed = Number.isFinite(Number(state?.speed)) ? Number(state.speed) : 1;
+  const pitch = Number.isFinite(Number(state?.pitch)) ? Number(state.pitch) : 0;
   const nextPlaybackRate = clamp(speed * 2 ** (pitch / 12), 0.25, 4);
   if (!almostEqual(video.playbackRate, nextPlaybackRate, 0.0005)) {
     video.playbackRate = nextPlaybackRate;
   }
+}
+
+function applyTrackPitchAndSpeed(track, state = track) {
+  applyVideoPitchAndSpeed(getTrackVideo(track), state);
 }
 
 function applyTrackBlend(track, state = track) {
@@ -6089,6 +6540,85 @@ function resetTrackPulseCursor(track, referenceTime = performance.now(), options
 
   track.__lastRetriggerPulse = options.fireAtReference ? pulseIndex - 1 : pulseIndex;
   track.nextTriggerAt = transport.startedAt + (track.__lastRetriggerPulse + 1) * track.stepMs;
+}
+
+function syncTrackVideoToTransportClock(track, playbackState, referenceTime = performance.now(), pulseIndex = null) {
+  if (!track || !playbackState || !transport?.active) {
+    return;
+  }
+
+  const video = getTrackVideo(track);
+  if (!video || video.readyState < 1 || video.paused || video.ended || video.seeking) {
+    return;
+  }
+
+  const stepMs = Number(track.stepMs);
+  if (!Number.isFinite(stepMs) || stepMs <= 0 || !Number.isFinite(Number(transport.startedAt))) {
+    return;
+  }
+
+  const resolvedPulseIndex = Number.isFinite(Number(pulseIndex)) ? Number(pulseIndex) : getTrackPulseIndex(track, referenceTime);
+  if (!Number.isFinite(resolvedPulseIndex) || resolvedPulseIndex < 0) {
+    return;
+  }
+
+  const pulseStartAt = transport.startedAt + resolvedPulseIndex * stepMs;
+  const elapsedMs = referenceTime - pulseStartAt;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return;
+  }
+
+  const correctionWindowMs = clamp(
+    stepMs * 0.35,
+    TRANSPORT_CLOCK_CORRECTION_MIN_WINDOW_MS,
+    TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS,
+  );
+  const armedPulse = Number(track.__transportClockCorrectionPulse);
+  const armedUntil = Number(track.__transportClockCorrectionUntil);
+  const isCorrectionArmed =
+    Number.isFinite(armedPulse) &&
+    armedPulse === resolvedPulseIndex &&
+    Number.isFinite(armedUntil) &&
+    referenceTime <= armedUntil;
+  if (
+    !isCorrectionArmed ||
+    elapsedMs > correctionWindowMs ||
+    track.__lastTransportClockCorrectionPulse === resolvedPulseIndex
+  ) {
+    if (Number.isFinite(armedUntil) && referenceTime > armedUntil) {
+      track.__transportClockCorrectionPulse = null;
+      track.__transportClockCorrectionUntil = null;
+    }
+    return;
+  }
+
+  const anchorTime = safeStartTime(playbackState, video);
+  if (!Number.isFinite(anchorTime)) {
+    return;
+  }
+
+  const speed = Math.max(0.1, Math.abs(Number(playbackState?.speed) || 1));
+  let desiredTime = anchorTime + (elapsedMs / 1000) * speed;
+  if (Number.isFinite(video.duration) && video.duration > 0) {
+    desiredTime = clamp(desiredTime, 0, Math.max(0, video.duration - 0.025));
+  }
+
+  const driftSeconds = video.currentTime - desiredTime;
+  const isBehindClock = driftSeconds < -0.01;
+  const isAheadOfClock = driftSeconds > 0.14;
+  if (!isBehindClock && !isAheadOfClock) {
+    return;
+  }
+
+  track.__lastTransportClockCorrectionAt = performance.now();
+  track.__lastTransportClockCorrectionPulse = resolvedPulseIndex;
+  track.__transportClockCorrectionPulse = null;
+  track.__transportClockCorrectionUntil = null;
+  try {
+    video.currentTime = desiredTime;
+  } catch {
+    // Best effort: the next retrigger or ready-state transition will re-align.
+  }
 }
 
 function updateTrackTriggerGrid(startAt = performance.now()) {

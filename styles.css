@@ -1379,6 +1379,22 @@ input[type="number"]:focus {
   object-fit: cover;
 }
 
+.video-cell .track-video {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-cell .track-video.is-active,
+.video-cell .track-video:not([data-playback-role]) {
+  opacity: 1;
+}
+
+.video-cell .track-video.is-standby {
+  opacity: 0;
+}
+
 .video-cell.scene-blackout .track-video {
   opacity: 0;
 }
