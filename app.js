@@ -7993,19 +7993,12 @@ function handleArrangementTextCell(event) {
     return;
   }
 
-  if (!hasTextClip) {
-    captureArrangementEdit(`Created TEXT in scene ${stepIndex + 1}`);
-    ensureArrangementTextClip(stepIndex);
-    refreshArrangementHasClipsState();
-    markAppStateDirty(true);
-  }
-
   selectArrangementStep(stepIndex);
   selectArrangementTextClip(stepIndex);
   window.freemixRender?.updateArrangementGrid?.();
   window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateTextEditor?.();
-  setStatus(`Editing TEXT / scene ${stepIndex + 1}`);
+  setStatus(hasTextClip ? `Editing TEXT / scene ${stepIndex + 1}` : `Scene ${stepIndex + 1}: blank TEXT slot selected`);
 }
 
 function handleArrangementStepLabel(event) {
@@ -8148,7 +8141,8 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
 
 function copySelectedArrangementScene() {
   if (selectedTextClipStep !== null) {
-    const textClip = getArrangementTextClip(selectedTextClipStep);
+    const sourceStep = selectedTextClipStep;
+    const textClip = getArrangementTextClip(sourceStep);
     if (!textClip) {
       setStatus("No selected text clip to copy", true);
       return false;
@@ -8157,7 +8151,7 @@ function copySelectedArrangementScene() {
     arrangementClipboardTextClip = cloneTextClip(textClip);
     arrangementClipboardClips = [];
     arrangementClipboardStep = null;
-    setStatus("TEXT clip copied");
+    setStatus(`TEXT scene ${sourceStep + 1} copied`);
     return true;
   }
 
@@ -8189,16 +8183,17 @@ function copySelectedArrangementScene() {
 
 function pasteArrangementClipboardToSelectedScene() {
   if (selectedTextClipStep !== null) {
+    const targetStep = selectedTextClipStep;
     if (!arrangementClipboardTextClip) {
       setStatus("No copied TEXT clip", true);
       return false;
     }
 
     captureArrangementEdit("Pasted TEXT clip");
-    setArrangementTextClip(selectedTextClipStep, cloneTextClip(arrangementClipboardTextClip));
+    setArrangementTextClip(targetStep, cloneTextClip(arrangementClipboardTextClip));
     refreshArrangementHasClipsState();
-    selectArrangementStep(selectedTextClipStep);
-    selectArrangementTextClip(selectedTextClipStep);
+    selectArrangementStep(targetStep);
+    selectArrangementTextClip(targetStep);
     if (window.freemixRender?.updateArrangementGrid) {
       window.freemixRender.updateArrangementGrid();
     } else {
@@ -8207,7 +8202,7 @@ function pasteArrangementClipboardToSelectedScene() {
     window.freemixRender?.updateTextOverlay?.();
     window.freemixRender?.updateTextEditor?.();
     markAppStateDirty(true);
-    setStatus(`TEXT pasted to scene ${selectedTextClipStep + 1}`);
+    setStatus(`TEXT pasted to scene ${targetStep + 1}`);
     return true;
   }
 

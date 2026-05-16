@@ -680,6 +680,11 @@
 
   function onKeydown(event) {
     const editableTarget = event.target.closest("input, textarea, select, [contenteditable='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    const isClipboardShortcut = (event.ctrlKey || event.metaKey)
+      && (event.key.toLowerCase() === "c" || event.key.toLowerCase() === "v");
+    const shouldHandleClipClipboard = !editableTarget || (textEditorTarget && isClipboardShortcut);
+
     if (!editableTarget && event.code === "Space") {
       event.preventDefault();
       if (transport?.active) {
@@ -702,15 +707,19 @@
       return;
     }
 
-    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
-      event.preventDefault();
-      window.freemixCopySelectedArrangementScene?.();
+    if (shouldHandleClipClipboard && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      const handled = window.freemixCopySelectedArrangementScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+      }
       return;
     }
 
-    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
-      event.preventDefault();
-      window.freemixPasteArrangementClipboardToSelectedScene?.();
+    if (shouldHandleClipClipboard && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      const handled = window.freemixPasteArrangementClipboardToSelectedScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+      }
       return;
     }
 
@@ -780,9 +789,63 @@
     }
 
     const editableTarget = event.target.closest?.("input, textarea, select, [contenteditable='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    if (textEditorTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      const handled = window.freemixCopySelectedArrangementScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (textEditorTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      const handled = window.freemixPasteArrangementClipboardToSelectedScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      event.preventDefault();
+      window.freemixCopySelectedArrangementScene?.();
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      window.freemixPasteArrangementClipboardToSelectedScene?.();
+      return;
+    }
+
     if (!editableTarget && event.ctrlKey && event.altKey && event.key.toLowerCase() === "d") {
       event.preventDefault();
       window.freemixToggleDebugPanel?.();
+    }
+  }
+
+  function onDocumentKeydownCapture(event) {
+    const editableTarget = event.target.closest?.("input, textarea, select, [contenteditable='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    if (!textEditorTarget || !(event.ctrlKey || event.metaKey)) {
+      return;
+    }
+
+    if (event.key.toLowerCase() === "c") {
+      const handled = window.freemixCopySelectedArrangementScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
+    if (event.key.toLowerCase() === "v") {
+      const handled = window.freemixPasteArrangementClipboardToSelectedScene?.();
+      if (handled || !editableTarget) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     }
   }
 
@@ -887,6 +950,7 @@
           clearResults();
         }
       });
+      document.addEventListener("keydown", onDocumentKeydownCapture, true);
       document.addEventListener("keydown", onDocumentKeydown);
 
       document.querySelector(SESSION_FILE_INPUT_SELECTOR)?.addEventListener("change", onSessionFileChange);
