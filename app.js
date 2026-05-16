@@ -200,6 +200,7 @@ const DURATION_FILTERS = {
 };
 const QUICKSTART_SAMPLE_QUERY = "lo-fi loop";
 const AV_READY_TIMEOUT_MS = 1200;
+const CLEAN_VISUAL_REVEAL_TIMEOUT_MS = 320;
 const MEDIA_SLICE_DEFAULT_DURATION_SECONDS = 24;
 const MEDIA_SLICE_MIN_DURATION_SECONDS = 8;
 const MEDIA_SLICE_MAX_DURATION_SECONDS = 180;
@@ -212,6 +213,34 @@ const FX_CONTROLS = [
   { key: "reverb", label: "Reverb", min: 0, max: 1, step: 0.01 },
 ];
 const FX_CONTROL_INDEX = Object.freeze(Object.fromEntries(FX_CONTROLS.map((entry) => [entry.key, entry])));
+const TRACK_MEDIA_STATUS_LABELS = Object.freeze({
+  "audio-only": "Audio only",
+  "clean-frame-ready": "Clean frame",
+  "cors-limited": "CORS limited",
+  empty: "Empty",
+  failed: "Failed",
+  "fx-routed": "FX routed",
+  "fx-unavailable": "FX unavailable",
+  loading: "Loading",
+  playing: "Playing",
+  prerolling: "Prerolling",
+  ready: "Ready",
+  stopped: "Stopped",
+  unsupported: "Unsupported",
+  "video-only": "Video only",
+});
+const TRACK_MEDIA_STATUSES = Object.freeze(new Set(Object.keys(TRACK_MEDIA_STATUS_LABELS)));
+const PLAYBACK_PHASES = Object.freeze({
+  idle: "idle",
+  loading: "loading",
+  cueing: "cueing",
+  prerolling: "prerolling",
+  ready: "ready",
+  playing: "playing",
+  stopped: "stopped",
+  failed: "failed",
+});
+const CLIP_STATE_SCHEMA_VERSION = 2;
 const sourceMetadataCache = new Map();
 const sourceMetadataInflight = new Map();
 const mediaElementSourceNodes = new WeakMap();
@@ -355,9 +384,23 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
     MAX_ARRANGEMENT_STEPS,
   );
   const existingClips = Array.isArray(arrangementState.clips) ? arrangementState.clips : [];
+  const existingSceneColors = Array.isArray(arrangementState.sceneColors) ? arrangementState.sceneColors : [];
   arrangementState.clips = existingClips
     .slice(0, stepCount)
-    .map((clip) => (clip && typeof clip === "object" && !Array.isArray(clip) ? clip : {}));
+    .map((step, stepIndex) => {
+      if (!step || typeof step !== "object" || Array.isArray(step)) {
+        return {};
+      }
+
+      return Object.fromEntries(
+        Object.entries(step)
+          .filter(([, clip]) => clip && typeof clip === "object" && !Array.isArray(clip))
+          .map(([trackId, clip]) => [
+            trackId,
+            normalizeClipState(clip, { colorIndex: existingSceneColors[stepIndex] }),
+          ]),
+      );
+    });
   while (arrangementState.clips.length < stepCount) {
     arrangementState.clips.push({});
   }
@@ -368,7 +411,6 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
     arrangementState.textClips.push(null);
   }
 
-  const existingSceneColors = Array.isArray(arrangementState.sceneColors) ? arrangementState.sceneColors : [];
   arrangementState.sceneColors = existingSceneColors
     .slice(0, stepCount)
     .map((colorIndex) => normalizeSceneColorIndex(colorIndex));
@@ -1294,6 +1336,130 @@ function setTrackBlackout(track, isBlackout) {
   }
 
   cell.classList.toggle("scene-blackout", !!isBlackout);
+  if (!isBlackout) {
+    track.__awaitingCleanVisualFrame = false;
+  }
+}
+
+function holdTrackVisualUntilCleanFrame(track) {
+  if (!track) {
+    return;
+  }
+
+  track.__awaitingCleanVisualFrame = true;
+  setTrackPlaybackPhase(track, PLAYBACK_PHASES.cueing, { mediaStatus: "prerolling" });
+  setTrackBlackout(track, true);
+}
+
+function revealTrackCleanVisual(track) {
+  if (!track) {
+    return;
+  }
+
+  track.__awaitingCleanVisualFrame = false;
+  setTrackPlaybackPhase(track, PLAYBACK_PHASES.ready, { mediaStatus: "clean-frame-ready" });
+  setTrackBlackout(track, false);
+}
+
+function revealTrackAfterPresentedFrame(track, video, playbackToken = track?.__playbackToken) {
+  if (!track || !video) {
+    return Promise.resolve(false);
+  }
+
+  const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : track.__playbackToken;
+  const currentTime = Number(video.currentTime);
+  const minMediaTime = Number.isFinite(currentTime) ? Math.max(0, currentTime - 0.002) : null;
+  return waitForPresentedVideoFrame(video, {
+    minMediaTime,
+    timeoutMs: CLEAN_VISUAL_REVEAL_TIMEOUT_MS,
+  })
+    .catch(() => null)
+    .then(() => {
+      if (Number.isFinite(tokenAtStart) && track.__playbackToken !== tokenAtStart) {
+        return false;
+      }
+
+      revealTrackCleanVisual(track);
+      if (!video.paused && !video.ended) {
+        setTrackPlaybackPhase(track, PLAYBACK_PHASES.playing, { mediaStatus: "playing" });
+      }
+      return true;
+    });
+}
+
+function cloneClipSource(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(source));
+  } catch {
+    return { ...source };
+  }
+}
+
+function normalizeDurationFilterValue(value, fallback = "quick") {
+  return DURATION_FILTERS[value] ? value : DURATION_FILTERS[fallback] ? fallback : "quick";
+}
+
+function normalizeBlendModeValue(value, fallback = TRACK_BLEND_DEFAULTS[0]) {
+  return BLEND_MODE_OPTIONS.some(({ value: mode }) => mode === value)
+    ? value
+    : BLEND_MODE_OPTIONS.some(({ value: mode }) => mode === fallback)
+      ? fallback
+      : TRACK_BLEND_DEFAULTS[0];
+}
+
+function normalizeClipFx(rawFx = {}, fallbackFx = {}) {
+  const sourceFx = rawFx && typeof rawFx === "object" && !Array.isArray(rawFx) ? rawFx : {};
+  const fallback = fallbackFx && typeof fallbackFx === "object" && !Array.isArray(fallbackFx) ? fallbackFx : {};
+  return Object.fromEntries(
+    FX_CONTROLS.map((control) => {
+      const rawValue = Number(sourceFx[control.key]);
+      const fallbackValue = Number(fallback[control.key]);
+      const nextValue = Number.isFinite(rawValue)
+        ? rawValue
+        : Number.isFinite(fallbackValue)
+          ? fallbackValue
+          : 0;
+      return [control.key, clamp(nextValue, control.min, control.max)];
+    }),
+  );
+}
+
+function normalizeClipState(rawClip = {}, fallbackState = {}) {
+  const clip = rawClip && typeof rawClip === "object" && !Array.isArray(rawClip) ? rawClip : {};
+  const fallback = fallbackState && typeof fallbackState === "object" && !Array.isArray(fallbackState) ? fallbackState : {};
+  const rawStart = Number(clip.startTime);
+  const fallbackStart = Number(fallback.startTime);
+  const rawVolume = Number(clip.volume);
+  const fallbackVolume = Number(fallback.volume);
+  const rawOpacity = Number(clip.opacity);
+  const fallbackOpacity = Number(fallback.opacity);
+  const rawSpeed = Number(clip.speed);
+  const fallbackSpeed = Number(fallback.speed);
+  const rawPitch = Number(clip.pitch);
+  const fallbackPitch = Number(fallback.pitch);
+
+  return {
+    ...clip,
+    schemaVersion: CLIP_STATE_SCHEMA_VERSION,
+    source: cloneClipSource(Object.prototype.hasOwnProperty.call(clip, "source") ? clip.source : fallback.source),
+    colorIndex: normalizeSceneColorIndex(
+      Object.prototype.hasOwnProperty.call(clip, "colorIndex") ? clip.colorIndex : fallback.colorIndex,
+    ),
+    durationFilter: normalizeDurationFilterValue(clip.durationFilter, fallback.durationFilter),
+    startTime: Math.max(0, Number.isFinite(rawStart) ? rawStart : Number.isFinite(fallbackStart) ? fallbackStart : 0),
+    retriggersPerBar: normalizeRetriggersPerBar(clip.retriggersPerBar ?? fallback.retriggersPerBar),
+    volume: clamp(Number.isFinite(rawVolume) ? rawVolume : Number.isFinite(fallbackVolume) ? fallbackVolume : 0.55, 0, 1),
+    muted: typeof clip.muted === "boolean" ? clip.muted : !!fallback.muted,
+    blendMode: normalizeBlendModeValue(clip.blendMode, fallback.blendMode),
+    opacity: clamp(Number.isFinite(rawOpacity) ? rawOpacity : Number.isFinite(fallbackOpacity) ? fallbackOpacity : 1, 0, 1),
+    speed: clamp(Number.isFinite(rawSpeed) ? rawSpeed : Number.isFinite(fallbackSpeed) ? fallbackSpeed : 1, 0.5, 2),
+    pitch: clamp(Number.isFinite(rawPitch) ? rawPitch : Number.isFinite(fallbackPitch) ? fallbackPitch : 0, -12, 12),
+    fx: normalizeClipFx(clip.fx, fallback.fx),
+  };
 }
 
 function syncTrackVideoElementSource(track, video, state = null) {
@@ -1495,30 +1661,68 @@ function arrangementStepHasClips(stepIndex) {
   return hasVideoClips || arrangementStepHasText(resolvedStep);
 }
 
-function getSelectedEditTargetLabel() {
+function getActiveEditTarget() {
   if (selectedTextClipStep !== null) {
-    const textClip = getArrangementTextClip(selectedTextClipStep);
-    return `Editing TEXT / scene ${selectedTextClipStep + 1}${textClip ? "" : " (blank)"}`;
+    return {
+      type: "text",
+      stepIndex: selectedTextClipStep,
+      clip: getArrangementTextClip(selectedTextClipStep),
+      labelPrefix: "Editing TEXT",
+    };
   }
 
   const selectedTargets = getSelectedArrangementClipTargets();
   if (selectedTargets.length === 1) {
     const [{ track, stepIndex }] = selectedTargets;
-    const hasClip = !!arrangement?.clips?.[stepIndex]?.[track.id];
-    return `Editing ${track.name} / scene ${stepIndex + 1}${hasClip ? "" : " (blank)"}`;
+    return {
+      type: "clip",
+      track,
+      stepIndex,
+      clip: arrangement?.clips?.[stepIndex]?.[track.id] || null,
+      labelPrefix: `Editing ${track.name}`,
+    };
   }
 
   if (selectedTargets.length > 1) {
-    return `Editing ${selectedTargets.length} selected clips`;
+    return {
+      type: "multi-clip",
+      targets: selectedTargets,
+      labelPrefix: `Editing ${selectedTargets.length} selected clips`,
+    };
   }
 
   const resolvedStep = getArrangementStepIndex(arrangement?.step);
   if (resolvedStep === null) {
+    return { type: "live", stepIndex: null, labelPrefix: "Editing live tracks" };
+  }
+
+  return {
+    type: "scene",
+    stepIndex: resolvedStep,
+    hasClips: arrangementStepHasClips(resolvedStep),
+    labelPrefix: `Editing scene ${resolvedStep + 1}`,
+  };
+}
+
+function getSelectedEditTargetLabel() {
+  const target = getActiveEditTarget();
+  if (!target) {
     return "Editing live tracks";
   }
 
-  const hasSceneClips = arrangementStepHasClips(resolvedStep);
-  return `Editing scene ${resolvedStep + 1}${hasSceneClips ? "" : " (empty)"}`;
+  if (target.type === "text") {
+    return `${target.labelPrefix} / scene ${target.stepIndex + 1}${target.clip ? "" : " (blank)"}`;
+  }
+
+  if (target.type === "clip") {
+    return `${target.labelPrefix} / scene ${target.stepIndex + 1}${target.clip ? "" : " (blank)"}`;
+  }
+
+  if (target.type === "multi-clip" || target.type === "live") {
+    return target.labelPrefix;
+  }
+
+  return `${target.labelPrefix}${target.hasClips ? "" : " (empty)"}`;
 }
 
 function setArrangementSceneColor(stepIndex, colorIndex) {
@@ -1588,14 +1792,20 @@ function bindTracksToArrangementStep(stepIndex, options = {}) {
   tracks.forEach((track) => {
     const clip = target[track.id] ?? null;
     track.arrangementClip = clip;
-    track.stepMs = clip && Number.isFinite(barMs)
-      ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar)
-      : 0;
+    track.stepMs = getClipRetriggerStepMs(clip, barMs);
     if (shouldSyncTiming && Number.isFinite(track.stepMs) && track.stepMs > 0) {
       resetTrackPulseCursor(track, nextTriggerAt, { fireAtReference: true });
     }
     track.lastStep = -1;
   });
+}
+
+function getClipRetriggerStepMs(clip, barMs) {
+  if (!clip || !Number.isFinite(Number(barMs)) || Number(barMs) <= 0) {
+    return 0;
+  }
+
+  return Number(barMs) / normalizeRetriggersPerBar(clip.retriggersPerBar);
 }
 
 function getTrackActiveControlState(track) {
@@ -2150,7 +2360,7 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
   applyTrackVolume(track, playbackState);
   applyTrackPitchAndSpeed(track, playbackState);
   void video.play()
-    .then(() => {
+    .then(async () => {
       if (Number.isFinite(tokenAtStart) && track.__playbackToken !== tokenAtStart) {
         try {
           video.pause();
@@ -2162,6 +2372,7 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
 
       applyTrackVolume(track, playbackState);
       applyTrackPitchAndSpeed(track, playbackState);
+      await revealTrackAfterPresentedFrame(track, video, tokenAtStart);
     })
     .catch((error) => {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -2809,13 +3020,13 @@ function revealArrangementPreroll(sessionToken) {
       track.__prerollRevealCanSkipSeek;
 
     if (canOpenPreparedVideo) {
-      setTrackBlackout(track, false);
       applyTrackVolume(track, clip);
       applyTrackFx(track, clip);
       applyVideoFx(track, clip);
       applyTrackBlend(track, clip);
       applyTrackOpacity(track, clip);
       applyTrackPitchAndSpeed(track, clip);
+      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
       track.__lastPlaybackSignature = playbackSignature;
       track.__warmLaunchFor = null;
       track.__prerollRevealFor = null;
@@ -2996,7 +3207,6 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
       return;
     }
 
-    setTrackBlackout(track, false);
     setupTrackAudio(track, video, clip);
     applyTrackVolume(track, clip);
     applyTrackFx(track, clip);
@@ -3005,6 +3215,7 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     applyTrackOpacity(track, clip);
     applyTrackPitchAndSpeed(track, clip);
     applyVideoPitchAndSpeed(video, clip);
+    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
 
     const pulseIndex = getTrackPulseIndex(track, barStartAt);
     track.__lastPlaybackSignature = playbackSignature;
@@ -3793,7 +4004,7 @@ function resyncTrackTiming(track) {
   const timingState = getTrackActiveControlState(track) || track;
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
-  track.stepMs = barMs / normalizeRetriggersPerBar(timingState?.retriggersPerBar);
+  track.stepMs = getClipRetriggerStepMs(timingState, barMs);
   const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
   resetTrackPulseCursor(track, rearmAt, { fireAtReference: false });
   track.lastStep = -1;
@@ -4627,7 +4838,15 @@ function renderTransportMeter(beatsPerBar = getTransportBeatsPerBar()) {
 
 function getDebugSnapshot() {
   const selectedClips = getSelectedArrangementClipTargets().map(({ track, stepIndex }) => `${track.id}@${stepIndex + 1}`);
+  const editTarget = getActiveEditTarget();
   return {
+    editing: editTarget
+      ? {
+          type: editTarget.type,
+          step: Number.isFinite(Number(editTarget.stepIndex)) ? Number(editTarget.stepIndex) + 1 : null,
+          track: editTarget.track?.id || null,
+        }
+      : null,
     transport: transport
       ? {
           active: !!transport.active,
@@ -4649,7 +4868,9 @@ function getDebugSnapshot() {
       return {
         id: track.id,
         name: track.name,
+        playbackPhase: track.playbackPhase || PLAYBACK_PHASES.idle,
         mediaStatus: getTrackMediaStatus(track, state?.source || track.source),
+        audioFxStatus: track.audioFxStatus || "empty",
         source: getTrackPlaybackSourceUrl(track, state),
         anchor: Number(state?.startTime || 0),
         density: normalizeRetriggersPerBar(state?.retriggersPerBar),
@@ -4668,6 +4889,7 @@ function getDebugSnapshot() {
           stepMs: Number.isFinite(Number(track.stepMs)) ? Number(track.stepMs.toFixed(2)) : null,
           nextTriggerInMs: Number.isFinite(Number(track.nextTriggerAt)) ? Math.round(track.nextTriggerAt - performance.now()) : null,
           primed: track.__transportPrimedFor === transport?.sessionToken,
+          awaitingCleanVisualFrame: !!track.__awaitingCleanVisualFrame,
           lookahead: {
             status: track.__lookaheadStatus?.status || null,
             scene: track.__lookaheadStatus?.scene || (Number.isFinite(Number(track.__lookaheadPrerollStep)) ? Number(track.__lookaheadPrerollStep) + 1 : null),
@@ -5154,7 +5376,7 @@ function renderTextOverlayField(field) {
 
 function getTrackMediaStatus(track, renderSource = null) {
   const status = typeof track?.mediaStatus === "string" ? track.mediaStatus : "";
-  if (status === "loading" || status === "failed" || status === "cors-limited" || status === "audio-only" || status === "video-only") {
+  if (TRACK_MEDIA_STATUSES.has(status)) {
     return status;
   }
 
@@ -5162,15 +5384,7 @@ function getTrackMediaStatus(track, renderSource = null) {
 }
 
 function getTrackMediaStatusLabel(status) {
-  return {
-    "audio-only": "Audio only",
-    "cors-limited": "CORS limited",
-    empty: "Empty",
-    failed: "Failed",
-    loading: "Loading",
-    ready: "Ready",
-    "video-only": "Video only",
-  }[status] || "Unknown";
+  return TRACK_MEDIA_STATUS_LABELS[status] || "Unknown";
 }
 
 function setTrackMediaStatus(trackOrId, status, options = {}) {
@@ -5179,20 +5393,45 @@ function setTrackMediaStatus(trackOrId, status, options = {}) {
     return;
   }
 
-  track.mediaStatus = status;
+  const normalizedStatus = TRACK_MEDIA_STATUSES.has(status) ? status : "ready";
+  track.mediaStatus = normalizedStatus;
+  track.mediaStatusUpdatedAt = performance.now();
+  if (options.details && typeof options.details === "object") {
+    track.mediaStatusDetails = { ...options.details };
+  }
   const cell = getTrackCell(track);
   if (cell) {
     const renderState = getTrackRenderState(track);
-    const normalizedStatus = getTrackMediaStatus(track, renderState?.source || track.source);
-    cell.dataset.mediaStatus = normalizedStatus;
+    const displayStatus = getTrackMediaStatus(track, renderState?.source || track.source);
+    cell.dataset.mediaStatus = displayStatus;
     const badge = cell.querySelector(".media-status-badge");
     if (badge) {
-      badge.textContent = getTrackMediaStatusLabel(normalizedStatus);
+      badge.textContent = getTrackMediaStatusLabel(displayStatus);
     }
   }
 
   if (options.statusMessage) {
     setStatus(options.statusMessage, !!options.isError);
+  }
+}
+
+function setTrackPlaybackPhase(trackOrId, phase, options = {}) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  if (!track) {
+    return;
+  }
+
+  const normalizedPhase = Object.prototype.hasOwnProperty.call(PLAYBACK_PHASES, phase) ? PLAYBACK_PHASES[phase] : phase;
+  track.playbackPhase = normalizedPhase || PLAYBACK_PHASES.idle;
+  track.playbackPhaseUpdatedAt = performance.now();
+  if (options.sessionToken !== undefined) {
+    track.playbackSessionToken = options.sessionToken;
+  }
+  if (options.clipSignature !== undefined) {
+    track.playbackClipSignature = options.clipSignature;
+  }
+  if (options.mediaStatus) {
+    setTrackMediaStatus(track, options.mediaStatus, { details: options.details });
   }
 }
 
@@ -5425,19 +5664,43 @@ function getTrackMediaPrepState(track, renderState = getTrackRenderState(track))
 
   const mediaStatus = getTrackMediaStatus(track, renderState?.source || track.source);
 
-  if (mediaStatus === "failed" || track?.audioFxStatus === "failed") {
+  if (mediaStatus === "failed" || mediaStatus === "unsupported" || track?.audioFxStatus === "failed") {
     return {
       status: "failed",
-      label: "Media failed",
-      detail: "Try another source",
+      label: mediaStatus === "unsupported" ? "Unsupported media" : "Media failed",
+      detail: track?.mediaStatusDetails?.reason || "Try another source",
     };
   }
 
-  if (mediaStatus === "loading" || track?.audioFxStatus === "waiting") {
+  if (mediaStatus === "loading" || mediaStatus === "prerolling" || track?.audioFxStatus === "waiting") {
     return {
       status: "loading",
-      label: "Loading media",
-      detail: "Opening source",
+      label: mediaStatus === "prerolling" ? "Cueing media" : "Loading media",
+      detail: mediaStatus === "prerolling" ? "Waiting for clean frame" : "Opening source",
+    };
+  }
+
+  if (mediaStatus === "playing" || mediaStatus === "clean-frame-ready") {
+    return {
+      status: "ready",
+      label: mediaStatus === "playing" ? "Playing" : "Clean frame ready",
+      detail: `Anchor ${Number(renderState?.startTime || 0).toFixed(1)}s`,
+    };
+  }
+
+  if (mediaStatus === "fx-routed") {
+    return {
+      status: "ready",
+      label: "FX routed",
+      detail: track?.audio?.route === "capture-stream" ? "Capture graph" : "WebAudio graph",
+    };
+  }
+
+  if (mediaStatus === "fx-unavailable") {
+    return {
+      status: "failed",
+      label: "FX route unavailable",
+      detail: "Audio cannot hit FX yet",
     };
   }
 
@@ -6373,9 +6636,20 @@ async function startTransport() {
             return !!getTrackPlaybackSourceUrl(track);
           })
           .map((track) =>
-            primeTrackForTransport(track, startToken).catch((error) => {
-              console.warn(error);
-            }),
+            {
+              setTrackPlaybackPhase(track, PLAYBACK_PHASES.loading, {
+                sessionToken: startToken,
+                mediaStatus: "loading",
+              });
+              return primeTrackForTransport(track, startToken).catch((error) => {
+                setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+                  sessionToken: startToken,
+                  mediaStatus: "failed",
+                  details: { reason: "prime-failed" },
+                });
+                console.warn(error);
+              });
+            },
           ),
       );
 
@@ -6682,6 +6956,9 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
   }
 
   const sourceWasChanged = !!clipSourceUrl && setMediaElementSource(video, clipSourceUrl);
+  setTrackPlaybackPhase(track, sourceWasChanged ? PLAYBACK_PHASES.loading : PLAYBACK_PHASES.cueing, {
+    mediaStatus: sourceWasChanged ? "loading" : "prerolling",
+  });
 
   if (audioContext && audioContext.state !== "running" && track.audio) {
     disposeTrackAudio(track);
@@ -6740,6 +7017,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
 
     if (shouldSeekToAnchor) {
       await parkVideoAtAnchor(video, clip, track);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.cueing, { mediaStatus: "prerolling" });
     }
 
     await waitForTrackReady(video);
@@ -6749,6 +7027,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
 
     if (shouldSeekToAnchor) {
       await parkVideoAtAnchor(video, clip, track);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.ready, { mediaStatus: "ready" });
     }
 
     if (video.paused) {
@@ -6864,7 +7143,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         }
       }
     })
-  .then((wasMuted) => {
+    .then(async (wasMuted) => {
       if (!isCurrentPlaybackAttempt()) {
         return false;
       }
@@ -6897,6 +7176,11 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         setStatus(`${track.name}: audio waiting for FX route`, true);
       }
 
+      await revealTrackAfterPresentedFrame(track, video, tokenAtStart);
+      if (!isCurrentPlaybackAttempt()) {
+        return false;
+      }
+
       return true;
     })
     .catch((error) => {
@@ -6909,6 +7193,10 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         return false;
       }
 
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+        mediaStatus: error?.name === "NotSupportedError" ? "unsupported" : "failed",
+        details: { reason: hasName || "playback-failed" },
+      });
       if (error instanceof DOMException) {
         setStatus(`Playback failed: ${error.name}`, true);
         if (error.name === "NotSupportedError") {
@@ -6946,9 +7234,15 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
     const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
 
     if (!video || !sourceUrl) {
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.idle, { mediaStatus: "empty" });
       return;
     }
 
+    setTrackPlaybackPhase(track, PLAYBACK_PHASES.cueing, {
+      sessionToken,
+      clipSignature: getPlaybackStateSignature(playbackState, sourceUrl),
+      mediaStatus: "prerolling",
+    });
     setVideoCorsPolicy(video, sourceUrl);
     setMediaElementSource(video, sourceUrl);
     const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
@@ -6962,6 +7256,11 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
     }
     setupTrackAudio(track, video, playbackState);
     if (hasActivePreroll) {
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.prerolling, {
+        sessionToken,
+        clipSignature: playbackSignature,
+        mediaStatus: "prerolling",
+      });
       armTrackForPrerollReveal(track, video);
     } else {
       applyTrackVolume(track, playbackState);
@@ -7077,6 +7376,12 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.__lastTransportClockCorrectionPulse = null;
       track.__transportClockCorrectionPulse = null;
       track.__transportClockCorrectionUntil = null;
+      track.__awaitingCleanVisualFrame = false;
+      const selectedClip = getArrangementStepClip(track, arrangement?.step);
+      const resetState = selectedClip || track;
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, {
+        mediaStatus: getTrackPlaybackSourceUrl(track, resetState) ? "stopped" : "empty",
+      });
       removeTrackPrerollStandby(track);
       const standby = track.__standbyVideoElement;
       if (standby) {
@@ -7107,8 +7412,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
         }
       }
       setTrackBlackout(track, false);
-      const selectedClip = getArrangementStepClip(track, arrangement?.step);
-      safeSetCurrentTime(video, selectedClip || track);
+      safeSetCurrentTime(video, resetState);
     });
 
     playerPanel?.querySelectorAll("video, audio").forEach((media) => {
@@ -7201,7 +7505,10 @@ function getExportPreflightIssue(mode = "clip") {
     }
 
     const hasPlayableArrangementClip = arrangement?.clips?.some((step) =>
-      Object.values(step || {}).some((clip) => !!clip?.source?.mediaUrl),
+      tracks.some((track) => {
+        const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
+        return !!getTrackPlaybackSourceUrl(track, clip);
+      }),
     );
     return hasPlayableArrangementClip || arrangement?.textClips?.some((clip) => !!normalizeTextClip(clip)) ? "" : "Arrangement has no playable media";
   }
@@ -7464,7 +7771,10 @@ function trackHasArrangementExportSource(track) {
     return false;
   }
 
-  return arrangement.clips.some((step) => !!step?.[track.id]?.source?.mediaUrl);
+  return arrangement.clips.some((step) => {
+    const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
+    return !!getTrackPlaybackSourceUrl(track, clip);
+  });
 }
 
 async function exportComposition(mode = "clip") {
@@ -7523,7 +7833,8 @@ async function exportComposition(mode = "clip") {
   let audioTap = null;
   let timerId = null;
   let recorder = null;
-  let frameId = null;
+  let renderTimerId = null;
+  let canvasVideoTrack = null;
   let mediaStream = null;
   const chunks = [];
   const exportMode = mode === "arrangement" ? "arrangement" : "clip";
@@ -7543,6 +7854,7 @@ async function exportComposition(mode = "clip") {
   try {
     canvasSession = createExportCanvasSession();
     mediaStream = canvasSession.canvas.captureStream(EXPORT_FRAME_RATE);
+    canvasVideoTrack = mediaStream.getVideoTracks()[0] || null;
     audioTap = createExportAudioTap();
     if (audioTap?.destination?.stream) {
       audioTap.destination.stream.getAudioTracks().forEach((audioTrack) => {
@@ -7581,15 +7893,21 @@ async function exportComposition(mode = "clip") {
     const durationMs = computeExportDurationMs(exportMode);
     recorder.start(200);
 
-    const renderLoop = () => {
+    const renderFrame = () => {
       if (!canvasSession) {
         return;
       }
       canvasSession.drawFrame();
-      frameId = requestAnimationFrame(renderLoop);
+      if (typeof canvasVideoTrack?.requestFrame === "function") {
+        canvasVideoTrack.requestFrame();
+      }
     };
 
-    frameId = requestAnimationFrame(renderLoop);
+    renderFrame();
+    renderTimerId = window.setInterval(
+      renderFrame,
+      Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)),
+    );
     const startResult = startTransport();
     if (startResult && typeof startResult.then === "function") {
       await startResult;
@@ -7611,9 +7929,9 @@ async function exportComposition(mode = "clip") {
       if (recorder && recorder.state === "recording") {
         recorder.stop();
       }
-      if (frameId) {
-        cancelAnimationFrame(frameId);
-        frameId = null;
+      if (renderTimerId !== null) {
+        window.clearInterval(renderTimerId);
+        renderTimerId = null;
       }
     }, durationMs + 300);
 
@@ -7631,8 +7949,9 @@ async function exportComposition(mode = "clip") {
     if (recorder && recorder.state === "recording") {
       recorder.stop();
     }
-    if (frameId) {
-      cancelAnimationFrame(frameId);
+    if (renderTimerId !== null) {
+      window.clearInterval(renderTimerId);
+      renderTimerId = null;
     }
     setStatus("Export failed", true);
   } finally {
@@ -7648,9 +7967,9 @@ async function exportComposition(mode = "clip") {
       recorder.stop();
     }
 
-    if (frameId) {
-      cancelAnimationFrame(frameId);
-      frameId = null;
+    if (renderTimerId !== null) {
+      window.clearInterval(renderTimerId);
+      renderTimerId = null;
     }
 
     if (mediaStream) {
@@ -7844,10 +8163,10 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     return;
   }
 
-  setTrackBlackout(track, false);
   setVideoCorsPolicy(video, sourceUrl);
   const sourceChanged = !!sourceUrl && !mediaElementHasSource(video, sourceUrl);
   if (sourceChanged) {
+    holdTrackVisualUntilCleanFrame(track);
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
     track.__prerollRevealFor = null;
@@ -7857,6 +8176,11 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
+  setTrackPlaybackPhase(track, PLAYBACK_PHASES.cueing, {
+    sessionToken: transportSessionToken,
+    clipSignature: playbackSignature,
+    mediaStatus: "prerolling",
+  });
   const requiresFxRoute = shouldRouteAudioThroughFx(track, playbackState);
   if (requiresFxRoute) {
     prepareTrackAudioFxForPlayback(track, playbackState);
@@ -7868,6 +8192,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     video.readyState >= 1 &&
     !video.paused &&
     !video.ended;
+  if (!canFastRetrigger || track.__lastPlaybackSignature !== playbackSignature) {
+    holdTrackVisualUntilCleanFrame(track);
+  }
   const hasStableAudioRoute =
     !requiresFxRoute ||
     (!webAudioDisabled && audioContext?.state === "running" && hasLiveTrackAudioGraph(track, video));
@@ -7880,6 +8207,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__prerollRevealFor = null;
     track.__prerollPlaybackSignature = null;
     track.__prerollRevealCanSkipSeek = false;
+    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
     flashTrackTrigger(track);
     return;
   }
@@ -7913,6 +8241,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__prerollRevealCanSkipSeek = false;
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
+    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
     flashTrackTrigger(track);
     return;
   }
@@ -7959,6 +8288,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__prerollRevealFor = null;
     track.__prerollPlaybackSignature = null;
     track.__prerollRevealCanSkipSeek = false;
+    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
     flashTrackTrigger(track);
     return;
   }
@@ -8272,6 +8602,30 @@ function hasLiveTrackAudioGraph(track, video = null) {
   );
 }
 
+function verifyTrackAudioFxRoute(track, state = track, video = getTrackVideo(track)) {
+  if (!track) {
+    return false;
+  }
+
+  const sourceUrl = getTrackPlaybackSourceUrl(track, state);
+  if (!sourceUrl) {
+    track.audioFxStatus = "empty";
+    setTrackMediaStatus(track, "empty");
+    return false;
+  }
+
+  const isRouted = hasLiveTrackAudioGraph(track, video);
+  if (isRouted) {
+    track.audioFxStatus = track.audio?.route === "capture-stream" ? "capture-fx" : "webaudio";
+    setTrackMediaStatus(track, "fx-routed");
+    return true;
+  }
+
+  track.audioFxStatus = webAudioDisabled || !audioContext ? "fx-unavailable" : "unrouted";
+  setTrackMediaStatus(track, "fx-unavailable");
+  return false;
+}
+
 function shouldRouteAudioThroughFx(track, state = track) {
   return !!getTrackPlaybackSourceUrl(track, state);
 }
@@ -8370,6 +8724,7 @@ function createTrackAudioGraph(track, video, source, route = "media-element") {
     output,
   };
   track.audioFxStatus = route === "capture-stream" ? "capture-fx" : "webaudio";
+  setTrackMediaStatus(track, "fx-routed");
   return true;
 }
 
@@ -8438,6 +8793,7 @@ function setupTrackAudio(track, video, state = track) {
   const sourceUrl = getTrackPlaybackSourceUrl(track, state);
   if (shouldDisableWebAudioForSource(sourceUrl)) {
     if (setupTrackCapturedAudio(track, video, state)) {
+      verifyTrackAudioFxRoute(track, state, video);
       return true;
     }
 
@@ -8445,6 +8801,7 @@ function setupTrackAudio(track, video, state = track) {
       disposeTrackAudio(track);
     }
     track.audioFxStatus = sourceUrl ? "native-audio" : "empty";
+    setTrackMediaStatus(track, sourceUrl ? "fx-unavailable" : "empty");
     return false;
   }
 
@@ -8457,22 +8814,27 @@ function setupTrackAudio(track, video, state = track) {
   }
 
   if (track.audio) {
+    verifyTrackAudioFxRoute(track, state, video);
     return true;
   }
 
   try {
     const source = getMediaElementSourceNode(video);
-    return createTrackAudioGraph(track, video, source, "media-element");
+    const didCreate = createTrackAudioGraph(track, video, source, "media-element");
+    verifyTrackAudioFxRoute(track, state, video);
+    return didCreate;
   } catch (error) {
     console.warn(error);
     if (track?.audio) {
       disposeTrackAudio(track);
     }
     if (setupTrackCapturedAudio(track, video, state)) {
+      verifyTrackAudioFxRoute(track, state, video);
       return true;
     }
     track.audio = null;
     track.audioFxStatus = "failed";
+    setTrackMediaStatus(track, "failed");
     setStatus("Audio FX route failed");
     return false;
   }
@@ -8485,6 +8847,7 @@ function ensureTrackAudioFxRoute(track, state = track) {
   }
 
   if (hasLiveTrackAudioGraph(track, video)) {
+    verifyTrackAudioFxRoute(track, state, video);
     return track.audio;
   }
 
@@ -8495,20 +8858,22 @@ function ensureTrackAudioFxRoute(track, state = track) {
   const sourceUrl = getTrackPlaybackSourceUrl(track, state);
   if (!sourceUrl || shouldDisableWebAudioForSource(sourceUrl)) {
     if (sourceUrl && setupTrackAudio(track, video, state)) {
-      return hasLiveTrackAudioGraph(track, video) ? track.audio : null;
+      return verifyTrackAudioFxRoute(track, state, video) ? track.audio : null;
     }
 
     track.audioFxStatus = sourceUrl ? "native-audio" : "empty";
+    setTrackMediaStatus(track, sourceUrl ? "fx-unavailable" : "empty");
     return null;
   }
 
   if (webAudioDisabled || !audioContext || audioContext.state !== "running") {
     track.audioFxStatus = "waiting";
+    setTrackMediaStatus(track, "fx-unavailable");
     return null;
   }
 
   setupTrackAudio(track, video, state);
-  return hasLiveTrackAudioGraph(track, video) ? track.audio : null;
+  return verifyTrackAudioFxRoute(track, state, video) ? track.audio : null;
 }
 
 function requestTrackAudioFxRoute(track, state = track) {
@@ -8603,10 +8968,12 @@ function applyAudioFxToGraph(audio, state = {}) {
 function applyTrackFx(track, state = track) {
   const audio = ensureTrackAudioFxRoute(track, state);
   if (!audio) {
+    verifyTrackAudioFxRoute(track, state);
     return;
   }
 
   applyAudioFxToGraph(audio, state);
+  verifyTrackAudioFxRoute(track, state, audio.mediaElement);
 }
 
 function applyVideoFx(track, state = track) {
@@ -8932,7 +9299,7 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   tracks.forEach((track) => {
     const timingState = getTrackActiveControlState(track) || track;
     track.arrangementClip = null;
-    track.stepMs = barMs / normalizeRetriggersPerBar(timingState?.retriggersPerBar);
+    track.stepMs = getClipRetriggerStepMs(timingState, barMs);
     resetTrackPulseCursor(track, startAt, { fireAtReference: true });
   });
 }
@@ -9829,13 +10196,13 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
         video.pause();
       }
       setTrackBlackout(track, true);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, { mediaStatus: "empty" });
       track.lastStep = -1;
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
       return;
     }
 
     activeClipCount += 1;
-    setTrackBlackout(track, false);
     if (
       track.__lookaheadPrerollFor === transport?.sessionToken &&
       track.__lookaheadPrerollStep === resolvedStep &&
@@ -9933,8 +10300,8 @@ function reconcileArrangementPlaybackConfidence(source = "playhead") {
       return;
     }
 
-    if (isBlackout) {
-      setTrackBlackout(track, false);
+    if (isBlackout && !track.__awaitingCleanVisualFrame) {
+      revealTrackCleanVisual(track);
       corrected = true;
     }
   });
@@ -10258,6 +10625,10 @@ function normalizeSessionTrack(rawTrack, index) {
     lastStep: -1,
     nextTriggerAt: 0,
     stepMs: 0,
+    playbackPhase: PLAYBACK_PHASES.idle,
+    mediaStatus: rawTrack?.source ? getTrackMediaStatus(rawTrack, rawTrack.source) : "empty",
+    mediaStatusDetails: null,
+    audioFxStatus: rawTrack?.source ? "waiting" : "empty",
   };
   normalizeTrackPreferences(track);
   return track;
@@ -10466,7 +10837,7 @@ function renderRecentSessionMenu() {
 }
 
 function captureTrackClip(track) {
-  return {
+  return normalizeClipState({
     source: track.source,
     colorIndex: getArrangementSceneColorIndex(arrangement?.step),
     durationFilter: track.durationFilter,
@@ -10479,14 +10850,11 @@ function captureTrackClip(track) {
     speed: track.speed,
     pitch: track.pitch,
     fx: { ...track.fx },
-  };
+  }, track);
 }
 
 function cloneArrangementClip(clip) {
-  return {
-    ...clip,
-    fx: { ...clip.fx },
-  };
+  return normalizeClipState(clip);
 }
 
 function cloneArrangementStep(step) {
@@ -10959,6 +11327,17 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+window.freemixPlaybackEngine = Object.freeze({
+  start: startTransport,
+  stop: stopTransport,
+  hardStop: hardStopPlayback,
+  triggerTrack,
+  getActiveEditTarget,
+  getClipRetriggerStepMs,
+  normalizeClipState,
+  verifyTrackAudioFxRoute,
+});
 
 window.freemixRenderDebugPanel = window.freemixRenderDebugPanel || null;
 

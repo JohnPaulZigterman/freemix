@@ -10,7 +10,8 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "smoke": "node scripts/smoke-test.js",
+    "test": "npm run smoke",
     "start": "node server.js"
   },
   "repository": {
