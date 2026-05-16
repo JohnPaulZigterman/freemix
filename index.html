@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FREEMIX VM-420</title>
+    <script>
+      (() => {
+        try {
+          document.documentElement.dataset.theme = localStorage.getItem("freemixTheme") || "standard";
+        } catch {
+          document.documentElement.dataset.theme = "standard";
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -30,6 +39,17 @@
             </div>
             <input id="sessionFileInput" type="file" accept="application/json,.json" hidden />
           </div>
+          <label class="theme-menu">
+            <span>Theme</span>
+            <select id="themeSelect" aria-label="Interface theme">
+              <option value="standard">Standard</option>
+              <option value="hardware">90s Hardware</option>
+              <option value="minimal">Hyper Minimal</option>
+              <option value="scifi">Sci-Fi</option>
+              <option value="antique">Antique</option>
+              <option value="aero">Frutiger Aero</option>
+            </select>
+          </label>
           <span class="status-pill" id="statusPill">Ready</span>
         </div>
       </section>
@@ -53,6 +73,27 @@
       } else {
         window.freemixDebugEnabled = false;
       }
+    </script>
+    <script>
+      (() => {
+        const select = document.getElementById("themeSelect");
+        if (!select) {
+          return;
+        }
+
+        const applyTheme = (theme) => {
+          const nextTheme = theme || "hardware";
+          document.documentElement.dataset.theme = nextTheme;
+          try {
+            localStorage.setItem("freemixTheme", nextTheme);
+          } catch {
+            // Theme persistence is optional; switching still works for this page load.
+          }
+        };
+
+        select.value = document.documentElement.dataset.theme || "standard";
+        select.addEventListener("change", () => applyTheme(select.value));
+      })();
     </script>
   </body>
 </html>

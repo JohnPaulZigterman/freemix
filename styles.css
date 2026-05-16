@@ -3482,3 +3482,1592 @@ body::after {
     linear-gradient(110deg, transparent 0 28%, rgba(255, 255, 255, 0.16) 42%, transparent 58% 100%);
   border-color: rgba(255, 255, 255, 0.08);
 }
+
+/* 90s hardware workstation presentation pass */
+:root {
+  --case-black: #050607;
+  --case-plastic: #15191b;
+  --case-plastic-hi: #2b3135;
+  --case-plastic-low: #07090a;
+  --case-groove: #3a4247;
+  --lcd-green: #9bea77;
+  --lcd-bg: #10190f;
+  --rubber: #101214;
+  --rubber-hi: #272d31;
+  --warning-amber: #d58b2e;
+  --legend-tan: #c8b891;
+  --hardware-blue: #5d7fa2;
+  --panel:
+    #11161a;
+  --aged-metal:
+    #14191c;
+  --control:
+    #161c20;
+  --control-hot:
+    #252d32;
+  --line:
+    #293137;
+  --line-hot:
+    #4a535a;
+  --accent:
+    var(--lcd-green);
+  --phosphor:
+    var(--lcd-green);
+  --crt-orange:
+    var(--warning-amber);
+  --radius-panel: 6px;
+  --radius-control: 3px;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at 50% -8%, rgba(120, 139, 150, 0.18), transparent 38%),
+    linear-gradient(180deg, #0d1114 0, #030405 48%, #000 100%);
+}
+
+body::before {
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 2px, transparent 2px 8px),
+    radial-gradient(circle at 18% 10%, rgba(155, 234, 119, 0.035), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(213, 139, 46, 0.035), transparent 27%);
+  mix-blend-mode: normal;
+  opacity: 0.36;
+}
+
+body::after {
+  background:
+    radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.58) 100%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.018), transparent 32%, rgba(0, 0, 0, 0.22));
+  opacity: 0.74;
+}
+
+.app-shell {
+  width: min(1000px, calc(100vw - 10px));
+  padding: 5px;
+  border: 1px solid #020303;
+  border-top-color: rgba(255, 255, 255, 0.14);
+  border-left-color: rgba(255, 255, 255, 0.1);
+  border-radius: 14px 12px 16px 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 12%),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 11px),
+    linear-gradient(145deg, var(--case-plastic-hi), var(--case-plastic) 42%, var(--case-plastic-low));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -5px 10px rgba(0, 0, 0, 0.62),
+    inset 7px 0 12px rgba(255, 255, 255, 0.025),
+    inset -8px 0 12px rgba(0, 0, 0, 0.38),
+    0 20px 44px rgba(0, 0, 0, 0.76);
+}
+
+.app-shell::before,
+.app-shell::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.38) 0 4px, rgba(255, 255, 255, 0.05) 4px 5px, transparent 5px 11px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.5));
+  opacity: 0.42;
+}
+
+.app-shell::before {
+  left: 5px;
+}
+
+.app-shell::after {
+  right: 5px;
+  transform: scaleX(-1);
+}
+
+.search-panel,
+.player-panel,
+.transport,
+.arrangement-panel,
+.control-bank,
+.track-row,
+.launch-pad {
+  border-color: #050708;
+  border-top-color: rgba(255, 255, 255, 0.16);
+  border-left-color: rgba(255, 255, 255, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.105), transparent 18%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 7px),
+    linear-gradient(145deg, #20262a, #121719 54%, #07090a);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.72),
+    inset 2px 0 0 rgba(255, 255, 255, 0.028),
+    0 9px 20px rgba(0, 0, 0, 0.5);
+}
+
+.brand-row {
+  min-height: 27px;
+  padding: 4px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.78);
+  border-top-color: rgba(255, 255, 255, 0.1);
+  border-radius: 9px 7px 9px 7px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 44%),
+    repeating-linear-gradient(90deg, transparent 0 9px, rgba(255, 255, 255, 0.045) 9px 10px),
+    #111619;
+}
+
+.brand-title {
+  padding: 4px 12px 4px 13px;
+  border-radius: 999px;
+  color: #f2f5f7;
+  font-family: "Arial Narrow", "Trebuchet MS", var(--font-mech);
+  letter-spacing: 0.2em;
+  background:
+    linear-gradient(105deg, transparent 0 22%, rgba(255, 255, 255, 0.28) 38%, transparent 52% 100%),
+    linear-gradient(180deg, #596269 0, #20282d 42%, #080a0b 100%);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.95),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.76),
+    0 3px 8px rgba(0, 0, 0, 0.62);
+}
+
+.status-pill,
+.export-status,
+input[type="search"],
+input[type="number"],
+select {
+  border-color: rgba(155, 234, 119, 0.24);
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.08), rgba(0, 0, 0, 0.18)),
+    repeating-linear-gradient(0deg, rgba(155, 234, 119, 0.035) 0 1px, transparent 1px 4px),
+    var(--lcd-bg);
+  color: var(--lcd-green);
+  text-shadow: 0 0 7px rgba(155, 234, 119, 0.22);
+}
+
+.status-pill {
+  border-radius: 4px 2px 4px 2px;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.7),
+    inset 0 0 12px rgba(0, 0, 0, 0.58);
+}
+
+.file-menu-button,
+.transport-button,
+.track-toggle,
+.track-advanced-toggle,
+.arrangement-toggle,
+.arrangement-copy,
+.arrangement-delete,
+.arrangement-clear,
+.arrangement-clear-action,
+.arrangement-action,
+.launch-button,
+.debug-action-button,
+.track-add-button,
+.metronome-button {
+  border-color: #050708;
+  border-top-color: rgba(255, 255, 255, 0.18);
+  border-left-color: rgba(255, 255, 255, 0.1);
+  border-radius: 5px 3px 6px 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent 32%),
+    linear-gradient(180deg, var(--rubber-hi), var(--rubber) 58%, #060708);
+  color: #d8ddd9;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.72),
+    0 1px 0 rgba(255, 255, 255, 0.05),
+    0 2px 4px rgba(0, 0, 0, 0.38);
+}
+
+.file-menu-button:hover,
+.transport-button:hover,
+.track-toggle:hover,
+.track-advanced-toggle:hover,
+.arrangement-toggle:hover,
+.arrangement-copy:hover,
+.arrangement-delete:hover,
+.arrangement-clear:hover,
+.arrangement-clear-action:hover,
+.arrangement-action:hover,
+.launch-button:hover,
+.debug-action-button:hover,
+.track-add-button:hover,
+.metronome-button:hover {
+  border-top-color: rgba(255, 255, 255, 0.32);
+  color: #fff9df;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.21), transparent 34%),
+    linear-gradient(180deg, #343c42, #171d21 60%, #08090a);
+}
+
+.transport-button.active,
+.metronome-button.active,
+.arrangement-toggle.active,
+.track-advanced-toggle[aria-pressed="true"] {
+  border-color: rgba(155, 234, 119, 0.38);
+  border-top-color: rgba(215, 255, 180, 0.55);
+  background:
+    linear-gradient(180deg, rgba(214, 255, 179, 0.2), rgba(29, 69, 28, 0.82)),
+    var(--lcd-bg);
+  color: #d9ffbd;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.8),
+    0 0 13px rgba(155, 234, 119, 0.2);
+}
+
+.track-toggle[aria-pressed="true"],
+.arrangement-delete.active {
+  border-color: rgba(213, 139, 46, 0.52);
+  background:
+    linear-gradient(180deg, rgba(244, 164, 65, 0.2), rgba(68, 31, 9, 0.86)),
+    #120b04;
+  color: #ffd29a;
+  text-shadow: 0 0 8px rgba(213, 139, 46, 0.32);
+}
+
+.panel-label,
+.control-field span,
+.control-field-label,
+.fx-label,
+.track-source-label,
+.arrangement-toolbar label,
+.arrangement-track-label,
+.arrangement-step-label,
+.arrangement-corner {
+  color: var(--legend-tan);
+  font-family: "Arial Narrow", "Trebuchet MS", var(--font-mech);
+  letter-spacing: 0.16em;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.85);
+}
+
+.transport::after,
+.control-bank::after,
+.arrangement-panel::after,
+.track-row::after {
+  opacity: 0.24;
+  border-color: rgba(255, 255, 255, 0.075);
+}
+
+.meter {
+  border-radius: 6px 3px 6px 3px;
+  border-color: #040505;
+  border-top-color: rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.08), transparent),
+    var(--lcd-bg);
+}
+
+.meter::before {
+  color: var(--legend-tan);
+  background: #151a1d;
+  border: 1px solid rgba(0, 0, 0, 0.65);
+  border-radius: 2px;
+}
+
+.beat-light {
+  border-radius: 2px;
+  border-color: rgba(155, 234, 119, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent),
+    #172516;
+}
+
+.beat-light.active {
+  background:
+    linear-gradient(180deg, #ffe7ad, #d58b2e 54%, #5f2c08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 0 15px rgba(213, 139, 46, 0.64);
+}
+
+.video-matrix {
+  border-width: 9px;
+  border-radius: 18px 15px 20px 16px;
+  border-color: #090b0c;
+  background:
+    radial-gradient(ellipse at center, rgba(7, 15, 12, 0.94), #010202 78%),
+    #010202;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 0 0 4px #1b2023,
+    inset 0 0 0 2px rgba(255, 255, 255, 0.035),
+    inset 0 0 32px rgba(0, 0, 0, 0.88),
+    0 18px 34px rgba(0, 0, 0, 0.72);
+}
+
+.video-matrix::before {
+  opacity: 0.045;
+}
+
+.video-matrix::after {
+  opacity: 0.18;
+}
+
+.video-cell {
+  background: #010202;
+}
+
+.arrangement-panel {
+  padding: 4px;
+}
+
+.arrangement-grid {
+  padding: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.72);
+  border-top-color: rgba(255, 255, 255, 0.08);
+  border-radius: 7px 5px 8px 5px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 24%),
+    #0a0d0f;
+}
+
+.arrangement-cell {
+  border-radius: 6px 3px 6px 3px;
+  border-color: rgba(0, 0, 0, 0.78);
+  border-top-color: rgba(255, 255, 255, 0.15);
+  border-left-color: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(0, 0, 0, 0.28)),
+    #111518;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.66);
+}
+
+.arrangement-cell.filled {
+  border-top-color: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 48%, #fff 28%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--scene-track-color, var(--track-color)) 32%, rgba(255, 255, 255, 0.18)), rgba(0, 0, 0, 0.36)),
+    color-mix(in srgb, var(--scene-track-color, var(--track-color)) 50%, #07090a);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.58),
+    0 2px 4px rgba(0, 0, 0, 0.34);
+}
+
+.arrangement-cell.selected,
+.arrangement-cell:focus-visible {
+  border-color: #efe2a4;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 0 2px rgba(239, 226, 164, 0.42),
+    0 0 18px rgba(239, 226, 164, 0.2);
+}
+
+.arrangement-cell.playing {
+  border-color: var(--warning-amber);
+  box-shadow:
+    inset 0 0 0 2px rgba(213, 139, 46, 0.66),
+    0 0 0 2px rgba(213, 139, 46, 0.42),
+    0 0 20px rgba(213, 139, 46, 0.3);
+}
+
+.arrangement-track-label,
+.arrangement-step-label,
+.arrangement-corner {
+  border-color: rgba(0, 0, 0, 0.7);
+  border-top-color: rgba(255, 255, 255, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), transparent 38%),
+    #121719;
+}
+
+.control-field,
+.fx-field,
+.track-source,
+.track-channel-row--top,
+.track-channel-row--bottom {
+  border: 1px solid rgba(0, 0, 0, 0.58);
+  border-top-color: rgba(255, 255, 255, 0.07);
+  border-radius: 5px 3px 5px 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 42%),
+    rgba(1, 2, 3, 0.28);
+}
+
+input[type="range"] {
+  accent-color: var(--lcd-green);
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  border: 1px solid rgba(0, 0, 0, 0.78);
+  border-top-color: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(90deg, rgba(200, 184, 145, 0.22) 0 1px, transparent 1px 12px),
+    linear-gradient(180deg, #060708, #1c2420 52%, #050606);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.8),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+input[type="range"]::-moz-range-track {
+  border: 1px solid rgba(0, 0, 0, 0.78);
+  border-top-color: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background:
+    repeating-linear-gradient(90deg, rgba(200, 184, 145, 0.22) 0 1px, transparent 1px 12px),
+    linear-gradient(180deg, #060708, #1c2420 52%, #050606);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  border-radius: 3px 1px 3px 1px;
+  border-color: #060708;
+  background:
+    linear-gradient(90deg, transparent 0 38%, rgba(0, 0, 0, 0.34) 38% 44%, rgba(255, 255, 255, 0.2) 45% 51%, rgba(0, 0, 0, 0.34) 52% 58%, transparent 58%),
+    linear-gradient(180deg, #d4c8a5, #73694e 58%, #252116);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 2px 4px rgba(0, 0, 0, 0.54);
+}
+
+input[type="range"]::-moz-range-thumb {
+  border-radius: 3px 1px 3px 1px;
+  border-color: #060708;
+  background:
+    linear-gradient(90deg, transparent 0 38%, rgba(0, 0, 0, 0.34) 38% 44%, rgba(255, 255, 255, 0.2) 45% 51%, rgba(0, 0, 0, 0.34) 52% 58%, transparent 58%),
+    linear-gradient(180deg, #d4c8a5, #73694e 58%, #252116);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 2px 4px rgba(0, 0, 0, 0.54);
+}
+
+.track-results,
+.file-menu-panel {
+  border-color: rgba(0, 0, 0, 0.82);
+  border-top-color: rgba(255, 255, 255, 0.16);
+  border-radius: 9px 7px 8px 6px;
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.055), rgba(0, 0, 0, 0.22) 38%),
+    repeating-linear-gradient(0deg, rgba(155, 234, 119, 0.018) 0 1px, transparent 1px 5px),
+    rgba(3, 5, 4, 0.985);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.62),
+    0 20px 44px rgba(0, 0, 0, 0.78);
+}
+
+.track-results::before {
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.12), rgba(0, 0, 0, 0.4)),
+    #11180f;
+  color: var(--lcd-green);
+}
+
+.result-card,
+.search-result,
+.track-result {
+  border-color: rgba(155, 234, 119, 0.13);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(0, 0, 0, 0.18)),
+    rgba(255, 255, 255, 0.025);
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 3px;
+    border-radius: 10px;
+  }
+
+  .app-shell::before,
+  .app-shell::after {
+    display: none;
+  }
+
+  .brand-row {
+    padding: 3px;
+  }
+
+  .video-matrix {
+    border-width: 6px;
+    border-radius: 13px;
+  }
+}
+
+/* Sleeker hardware cleanup: reduce visual grid/noise density */
+body::before {
+  background:
+    radial-gradient(circle at 18% 10%, rgba(155, 234, 119, 0.025), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(213, 139, 46, 0.025), transparent 27%);
+  opacity: 0.22;
+}
+
+body::after {
+  background:
+    radial-gradient(ellipse at center, transparent 46%, rgba(0, 0, 0, 0.58) 100%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.012), transparent 34%, rgba(0, 0, 0, 0.18));
+  opacity: 0.62;
+}
+
+.app-shell {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.095), transparent 12%),
+    linear-gradient(145deg, var(--case-plastic-hi), var(--case-plastic) 45%, var(--case-plastic-low));
+}
+
+.app-shell::before,
+.app-shell::after {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07), rgba(0, 0, 0, 0.48));
+  opacity: 0.22;
+}
+
+.search-panel,
+.player-panel,
+.transport,
+.arrangement-panel,
+.control-bank,
+.track-row,
+.launch-pad {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.095), transparent 18%),
+    linear-gradient(145deg, #20262a, #121719 56%, #07090a);
+}
+
+.brand-row {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), transparent 44%),
+    #111619;
+}
+
+.status-pill,
+.export-status,
+input[type="search"],
+input[type="number"],
+select {
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.07), rgba(0, 0, 0, 0.16)),
+    var(--lcd-bg);
+}
+
+.transport {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.09), transparent 18%),
+    linear-gradient(145deg, #20262a, #111619 58%, #07090a);
+}
+
+.video-matrix::before {
+  opacity: 0.025;
+}
+
+.arrangement-grid {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 24%),
+    #0a0d0f;
+}
+
+.arrangement-cell.filled.has-density-bars {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.48) 0,
+      rgba(0, 0, 0, 0.48) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.12) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.12) calc(100% / var(--clip-density-count, 2))
+    ),
+    linear-gradient(180deg, color-mix(in srgb, var(--scene-track-color, var(--track-color)) 36%, rgba(255, 255, 255, 0.12)), rgba(0, 0, 0, 0.32)),
+    color-mix(in srgb, var(--scene-track-color, var(--track-color)) 48%, #07090a);
+}
+
+.control-field,
+.fx-field,
+.track-source,
+.track-channel-row--top,
+.track-channel-row--bottom {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
+    rgba(1, 2, 3, 0.22);
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(180deg, #060708, #18201d 52%, #050606);
+}
+
+input[type="range"]::-moz-range-track {
+  background:
+    linear-gradient(180deg, #060708, #18201d 52%, #050606);
+}
+
+.track-results,
+.file-menu-panel {
+  background:
+    linear-gradient(180deg, rgba(155, 234, 119, 0.045), rgba(0, 0, 0, 0.2) 38%),
+    rgba(3, 5, 4, 0.985);
+}
+
+/* Rich blue accent conversion */
+:root {
+  --lcd-green: #6fb7ff;
+  --lcd-bg: #07111c;
+  --phosphor: #6fb7ff;
+  --phosphor-dim: #1e4c75;
+  --accent: #6fb7ff;
+  --accent-dark: #2c689b;
+  --accent-soft: #102236;
+  --active-emerald: #183754;
+  --hardware-blue: #6fb7ff;
+}
+
+body::before {
+  background:
+    radial-gradient(circle at 18% 10%, rgba(111, 183, 255, 0.03), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(213, 139, 46, 0.024), transparent 27%);
+}
+
+.status-pill,
+.export-status,
+input[type="search"],
+input[type="number"],
+select {
+  border-color: rgba(111, 183, 255, 0.28);
+  background:
+    linear-gradient(180deg, rgba(111, 183, 255, 0.08), rgba(0, 0, 0, 0.16)),
+    var(--lcd-bg);
+  color: #9dccff;
+  text-shadow: 0 0 7px rgba(111, 183, 255, 0.24);
+}
+
+.transport-button.active,
+.metronome-button.active,
+.arrangement-toggle.active,
+.track-advanced-toggle[aria-pressed="true"] {
+  border-color: rgba(111, 183, 255, 0.44);
+  border-top-color: rgba(173, 215, 255, 0.58);
+  background:
+    linear-gradient(180deg, rgba(133, 200, 255, 0.22), rgba(22, 58, 92, 0.86)),
+    var(--lcd-bg);
+  color: #c7e3ff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.8),
+    0 0 13px rgba(111, 183, 255, 0.2);
+}
+
+.meter {
+  border-color: #040505;
+  background:
+    linear-gradient(180deg, rgba(111, 183, 255, 0.07), transparent),
+    var(--lcd-bg);
+}
+
+.meter::before,
+.panel-label,
+.control-field span,
+.control-field-label,
+.fx-label,
+.track-source-label,
+.arrangement-toolbar label,
+.arrangement-track-label,
+.arrangement-step-label,
+.arrangement-corner {
+  color: color-mix(in srgb, #9dccff 58%, var(--legend-tan) 42%);
+}
+
+.beat-light {
+  border-color: rgba(111, 183, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent),
+    #111e2c;
+}
+
+.video-matrix {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 0 0 4px #1b2023,
+    inset 0 0 0 2px rgba(255, 255, 255, 0.035),
+    inset 0 0 32px rgba(0, 0, 0, 0.88),
+    0 18px 34px rgba(0, 0, 0, 0.72);
+}
+
+.video-matrix::after {
+  border-color: rgba(111, 183, 255, 0.07);
+}
+
+.arrangement-track-label,
+.arrangement-step-label,
+.arrangement-corner {
+  background:
+    linear-gradient(180deg, rgba(111, 183, 255, 0.055), transparent 38%),
+    #121719;
+}
+
+input[type="range"] {
+  accent-color: #6fb7ff;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(180deg, #060708, #151f2b 52%, #050606);
+}
+
+input[type="range"]::-moz-range-track {
+  background:
+    linear-gradient(180deg, #060708, #151f2b 52%, #050606);
+}
+
+.track-results,
+.file-menu-panel {
+  background:
+    linear-gradient(180deg, rgba(111, 183, 255, 0.052), rgba(0, 0, 0, 0.2) 38%),
+    rgba(3, 5, 7, 0.985);
+}
+
+.track-results::before {
+  background:
+    linear-gradient(180deg, rgba(111, 183, 255, 0.12), rgba(0, 0, 0, 0.4)),
+    #0a1420;
+  color: #9dccff;
+}
+
+.result-card,
+.search-result,
+.track-result {
+  border-color: rgba(111, 183, 255, 0.13);
+}
+
+/* User-selectable presentation themes */
+.theme-menu {
+  display: inline-grid;
+  grid-template-columns: auto minmax(110px, 130px);
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-width: 0;
+  color: color-mix(in srgb, #9dccff 58%, var(--legend-tan) 42%);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.theme-menu select {
+  width: 100%;
+  min-height: var(--control-h-sm);
+  padding: 1px 18px 1px 6px;
+  font-size: 0.58rem;
+}
+
+html[data-theme="standard"] {
+  --bg: #07090c;
+  --panel: #141a20;
+  --panel-strong: #080b0f;
+  --panel-alt: #1d242c;
+  --aged-metal: #171d23;
+  --aged-metal-bright: #333c46;
+  --control: #1b232c;
+  --control-hot: #2d3743;
+  --line: #2d3641;
+  --line-hot: #4b5664;
+  --accent: #8fb3d9;
+  --accent-dark: #4f7196;
+  --accent-soft: #182738;
+  --phosphor: #8fb3d9;
+  --phosphor-dim: #37536f;
+  --lcd-green: #8fb3d9;
+  --lcd-bg: #101720;
+  --warning-amber: #d99b45;
+  --legend-tan: #bdc8d4;
+  --radius-panel: 3px;
+  --radius-control: 2px;
+}
+
+html[data-theme="standard"] body::before,
+html[data-theme="standard"] body::after {
+  opacity: 0.18;
+}
+
+html[data-theme="standard"] .app-shell {
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="standard"] .app-shell::before,
+html[data-theme="standard"] .app-shell::after {
+  display: none;
+}
+
+html[data-theme="standard"] .search-panel,
+html[data-theme="standard"] .player-panel,
+html[data-theme="standard"] .transport,
+html[data-theme="standard"] .arrangement-panel,
+html[data-theme="standard"] .control-bank,
+html[data-theme="standard"] .track-row,
+html[data-theme="standard"] .launch-pad {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 32%),
+    #141a20;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 8px 20px rgba(0, 0, 0, 0.42);
+}
+
+html[data-theme="standard"] .brand-row {
+  background: transparent;
+  border: 0;
+}
+
+html[data-theme="standard"] .brand-title {
+  border-radius: 3px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.2)),
+    #151b22;
+}
+
+html[data-theme="minimal"] {
+  --bg: #070707;
+  --panel: #111;
+  --panel-strong: #050505;
+  --panel-alt: #171717;
+  --aged-metal: #111;
+  --aged-metal-bright: #272727;
+  --control: #151515;
+  --control-hot: #222;
+  --line: #2a2a2a;
+  --line-hot: #3c3c3c;
+  --accent: #d8d8d8;
+  --accent-dark: #8c8c8c;
+  --accent-soft: #1b1b1b;
+  --phosphor: #e0e0e0;
+  --phosphor-dim: #686868;
+  --lcd-green: #e0e0e0;
+  --lcd-bg: #090909;
+  --warning-amber: #c9c9c9;
+  --legend-tan: #a8a8a8;
+  --clip-selected: #ffffff;
+  --clip-playing: #ffffff;
+  --radius-panel: 1px;
+  --radius-control: 1px;
+}
+
+html[data-theme="minimal"] body {
+  background: #050505;
+}
+
+html[data-theme="minimal"] body::before,
+html[data-theme="minimal"] body::after,
+html[data-theme="minimal"] .app-shell::before,
+html[data-theme="minimal"] .app-shell::after,
+html[data-theme="minimal"] .search-panel::before,
+html[data-theme="minimal"] .player-panel::before,
+html[data-theme="minimal"] .transport::before,
+html[data-theme="minimal"] .arrangement-panel::before,
+html[data-theme="minimal"] .control-bank::before,
+html[data-theme="minimal"] .track-row::before,
+html[data-theme="minimal"] .video-matrix::before,
+html[data-theme="minimal"] .arrangement-cell::before,
+html[data-theme="minimal"] .search-panel::after,
+html[data-theme="minimal"] .player-panel::after,
+html[data-theme="minimal"] .transport::after,
+html[data-theme="minimal"] .arrangement-panel::after,
+html[data-theme="minimal"] .control-bank::after,
+html[data-theme="minimal"] .track-row::after,
+html[data-theme="minimal"] .arrangement-cell::after {
+  display: none;
+}
+
+html[data-theme="minimal"] .app-shell,
+html[data-theme="minimal"] .search-panel,
+html[data-theme="minimal"] .player-panel,
+html[data-theme="minimal"] .transport,
+html[data-theme="minimal"] .arrangement-panel,
+html[data-theme="minimal"] .control-bank,
+html[data-theme="minimal"] .track-row,
+html[data-theme="minimal"] .launch-pad,
+html[data-theme="minimal"] .brand-row,
+html[data-theme="minimal"] .arrangement-grid,
+html[data-theme="minimal"] .control-field,
+html[data-theme="minimal"] .fx-field,
+html[data-theme="minimal"] .track-source,
+html[data-theme="minimal"] .track-channel-row--top,
+html[data-theme="minimal"] .track-channel-row--bottom {
+  background: #101010;
+  border-color: #272727;
+  box-shadow: none;
+}
+
+html[data-theme="minimal"] .brand-title,
+html[data-theme="minimal"] .status-pill,
+html[data-theme="minimal"] .file-menu-button,
+html[data-theme="minimal"] .transport-button,
+html[data-theme="minimal"] .track-toggle,
+html[data-theme="minimal"] .track-advanced-toggle,
+html[data-theme="minimal"] .arrangement-toggle,
+html[data-theme="minimal"] .arrangement-copy,
+html[data-theme="minimal"] .arrangement-delete,
+html[data-theme="minimal"] .arrangement-clear,
+html[data-theme="minimal"] .arrangement-action,
+html[data-theme="minimal"] .launch-button,
+html[data-theme="minimal"] select,
+html[data-theme="minimal"] input[type="number"],
+html[data-theme="minimal"] input[type="search"] {
+  background: #0b0b0b;
+  color: #e8e8e8;
+  border-color: #303030;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+html[data-theme="scifi"] {
+  --bg: #02060c;
+  --panel: #08111f;
+  --panel-strong: #020710;
+  --panel-alt: #0c1b31;
+  --aged-metal: #07101c;
+  --aged-metal-bright: #183452;
+  --control: #0a1728;
+  --control-hot: #132b48;
+  --line: #193a5a;
+  --line-hot: #3c8ac4;
+  --accent: #34d9ff;
+  --accent-dark: #147aa4;
+  --accent-soft: #05263a;
+  --phosphor: #34d9ff;
+  --phosphor-dim: #0f607a;
+  --lcd-green: #34d9ff;
+  --lcd-bg: #03101c;
+  --warning-amber: #ff4fd8;
+  --legend-tan: #8ee9ff;
+  --clip-selected: #d8fbff;
+  --clip-playing: #ff4fd8;
+}
+
+html[data-theme="scifi"] body {
+  background:
+    radial-gradient(circle at 48% -12%, rgba(52, 217, 255, 0.2), transparent 34%),
+    radial-gradient(circle at 78% 4%, rgba(255, 79, 216, 0.1), transparent 26%),
+    #02060c;
+}
+
+html[data-theme="scifi"] .app-shell,
+html[data-theme="scifi"] .search-panel,
+html[data-theme="scifi"] .player-panel,
+html[data-theme="scifi"] .transport,
+html[data-theme="scifi"] .arrangement-panel,
+html[data-theme="scifi"] .control-bank,
+html[data-theme="scifi"] .track-row,
+html[data-theme="scifi"] .launch-pad {
+  background:
+    linear-gradient(180deg, rgba(52, 217, 255, 0.08), transparent 22%),
+    linear-gradient(145deg, #102033, #06101c 58%, #02050a);
+  border-color: rgba(52, 217, 255, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    0 0 0 1px rgba(52, 217, 255, 0.08),
+    0 16px 34px rgba(0, 0, 0, 0.68);
+}
+
+html[data-theme="scifi"] .video-matrix {
+  border-color: #07111d;
+  box-shadow:
+    0 0 0 1px rgba(52, 217, 255, 0.2),
+    0 0 22px rgba(52, 217, 255, 0.08),
+    inset 0 0 34px rgba(0, 0, 0, 0.88);
+}
+
+html[data-theme="scifi"] .status-pill,
+html[data-theme="scifi"] .export-status,
+html[data-theme="scifi"] .brand-title {
+  text-shadow:
+    0 0 8px rgba(52, 217, 255, 0.55),
+    0 0 20px rgba(52, 217, 255, 0.2);
+}
+
+html[data-theme="antique"] {
+  --bg: #100b06;
+  --panel: #24180f;
+  --panel-strong: #0b0704;
+  --panel-alt: #302215;
+  --aged-metal: #2c2117;
+  --aged-metal-bright: #6a5334;
+  --control: #2a2118;
+  --control-hot: #4a3825;
+  --line: #5a4328;
+  --line-hot: #917044;
+  --accent: #d8a95f;
+  --accent-dark: #8b6233;
+  --accent-soft: #2d2012;
+  --phosphor: #e1b66d;
+  --phosphor-dim: #735225;
+  --lcd-green: #e1b66d;
+  --lcd-bg: #1b1208;
+  --warning-amber: #e6783f;
+  --legend-tan: #e0c28d;
+  --clip-selected: #f5d890;
+  --clip-playing: #e6783f;
+}
+
+html[data-theme="antique"] body {
+  background:
+    radial-gradient(circle at 50% -10%, rgba(216, 169, 95, 0.18), transparent 36%),
+    linear-gradient(180deg, #20150d, #080503 72%);
+}
+
+html[data-theme="antique"] .app-shell,
+html[data-theme="antique"] .search-panel,
+html[data-theme="antique"] .player-panel,
+html[data-theme="antique"] .transport,
+html[data-theme="antique"] .arrangement-panel,
+html[data-theme="antique"] .control-bank,
+html[data-theme="antique"] .track-row,
+html[data-theme="antique"] .launch-pad {
+  background:
+    linear-gradient(180deg, rgba(255, 228, 167, 0.09), transparent 20%),
+    linear-gradient(145deg, #3c2e1d, #1f160e 56%, #090604);
+  border-color: #090604;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 230, 178, 0.16),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.72),
+    0 14px 30px rgba(0, 0, 0, 0.64);
+}
+
+html[data-theme="antique"] .brand-title {
+  background:
+    linear-gradient(105deg, transparent 0 20%, rgba(255, 232, 176, 0.28) 38%, transparent 56%),
+    linear-gradient(180deg, #80633d, #2b1e12 58%, #090604);
+}
+
+html[data-theme="antique"] .video-matrix {
+  border-color: #1b1209;
+  box-shadow:
+    0 0 0 4px #3b2b18,
+    inset 0 0 32px rgba(0, 0, 0, 0.9),
+    0 18px 34px rgba(0, 0, 0, 0.72);
+}
+
+html[data-theme="aero"] {
+  --bg: #d8f1ff;
+  --panel: rgba(224, 245, 255, 0.64);
+  --panel-strong: rgba(30, 81, 122, 0.7);
+  --panel-alt: rgba(174, 220, 247, 0.72);
+  --aged-metal: rgba(115, 174, 213, 0.52);
+  --aged-metal-bright: rgba(255, 255, 255, 0.78);
+  --control: rgba(226, 247, 255, 0.68);
+  --control-hot: rgba(255, 255, 255, 0.84);
+  --line: rgba(65, 128, 176, 0.38);
+  --line-hot: rgba(255, 255, 255, 0.72);
+  --accent: #178fe6;
+  --accent-dark: #0f65aa;
+  --accent-soft: rgba(122, 200, 255, 0.22);
+  --phosphor: #116aae;
+  --phosphor-dim: #4d8ec4;
+  --lcd-green: #147fd1;
+  --lcd-bg: rgba(230, 249, 255, 0.76);
+  --warning-amber: #ff9d2d;
+  --legend-tan: #1a5d91;
+  --ink: #08253d;
+  --ink-soft: #164b76;
+  --muted: #376d94;
+  --clip-selected: #ffffff;
+  --clip-playing: #ff9d2d;
+  --radius-panel: 12px;
+  --radius-control: 8px;
+}
+
+html[data-theme="aero"] body {
+  color: #08253d;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(255, 255, 255, 0.95), transparent 22%),
+    radial-gradient(circle at 74% 6%, rgba(117, 219, 255, 0.7), transparent 28%),
+    linear-gradient(180deg, #dff6ff, #7ec8f2 48%, #2d78b6 100%);
+}
+
+html[data-theme="aero"] body::before {
+  background:
+    radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.62), transparent 18%),
+    radial-gradient(circle at 82% 26%, rgba(181, 244, 255, 0.44), transparent 22%);
+  opacity: 0.82;
+}
+
+html[data-theme="aero"] body::after {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.24), transparent 42%),
+    radial-gradient(ellipse at center, transparent 64%, rgba(0, 54, 104, 0.24) 100%);
+  opacity: 0.8;
+}
+
+html[data-theme="aero"] .app-shell,
+html[data-theme="aero"] .search-panel,
+html[data-theme="aero"] .player-panel,
+html[data-theme="aero"] .transport,
+html[data-theme="aero"] .arrangement-panel,
+html[data-theme="aero"] .control-bank,
+html[data-theme="aero"] .track-row,
+html[data-theme="aero"] .launch-pad,
+html[data-theme="aero"] .brand-row {
+  border-color: rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.18) 46%, rgba(75, 158, 215, 0.22)),
+    rgba(179, 225, 250, 0.54);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 0 -1px 0 rgba(14, 87, 145, 0.18),
+    0 16px 32px rgba(12, 74, 123, 0.26);
+  backdrop-filter: blur(12px) saturate(145%);
+}
+
+html[data-theme="aero"] .brand-title,
+html[data-theme="aero"] .status-pill,
+html[data-theme="aero"] .export-status,
+html[data-theme="aero"] select,
+html[data-theme="aero"] input[type="number"],
+html[data-theme="aero"] input[type="search"] {
+  color: #06365b;
+  border-color: rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(145, 211, 248, 0.38)),
+    rgba(229, 249, 255, 0.62);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+html[data-theme="aero"] .file-menu-button,
+html[data-theme="aero"] .transport-button,
+html[data-theme="aero"] .track-toggle,
+html[data-theme="aero"] .track-advanced-toggle,
+html[data-theme="aero"] .arrangement-toggle,
+html[data-theme="aero"] .arrangement-copy,
+html[data-theme="aero"] .arrangement-delete,
+html[data-theme="aero"] .arrangement-clear,
+html[data-theme="aero"] .arrangement-action,
+html[data-theme="aero"] .launch-button {
+  color: #083f69;
+  border-color: rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(104, 188, 238, 0.42) 52%, rgba(41, 128, 199, 0.28));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 3px 8px rgba(17, 95, 154, 0.18);
+}
+
+html[data-theme="aero"] .video-matrix {
+  border-color: rgba(232, 250, 255, 0.78);
+  background: #07121a;
+  box-shadow:
+    0 0 0 4px rgba(64, 152, 219, 0.28),
+    inset 0 0 30px rgba(0, 0, 0, 0.82),
+    0 18px 36px rgba(14, 83, 142, 0.3);
+}
+
+/* Stronger theme differentiation pass */
+html[data-theme="hardware"] .app-shell {
+  padding: 7px;
+  border-width: 2px;
+  border-radius: 18px 14px 20px 15px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 10%),
+    radial-gradient(circle at 12px 12px, rgba(255, 255, 255, 0.22) 0 2px, rgba(0, 0, 0, 0.48) 3px 5px, transparent 6px),
+    radial-gradient(circle at calc(100% - 12px) 12px, rgba(255, 255, 255, 0.18) 0 2px, rgba(0, 0, 0, 0.5) 3px 5px, transparent 6px),
+    linear-gradient(145deg, #353b3d, #171b1d 42%, #050607);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -8px 16px rgba(0, 0, 0, 0.68),
+    inset 9px 0 14px rgba(255, 255, 255, 0.03),
+    inset -10px 0 18px rgba(0, 0, 0, 0.45),
+    0 24px 52px rgba(0, 0, 0, 0.82);
+}
+
+html[data-theme="hardware"] .search-panel,
+html[data-theme="hardware"] .player-panel,
+html[data-theme="hardware"] .transport,
+html[data-theme="hardware"] .arrangement-panel,
+html[data-theme="hardware"] .control-bank,
+html[data-theme="hardware"] .track-row,
+html[data-theme="hardware"] .launch-pad {
+  border-width: 2px;
+  border-radius: 10px 6px 12px 6px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), transparent 15%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.26)),
+    linear-gradient(145deg, #252b2e, #101416 58%, #050607);
+}
+
+html[data-theme="hardware"] .file-menu-button,
+html[data-theme="hardware"] .transport-button,
+html[data-theme="hardware"] .track-toggle,
+html[data-theme="hardware"] .track-advanced-toggle,
+html[data-theme="hardware"] .arrangement-toggle,
+html[data-theme="hardware"] .arrangement-copy,
+html[data-theme="hardware"] .arrangement-delete,
+html[data-theme="hardware"] .arrangement-clear,
+html[data-theme="hardware"] .arrangement-action,
+html[data-theme="hardware"] .launch-button,
+html[data-theme="hardware"] .metronome-button {
+  border-width: 2px;
+  border-radius: 8px 4px 9px 4px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 28%),
+    linear-gradient(180deg, #333a3e, #15191b 54%, #040506);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -4px 0 rgba(0, 0, 0, 0.78),
+    0 3px 0 rgba(0, 0, 0, 0.42);
+}
+
+html[data-theme="hardware"] .brand-title {
+  border-radius: 999px;
+  text-transform: uppercase;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.95),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.8),
+    0 5px 12px rgba(0, 0, 0, 0.72);
+}
+
+html[data-theme="hardware"] .video-matrix {
+  border-width: 12px;
+  border-radius: 22px 17px 24px 18px;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.9),
+    0 0 0 6px #202528,
+    inset 0 0 0 2px rgba(255, 255, 255, 0.04),
+    inset 0 0 36px rgba(0, 0, 0, 0.92),
+    0 22px 42px rgba(0, 0, 0, 0.78);
+}
+
+html[data-theme="standard"] body {
+  background: #080b0f;
+}
+
+html[data-theme="standard"] body::before,
+html[data-theme="standard"] body::after {
+  display: none;
+}
+
+html[data-theme="standard"] .search-panel,
+html[data-theme="standard"] .player-panel,
+html[data-theme="standard"] .transport,
+html[data-theme="standard"] .arrangement-panel,
+html[data-theme="standard"] .control-bank,
+html[data-theme="standard"] .track-row,
+html[data-theme="standard"] .launch-pad {
+  border-width: 1px;
+  border-radius: 4px;
+  background: #131922;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 8px 18px rgba(0, 0, 0, 0.34);
+}
+
+html[data-theme="standard"] .search-panel::before,
+html[data-theme="standard"] .player-panel::before,
+html[data-theme="standard"] .transport::before,
+html[data-theme="standard"] .arrangement-panel::before,
+html[data-theme="standard"] .control-bank::before,
+html[data-theme="standard"] .track-row::before,
+html[data-theme="standard"] .arrangement-cell::before,
+html[data-theme="standard"] .search-panel::after,
+html[data-theme="standard"] .player-panel::after,
+html[data-theme="standard"] .transport::after,
+html[data-theme="standard"] .arrangement-panel::after,
+html[data-theme="standard"] .control-bank::after,
+html[data-theme="standard"] .track-row::after,
+html[data-theme="standard"] .arrangement-cell::after {
+  display: none;
+}
+
+html[data-theme="standard"] .file-menu-button,
+html[data-theme="standard"] .transport-button,
+html[data-theme="standard"] .track-toggle,
+html[data-theme="standard"] .track-advanced-toggle,
+html[data-theme="standard"] .arrangement-toggle,
+html[data-theme="standard"] .arrangement-copy,
+html[data-theme="standard"] .arrangement-delete,
+html[data-theme="standard"] .arrangement-clear,
+html[data-theme="standard"] .arrangement-action,
+html[data-theme="standard"] .launch-button,
+html[data-theme="standard"] select,
+html[data-theme="standard"] input[type="number"],
+html[data-theme="standard"] input[type="search"] {
+  border-radius: 4px;
+  background: #0d1218;
+  box-shadow: none;
+}
+
+html[data-theme="standard"] .video-matrix {
+  border-width: 4px;
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 24px rgba(0, 0, 0, 0.76),
+    0 10px 24px rgba(0, 0, 0, 0.48);
+}
+
+html[data-theme="minimal"] .app-shell {
+  width: min(960px, calc(100vw - 18px));
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+}
+
+html[data-theme="minimal"] .brand-row {
+  min-height: auto;
+  padding: 0;
+  gap: 8px;
+}
+
+html[data-theme="minimal"] .brand-title {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0.86rem;
+  letter-spacing: 0.08em;
+}
+
+html[data-theme="minimal"] .theme-menu span {
+  display: none;
+}
+
+html[data-theme="minimal"] .search-panel,
+html[data-theme="minimal"] .player-panel,
+html[data-theme="minimal"] .transport,
+html[data-theme="minimal"] .arrangement-panel,
+html[data-theme="minimal"] .control-bank,
+html[data-theme="minimal"] .track-row,
+html[data-theme="minimal"] .launch-pad,
+html[data-theme="minimal"] .arrangement-grid,
+html[data-theme="minimal"] .control-field,
+html[data-theme="minimal"] .fx-field,
+html[data-theme="minimal"] .track-source,
+html[data-theme="minimal"] .track-channel-row--top,
+html[data-theme="minimal"] .track-channel-row--bottom {
+  background: transparent;
+  border-color: #1e1e1e;
+}
+
+html[data-theme="minimal"] .search-panel,
+html[data-theme="minimal"] .player-panel {
+  border: 0;
+}
+
+html[data-theme="minimal"] .transport,
+html[data-theme="minimal"] .arrangement-panel,
+html[data-theme="minimal"] .control-bank,
+html[data-theme="minimal"] .track-row {
+  border-width: 1px 0 0;
+  border-radius: 0;
+}
+
+html[data-theme="minimal"] .file-menu-button,
+html[data-theme="minimal"] .transport-button,
+html[data-theme="minimal"] .track-toggle,
+html[data-theme="minimal"] .track-advanced-toggle,
+html[data-theme="minimal"] .arrangement-toggle,
+html[data-theme="minimal"] .arrangement-copy,
+html[data-theme="minimal"] .arrangement-delete,
+html[data-theme="minimal"] .arrangement-clear,
+html[data-theme="minimal"] .arrangement-action,
+html[data-theme="minimal"] .launch-button,
+html[data-theme="minimal"] .metronome-button,
+html[data-theme="minimal"] select,
+html[data-theme="minimal"] input[type="number"],
+html[data-theme="minimal"] input[type="search"] {
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  padding-inline: 2px;
+}
+
+html[data-theme="minimal"] .video-matrix {
+  border-width: 1px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="minimal"] .arrangement-cell {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme="scifi"] {
+  --bg: #060804;
+  --panel: #12150b;
+  --panel-strong: #050702;
+  --panel-alt: #1c2110;
+  --aged-metal: #171b0d;
+  --aged-metal-bright: #3b4421;
+  --control: #171d10;
+  --control-hot: #28351b;
+  --line: #364526;
+  --line-hot: #89b15a;
+  --accent: #b8ff64;
+  --accent-dark: #668d35;
+  --accent-soft: #1e2b12;
+  --phosphor: #b8ff64;
+  --phosphor-dim: #53792d;
+  --lcd-green: #b8ff64;
+  --lcd-bg: #0b1205;
+  --warning-amber: #9b7042;
+  --legend-tan: #b7a276;
+  --clip-selected: #eaffb8;
+  --clip-playing: #b8ff64;
+}
+
+html[data-theme="scifi"] body {
+  background:
+    radial-gradient(circle at 50% -14%, rgba(184, 255, 100, 0.15), transparent 34%),
+    radial-gradient(circle at 85% 10%, rgba(117, 79, 41, 0.22), transparent 30%),
+    linear-gradient(180deg, #111407, #030401 76%);
+}
+
+html[data-theme="scifi"] body::before {
+  display: block;
+  background:
+    repeating-linear-gradient(90deg, rgba(184, 255, 100, 0.055) 0 1px, transparent 1px 18px),
+    repeating-linear-gradient(0deg, rgba(154, 116, 66, 0.055) 0 1px, transparent 1px 14px);
+  opacity: 0.22;
+}
+
+html[data-theme="scifi"] .app-shell,
+html[data-theme="scifi"] .search-panel,
+html[data-theme="scifi"] .player-panel,
+html[data-theme="scifi"] .transport,
+html[data-theme="scifi"] .arrangement-panel,
+html[data-theme="scifi"] .control-bank,
+html[data-theme="scifi"] .track-row,
+html[data-theme="scifi"] .launch-pad {
+  background:
+    linear-gradient(180deg, rgba(184, 255, 100, 0.075), transparent 20%),
+    linear-gradient(145deg, #222713, #101407 58%, #030401);
+  border-color: rgba(184, 255, 100, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(218, 255, 167, 0.08),
+    0 0 0 1px rgba(122, 91, 48, 0.2),
+    0 16px 34px rgba(0, 0, 0, 0.72);
+}
+
+html[data-theme="scifi"] .file-menu-button,
+html[data-theme="scifi"] .transport-button,
+html[data-theme="scifi"] .track-toggle,
+html[data-theme="scifi"] .track-advanced-toggle,
+html[data-theme="scifi"] .arrangement-toggle,
+html[data-theme="scifi"] .arrangement-copy,
+html[data-theme="scifi"] .arrangement-delete,
+html[data-theme="scifi"] .arrangement-clear,
+html[data-theme="scifi"] .arrangement-action,
+html[data-theme="scifi"] .launch-button,
+html[data-theme="scifi"] select,
+html[data-theme="scifi"] input[type="number"],
+html[data-theme="scifi"] input[type="search"] {
+  color: #d8ff9e;
+  border-color: rgba(184, 255, 100, 0.28);
+  background:
+    linear-gradient(180deg, rgba(184, 255, 100, 0.1), rgba(44, 35, 18, 0.24)),
+    #0b1205;
+}
+
+html[data-theme="scifi"] .video-matrix {
+  border-color: #1d2410;
+  box-shadow:
+    0 0 0 1px rgba(184, 255, 100, 0.22),
+    0 0 28px rgba(184, 255, 100, 0.08),
+    inset 0 0 34px rgba(0, 0, 0, 0.9);
+}
+
+html[data-theme="aero"] {
+  --bg: #0b2430;
+  --panel: rgba(29, 78, 99, 0.58);
+  --panel-strong: rgba(4, 28, 40, 0.78);
+  --panel-alt: rgba(37, 103, 125, 0.6);
+  --aged-metal: rgba(24, 78, 96, 0.5);
+  --aged-metal-bright: rgba(133, 205, 221, 0.42);
+  --control: rgba(23, 83, 104, 0.58);
+  --control-hot: rgba(77, 152, 171, 0.58);
+  --line: rgba(123, 209, 222, 0.28);
+  --line-hot: rgba(197, 244, 248, 0.5);
+  --accent: #77d9e7;
+  --accent-dark: #2d8799;
+  --accent-soft: rgba(28, 110, 130, 0.24);
+  --phosphor: #b6f4f1;
+  --phosphor-dim: #4b9da3;
+  --lcd-green: #b6f4f1;
+  --lcd-bg: rgba(7, 40, 53, 0.72);
+  --warning-amber: #f4b35e;
+  --legend-tan: #b9ece7;
+  --ink: #e9fffc;
+  --ink-soft: #caeeec;
+  --muted: #91bdc0;
+}
+
+html[data-theme="aero"] body {
+  color: #e9fffc;
+  background:
+    radial-gradient(circle at 28% 10%, rgba(181, 244, 255, 0.38), transparent 22%),
+    radial-gradient(circle at 72% 0%, rgba(50, 157, 181, 0.3), transparent 34%),
+    linear-gradient(180deg, #123b4b, #0b2632 46%, #04131b 100%);
+}
+
+html[data-theme="aero"] body::before {
+  background:
+    radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.22), transparent 18%),
+    radial-gradient(circle at 82% 26%, rgba(141, 235, 226, 0.18), transparent 22%);
+  opacity: 0.45;
+}
+
+html[data-theme="aero"] .app-shell,
+html[data-theme="aero"] .search-panel,
+html[data-theme="aero"] .player-panel,
+html[data-theme="aero"] .transport,
+html[data-theme="aero"] .arrangement-panel,
+html[data-theme="aero"] .control-bank,
+html[data-theme="aero"] .track-row,
+html[data-theme="aero"] .launch-pad,
+html[data-theme="aero"] .brand-row {
+  border-color: rgba(196, 247, 250, 0.26);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(142, 229, 233, 0.09) 44%, rgba(6, 52, 66, 0.28)),
+    rgba(25, 86, 105, 0.48);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(6, 31, 42, 0.34),
+    0 16px 32px rgba(1, 19, 26, 0.42);
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+html[data-theme="aero"] .brand-title,
+html[data-theme="aero"] .status-pill,
+html[data-theme="aero"] .export-status,
+html[data-theme="aero"] select,
+html[data-theme="aero"] input[type="number"],
+html[data-theme="aero"] input[type="search"] {
+  color: #eafffb;
+  border-color: rgba(196, 247, 250, 0.34);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(94, 191, 204, 0.18)),
+    rgba(5, 40, 53, 0.7);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme="aero"] .file-menu-button,
+html[data-theme="aero"] .transport-button,
+html[data-theme="aero"] .track-toggle,
+html[data-theme="aero"] .track-advanced-toggle,
+html[data-theme="aero"] .arrangement-toggle,
+html[data-theme="aero"] .arrangement-copy,
+html[data-theme="aero"] .arrangement-delete,
+html[data-theme="aero"] .arrangement-clear,
+html[data-theme="aero"] .arrangement-action,
+html[data-theme="aero"] .launch-button {
+  color: #eafffb;
+  border-color: rgba(196, 247, 250, 0.3);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(71, 164, 181, 0.28) 52%, rgba(4, 46, 61, 0.38));
+}
+
+html[data-theme="aero"] .video-matrix {
+  border-color: rgba(89, 174, 189, 0.44);
+  background: #031018;
+  box-shadow:
+    0 0 0 4px rgba(107, 220, 226, 0.13),
+    inset 0 0 30px rgba(0, 0, 0, 0.84),
+    0 18px 36px rgba(1, 20, 28, 0.52);
+}
