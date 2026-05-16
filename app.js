@@ -1516,6 +1516,28 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
   return true;
 }
 
+async function warmLaunchVideoForTransport(video, track, playbackState, sessionToken) {
+  if (!video || !track || !playbackState || video.readyState < 2 || !Number.isFinite(sessionToken)) {
+    return false;
+  }
+
+  try {
+    video.muted = true;
+    video.volume = 0;
+    await video.play();
+    if (startTransport.bootToken !== sessionToken) {
+      return false;
+    }
+
+    safeSetCurrentTime(video, playbackState, track, { force: true });
+    track.__warmLaunchFor = sessionToken;
+    return true;
+  } catch {
+    track.__warmLaunchFor = null;
+    return false;
+  }
+}
+
 function shouldDisableWebAudioForSource(sourceUrl) {
   if (!sourceUrl) {
     return true;
@@ -1883,6 +1905,9 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
   setupTrackAudio(track, video);
   applyTrackVolume(track, primingState);
   applyTrackPitchAndSpeed(track, primingState);
+  if (parkedAtAnchor && startTransport.bootToken === sessionToken) {
+    await warmLaunchVideoForTransport(video, track, primingState, sessionToken);
+  }
 }
 
 function ensureTransportTrackPrimed(track, sessionToken = transport?.sessionToken) {
@@ -4448,6 +4473,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.__lastPlaybackSignature = null;
       track.__parkedAtAnchorFor = null;
       track.__parkedPlaybackSignature = null;
+      track.__warmLaunchFor = null;
       delete track.__transportPrimedFor;
       delete track.__transportPrimeAttempt;
       if (track.__pendingPlaybackFrame) {
@@ -5149,6 +5175,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     hasLiveTrackAudioGraph(track, video);
   if (canFastRetrigger && hasStableAudioRoute && track.__lastPlaybackSignature === playbackSignature) {
     safeSetCurrentTime(video, playbackState, track, { force: true });
+    applyTrackVolume(track, playbackState);
+    applyTrackPitchAndSpeed(track, playbackState);
+    track.__warmLaunchFor = null;
     flashTrackTrigger(track);
     return;
   }
@@ -5178,6 +5207,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__lastPlaybackSignature = playbackSignature;
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
+    track.__warmLaunchFor = null;
     flashTrackTrigger(track);
     return;
   }
@@ -5186,6 +5216,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   track.__lastPlaybackSignature = playbackSignature;
 
   if (canFastRetrigger) {
+    track.__warmLaunchFor = null;
     flashTrackTrigger(track);
     return;
   }
