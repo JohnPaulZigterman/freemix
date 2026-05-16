@@ -1290,6 +1290,18 @@ input[type="number"]:focus {
   background: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-alt));
 }
 
+.arrangement-cell.filled.has-density-bars {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.54) 0,
+      rgba(0, 0, 0, 0.54) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.13) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.13) calc(100% / var(--clip-density-count, 2))
+    ),
+    color-mix(in srgb, var(--scene-track-color, var(--track-color)) 24%, var(--panel-alt));
+}
+
 .arrangement-cell.playing {
   border-color: color-mix(in srgb, var(--amber) 85%, var(--scene-track-color, var(--track-color)));
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-strong));
@@ -1356,6 +1368,37 @@ input[type="number"]:focus {
   display: block;
   filter: var(--video-filter, none);
   object-fit: cover;
+}
+
+.video-cell.scene-blackout .track-video {
+  opacity: 0;
+}
+
+.video-cell.scene-blackout::before,
+.video-cell.scene-blackout::after {
+  opacity: 0;
+}
+
+.video-cell.scene-blackout::after {
+  display: grid;
+  z-index: 1;
+  place-items: center;
+  border: 1px solid rgba(220, 226, 230, 0.12);
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.025) 0,
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px,
+      transparent 8px
+    ),
+    #030405;
+  color: rgba(220, 226, 230, 0.42);
+  content: "SILENCE / BLACK";
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .video-cell::before,
@@ -1770,11 +1813,11 @@ input[type="number"]:focus {
 
 .fx-top-controls {
   display: grid;
-  grid-template-columns: minmax(56px, 82px) minmax(60px, 96px) auto;
+  grid-template-columns: minmax(56px, 82px) minmax(60px, 96px) auto auto;
   gap: 2px;
   align-items: end;
   justify-content: end;
-  max-width: min(100%, 340px);
+  max-width: min(100%, 420px);
 }
 
 .track-fx-toggle {
@@ -1783,6 +1826,33 @@ input[type="number"]:focus {
   align-self: stretch;
   padding-inline: 4px;
   white-space: nowrap;
+}
+
+.fx-bypass-button,
+.fx-reset-button {
+  border: 1px solid color-mix(in srgb, var(--silver) 42%, var(--line));
+  border-radius: var(--radius-control);
+  background: linear-gradient(180deg, rgba(230, 235, 238, 0.16), rgba(6, 7, 8, 0.9));
+  color: color-mix(in srgb, var(--silver) 82%, var(--muted));
+  font-family: inherit;
+  font-size: 0.56rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+
+.fx-bypass-button:hover,
+.fx-reset-button:hover {
+  border-color: color-mix(in srgb, var(--silver) 70%, var(--track-color));
+  color: var(--ink);
+}
+
+.fx-bypass-button {
+  min-width: 52px;
+  align-self: stretch;
+  padding-inline: 5px;
 }
 
 .fx-top-controls .control-field {
@@ -1825,9 +1895,16 @@ input[type="number"]:focus {
 .fx-field {
   display: grid;
   min-height: 30px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 2px;
   align-items: center;
+}
+
+.fx-field label {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 900;
+  text-transform: none;
 }
 
 .fx-field .fx-value {
@@ -1837,8 +1914,11 @@ input[type="number"]:focus {
   white-space: nowrap;
 }
 
-.fx-field span {
-  text-transform: none;
+.fx-reset-button {
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
 }
 
 .fx-field input[type="range"] {
@@ -2951,6 +3031,19 @@ input[type="number"] {
     linear-gradient(180deg, color-mix(in srgb, var(--scene-track-color, var(--track-color)) 34%, rgba(255, 255, 255, 0.12)), rgba(0, 0, 0, 0.26)),
     color-mix(in srgb, var(--scene-track-color, var(--track-color)) 42%, var(--panel-strong));
   color: #fffef4;
+}
+
+.arrangement-cell.filled.has-density-bars {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.62) 0,
+      rgba(0, 0, 0, 0.62) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.18) calc(100% / (var(--clip-density-count, 2) * 2)),
+      rgba(255, 255, 255, 0.18) calc(100% / var(--clip-density-count, 2))
+    ),
+    linear-gradient(180deg, color-mix(in srgb, var(--scene-track-color, var(--track-color)) 38%, rgba(255, 255, 255, 0.14)), rgba(0, 0, 0, 0.34)),
+    color-mix(in srgb, var(--scene-track-color, var(--track-color)) 46%, var(--panel-strong));
 }
 
 .arrangement-cell.selected,

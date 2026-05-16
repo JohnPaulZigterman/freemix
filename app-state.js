@@ -265,6 +265,7 @@
     const fx = sanitizeRecord(input.fx);
     return {
       source: cloneSerializable(input.source, null),
+      colorIndex: clamp(Math.floor(sanitizeNumber(input.colorIndex, 0)), 0, 5),
       durationFilter: TRACK_PREF_VALID_DURATION_FILTERS.has(input.durationFilter) ? input.durationFilter : "quick",
       startTime: Math.max(0, sanitizeNumber(input.startTime, 0)),
       retriggersPerBar: Math.max(1, Math.floor(sanitizeNumber(input.retriggersPerBar, 1))),

@@ -146,15 +146,25 @@
 
     const clip = arrangement.clips?.[stepIndex]?.[track.id];
     const isFilled = !!clip;
+    const densityCount =
+      isFilled && typeof normalizeRetriggersPerBar === "function"
+        ? normalizeRetriggersPerBar(clip.retriggersPerBar)
+        : 1;
     const sceneColor = typeof window.freemixGetArrangementSceneColor === "function"
-      ? window.freemixGetArrangementSceneColor(stepIndex)
+      ? window.freemixGetArrangementSceneColor(stepIndex, clip)
       : "";
     if (sceneColor) {
       cell.style.setProperty("--scene-track-color", sceneColor);
     } else {
       cell.style.removeProperty("--scene-track-color");
     }
+    if (isFilled && densityCount > 1) {
+      cell.style.setProperty("--clip-density-count", String(densityCount));
+    } else {
+      cell.style.removeProperty("--clip-density-count");
+    }
     cell.classList.toggle("filled", isFilled);
+    cell.classList.toggle("has-density-bars", isFilled && densityCount > 1);
     cell.textContent = isFilled ? "x" : "";
     const canDragCopy = isFilled;
     cell.draggable = canDragCopy;
