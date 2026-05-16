@@ -45,10 +45,15 @@ const MAX_TRACK_TRIGGER_BURST_PER_FRAME = 8;
 const SOURCE_METADATA_REQUEST_TTL_MS = 60_000;
 const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
-const ARRANGEMENT_START_PREROLL_MS = 650;
+const ARRANGEMENT_START_PREROLL_MS = 900;
 const ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS = 0;
+const ARRANGEMENT_PREROLL_REVEAL_TIMER_LEAD_MS = 0;
 const ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS = 260;
-const ARRANGEMENT_FINAL_PREROLL_LEAD_MS = 260;
+const ARRANGEMENT_FINAL_PREROLL_LEAD_MS = 720;
+const ARRANGEMENT_COLD_START_BURN_IN_MS = 1600;
+const ARRANGEMENT_COLD_START_BURN_IN_MIN_FRAMES = 8;
+const ARRANGEMENT_STEP_LOOKAHEAD_MS = 8000;
+const ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS = 220;
 const TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS = 220;
 const TRANSPORT_CLOCK_CORRECTION_MIN_WINDOW_MS = 42;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
@@ -379,6 +384,9 @@ if (!appState.userOnboarding || !appState.userOnboarding.phase) {
 const tracks = appState.tracks;
 let arrangement = appState.arrangement;
 let arrangementPrerollRevealTimer = null;
+let arrangementLookaheadRevealTimer = null;
+let arrangementLookaheadPrepareKey = null;
+let arrangementLookaheadPreparePromise = null;
 if (appState.transport && typeof appState.transport === "object") {
   if (appState.transport.active || appState.transport.frameId) {
     appState.transport = null;
@@ -1780,6 +1788,128 @@ function waitForVideoPlaybackAdvance(video, referenceTime, minAdvanceSeconds = 0
   });
 }
 
+function waitForPresentedVideoFrame(video, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+    ? Number(options.timeoutMs)
+    : ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS;
+  const minMediaTime = Number.isFinite(Number(options.minMediaTime)) ? Number(options.minMediaTime) : null;
+
+  if (!video || typeof video.requestVideoFrameCallback !== "function") {
+    return Promise.resolve({
+      mediaTime: Number.isFinite(Number(video?.currentTime)) ? Number(video.currentTime) : 0,
+      presentedFrames: Number(video?.webkitDecodedFrameCount || 0),
+      fallback: true,
+    });
+  }
+
+  return new Promise((resolve) => {
+    let resolved = false;
+    const timeoutId = window.setTimeout(() => {
+      if (resolved) {
+        return;
+      }
+
+      resolved = true;
+      resolve({
+        mediaTime: Number.isFinite(Number(video.currentTime)) ? Number(video.currentTime) : 0,
+        presentedFrames: Number(video.webkitDecodedFrameCount || 0),
+        timeout: true,
+      });
+    }, timeoutMs);
+
+    const onFrame = (_now, metadata) => {
+      if (resolved) {
+        return;
+      }
+
+      const mediaTime = Number(metadata?.mediaTime);
+      if (minMediaTime !== null && Number.isFinite(mediaTime) && mediaTime < minMediaTime) {
+        video.requestVideoFrameCallback(onFrame);
+        return;
+      }
+
+      resolved = true;
+      window.clearTimeout(timeoutId);
+      resolve({
+        mediaTime: Number.isFinite(mediaTime) ? mediaTime : Number(video.currentTime) || 0,
+        presentedFrames: Number(metadata?.presentedFrames || video.webkitDecodedFrameCount || 0),
+      });
+    };
+
+    video.requestVideoFrameCallback(onFrame);
+  });
+}
+
+async function burnInArrangementPrerollTargets(preparedTargets, sessionToken, durationMs = ARRANGEMENT_COLD_START_BURN_IN_MS) {
+  if (!Array.isArray(preparedTargets) || preparedTargets.length === 0 || startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  preparedTargets.forEach(({ track, video, clip }) => {
+    setTrackBlackout(track, true);
+    silenceTrackForPreroll(track, video);
+    safeSetCurrentTime(video, clip, track, { force: true });
+  });
+
+  await Promise.all(
+    preparedTargets.map(({ video, clip }) => awaitVideoSeek(video, safeStartTime(clip, video))),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  await Promise.all(
+    preparedTargets.map(async ({ track, video }) => {
+      silenceTrackForPreroll(track, video);
+      try {
+        await video.play();
+      } catch {
+        return false;
+      }
+
+      return waitForPresentedVideoFrame(video, {
+        timeoutMs: ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS,
+      });
+    }),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  const startedAt = performance.now();
+  await Promise.all(
+    preparedTargets.map(
+      ({ video }) =>
+        new Promise((resolve) => {
+          const hasDecodedFrameCounter = "webkitDecodedFrameCount" in video;
+          const startFrames = Number(video.webkitDecodedFrameCount || 0);
+          const check = () => {
+            const elapsed = performance.now() - startedAt;
+            const decodedFrames = Number(video.webkitDecodedFrameCount || 0) - startFrames;
+            if (
+              (elapsed >= durationMs && (!hasDecodedFrameCounter || decodedFrames >= ARRANGEMENT_COLD_START_BURN_IN_MIN_FRAMES)) ||
+              startTransport.bootToken !== sessionToken
+            ) {
+              resolve(true);
+              return;
+            }
+
+            window.requestAnimationFrame(check);
+          };
+          check();
+        }),
+    ),
+  );
+
+  preparedTargets.forEach(({ track, video }) => {
+    silenceTrackForPreroll(track, video);
+  });
+
+  return startTransport.bootToken === sessionToken;
+}
+
 function getArrangementPrerollClipTargets(stepIndex = arrangement?.step) {
   if (!arrangement.enabled || !hasArrangementClips()) {
     return [];
@@ -1848,14 +1978,18 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
   const preparedTargets = (
     await Promise.all(
       targets.map(async ({ track, clip, sourceUrl }) => {
-        const activeVideo = ensureTrackVideoElementForPlayback(track, clip);
-        if (!activeVideo) {
+        const video = ensureTrackVideoElementForPlayback(track, clip);
+        if (!video) {
           return null;
         }
-        removeTrackPrerollStandby(track);
-        silenceTrackForPreroll(track, activeVideo);
-        const video = activeVideo;
 
+        removeTrackPrerollStandby(track);
+        track.__preparedPlaybackVideo = null;
+        track.__preparedPlaybackSignature = null;
+        track.__warmLaunchFor = null;
+        track.__prerollRevealFor = null;
+        track.__prerollPlaybackSignature = null;
+        track.__prerollRevealCanSkipSeek = false;
         setVideoCorsPolicy(video, sourceUrl);
         if (video.src !== sourceUrl) {
           track.__parkedAtAnchorFor = null;
@@ -1864,13 +1998,17 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
           video.load();
         }
 
+        if (video.networkState !== 0) {
+          video.load();
+        }
+
         await waitForTrackReady(video);
         if (startTransport.bootToken !== sessionToken) {
           return null;
         }
 
-        const preroll = getPrerollStartState(clip, video, leadMs);
-        if (!preroll) {
+        const anchorTime = safeStartTime(clip, video);
+        if (!Number.isFinite(anchorTime)) {
           return null;
         }
 
@@ -1881,18 +2019,6 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
         applyTrackOpacity(track, clip);
         applyTrackPitchAndSpeed(track, clip);
         applyVideoPitchAndSpeed(video, clip);
-        silenceTrackForPreroll(track, video);
-        safeSetCurrentTime(video, preroll.state, track, { force: true });
-        await awaitVideoSeek(video, safeStartTime(preroll.state, video));
-        if (startTransport.bootToken !== sessionToken) {
-          return null;
-        }
-
-        try {
-          await video.play();
-        } catch {
-          return null;
-        }
 
         armTrackForPrerollReveal(track, video);
         return {
@@ -1900,9 +2026,8 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
           clip,
           video,
           sourceUrl,
-          prerollState: preroll.state,
-          anchorTime: preroll.anchorTime,
-          exact: preroll.exact,
+          anchorTime,
+          exact: true,
         };
       }),
     )
@@ -1912,91 +2037,21 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
     return null;
   }
 
-  preparedTargets.forEach(({ track, video, prerollState }) => {
-    armTrackForPrerollReveal(track, video);
-    safeSetCurrentTime(video, prerollState, track, { force: true });
-  });
-
-  await Promise.all(
-    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
-  );
-
+  setStatus("Arming clips...");
+  await burnInArrangementPrerollTargets(preparedTargets, sessionToken);
   if (startTransport.bootToken !== sessionToken) {
     return null;
   }
 
-  await Promise.all(
-    preparedTargets.map(async ({ track, video, prerollState }) => {
-      const prerollStartTime = safeStartTime(prerollState, video);
-      try {
-        await video.play();
-      } catch {
-        return false;
-      }
-
-      armTrackForPrerollReveal(track, video);
-      return waitForVideoPlaybackAdvance(video, prerollStartTime);
-    }),
-  );
-
-  if (startTransport.bootToken !== sessionToken) {
-    return null;
-  }
-
-  const finalPrerollLeadMs = Math.min(leadMs, ARRANGEMENT_FINAL_PREROLL_LEAD_MS);
-  preparedTargets.forEach((target) => {
-    const finalPreroll = getPrerollStateForLead(target.clip, target.video, finalPrerollLeadMs);
-    if (!finalPreroll) {
-      return;
-    }
-
-    target.prerollState = finalPreroll.state;
-    target.anchorTime = finalPreroll.anchorTime;
-    target.exact = finalPreroll.exact;
-    armTrackForPrerollReveal(target.track, target.video);
-    applyVideoPitchAndSpeed(target.video, target.clip);
-    safeSetCurrentTime(target.video, finalPreroll.state, target.track, { force: true });
-  });
-
-  await Promise.all(
-    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
-  );
-
-  if (startTransport.bootToken !== sessionToken) {
-    return null;
-  }
-
-  await Promise.all(
-    preparedTargets.map(async ({ track, video, prerollState }) => {
-      const prerollStartTime = safeStartTime(prerollState, video);
-      try {
-        await video.play();
-      } catch {
-        return false;
-      }
-
-      armTrackForPrerollReveal(track, video);
-      return waitForVideoPlaybackAdvance(video, prerollStartTime);
-    }),
-  );
-
-  if (startTransport.bootToken !== sessionToken) {
-    return null;
-  }
-
-  const measuredLeadMs = preparedTargets.reduce((maxLeadMs, { clip, video, anchorTime, exact }) => {
-    if (!exact || !Number.isFinite(anchorTime) || !video) {
-      return maxLeadMs;
-    }
-
+  const requestedLeadMs = Math.max(ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS + 16, Math.min(leadMs, ARRANGEMENT_FINAL_PREROLL_LEAD_MS));
+  const startLeadMs = preparedTargets.reduce((lead, { clip, anchorTime }) => {
     const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
-    const remainingMs = Math.max(0, ((anchorTime - video.currentTime) / speed) * 1000);
-    return Math.max(maxLeadMs, remainingMs);
-  }, 0);
-  const minimumRevealLeadMs = ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS + 8;
-  const startLeadMs = clamp(measuredLeadMs, minimumRevealLeadMs, Math.max(minimumRevealLeadMs, finalPrerollLeadMs));
+    const maxLeadForAnchor = (Math.max(0, anchorTime) / speed) * 1000;
+    return Math.min(lead, maxLeadForAnchor);
+  }, requestedLeadMs);
+
   preparedTargets.forEach((target) => {
-    if (!target.exact || !Number.isFinite(target.anchorTime)) {
+    if (!Number.isFinite(target.anchorTime)) {
       return;
     }
 
@@ -2007,6 +2062,7 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
       startTime,
     };
     armTrackForPrerollReveal(target.track, target.video);
+    applyVideoPitchAndSpeed(target.video, target.clip);
     safeSetCurrentTime(target.video, target.prerollState, target.track, { force: true });
   });
 
@@ -2028,7 +2084,41 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
       }
 
       armTrackForPrerollReveal(track, video);
-      return waitForVideoPlaybackAdvance(video, prerollStartTime, 0.006, 90);
+      await waitForVideoPlaybackAdvance(video, prerollStartTime, 0.012, ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS);
+      return waitForPresentedVideoFrame(video, {
+        minMediaTime: prerollStartTime + 0.006,
+        timeoutMs: ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS,
+      });
+    }),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  preparedTargets.forEach(({ track, video, prerollState }) => {
+    armTrackForPrerollReveal(track, video);
+    safeSetCurrentTime(video, prerollState, track, { force: true });
+  });
+
+  await Promise.all(
+    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  await Promise.all(
+    preparedTargets.map(async ({ track, video }) => {
+      try {
+        await video.play();
+      } catch {
+        return false;
+      }
+
+      armTrackForPrerollReveal(track, video);
+      return true;
     }),
   );
 
@@ -2046,13 +2136,12 @@ async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT
     track.__preparedPlaybackSignature = getPlaybackStateSignature(clip, sourceUrl);
   });
 
-  return performance.now() + startLeadMs;
+  return performance.now() + Math.max(ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS + 8, startLeadMs);
 }
 
 function clearArrangementPrerollRevealTimer() {
   if (arrangementPrerollRevealTimer !== null) {
     window.clearTimeout(arrangementPrerollRevealTimer);
-    window.cancelAnimationFrame(arrangementPrerollRevealTimer);
     arrangementPrerollRevealTimer = null;
   }
 }
@@ -2078,7 +2167,37 @@ function revealArrangementPreroll(sessionToken) {
       return;
     }
 
-    triggerTrack(track, clip, sessionToken);
+    const video = getTrackVideo(track);
+    const playbackSignature = getPlaybackStateSignature(clip, sourceUrl);
+    const canOpenPreparedVideo =
+      video &&
+      video.readyState >= 1 &&
+      !video.paused &&
+      !video.ended &&
+      video.src === sourceUrl &&
+      track.__prerollPlaybackSignature === playbackSignature &&
+      track.__prerollRevealCanSkipSeek;
+
+    if (canOpenPreparedVideo) {
+      setTrackBlackout(track, false);
+      applyTrackVolume(track, clip);
+      applyTrackFx(track, clip);
+      applyVideoFx(track, clip);
+      applyTrackBlend(track, clip);
+      applyTrackOpacity(track, clip);
+      applyTrackPitchAndSpeed(track, clip);
+      track.__lastPlaybackSignature = playbackSignature;
+      track.__warmLaunchFor = null;
+      track.__prerollRevealFor = null;
+      track.__prerollPlaybackSignature = null;
+      track.__prerollRevealCanSkipSeek = false;
+      track.__parkedAtAnchorFor = null;
+      track.__parkedPlaybackSignature = null;
+      flashTrackTrigger(track);
+    } else {
+      triggerTrack(track, clip, sessionToken);
+    }
+
     track.__lastRetriggerPulse = 0;
     track.__lastTransportClockCorrectionAt = 0;
     track.__lastTransportClockCorrectionPulse = null;
@@ -2097,21 +2216,361 @@ function scheduleArrangementPrerollReveal(sessionToken, startAt) {
   }
 
   const revealAt = startAt - ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS;
-  const revealOnFrame = () => {
+  const delayMs = Math.max(0, revealAt - ARRANGEMENT_PREROLL_REVEAL_TIMER_LEAD_MS - performance.now());
+  arrangementPrerollRevealTimer = window.setTimeout(() => {
+    arrangementPrerollRevealTimer = null;
     if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
-      arrangementPrerollRevealTimer = null;
       return;
     }
 
-    if (performance.now() >= revealAt) {
-      arrangementPrerollRevealTimer = null;
-      revealArrangementPreroll(sessionToken);
-      return;
-    }
+    revealArrangementPreroll(sessionToken);
+  }, delayMs);
+}
 
-    arrangementPrerollRevealTimer = window.requestAnimationFrame(revealOnFrame);
+function clearTrackArrangementLookahead(track) {
+  if (!track) {
+    return;
+  }
+
+  track.__lookaheadPrerollFor = null;
+  track.__lookaheadPrerollStep = null;
+  track.__lookaheadPrerollBarStartAt = null;
+  track.__lookaheadPrerollSignature = null;
+  track.__lookaheadPrerollKey = null;
+  track.__lookaheadRevealedFor = null;
+  track.__lookaheadRevealedStep = null;
+  track.__lookaheadRevealedBarStartAt = null;
+  track.__lookaheadRevealedPulse = null;
+}
+
+function clearArrangementLookaheadPreroll(clearTracks = false) {
+  if (arrangementLookaheadRevealTimer !== null) {
+    window.clearTimeout(arrangementLookaheadRevealTimer);
+    arrangementLookaheadRevealTimer = null;
+  }
+  arrangementLookaheadPrepareKey = null;
+  arrangementLookaheadPreparePromise = null;
+  if (clearTracks) {
+    tracks.forEach(clearTrackArrangementLookahead);
+  }
+}
+
+function getNextArrangementStepStart(currentElapsedBars, barMs) {
+  if (!transport?.active || !Number.isFinite(Number(barMs)) || barMs <= 0) {
+    return null;
+  }
+
+  const arrangementLength = arrangement?.clips?.length || 0;
+  if (!arrangementLength) {
+    return null;
+  }
+
+  const nextElapsedBars = Math.max(0, Math.floor(Number(currentElapsedBars)) + 1);
+  return {
+    elapsedBars: nextElapsedBars,
+    step: (transport.arrangementStartStep + nextElapsedBars) % arrangementLength,
+    startAt: transport.startedAt + nextElapsedBars * barMs,
   };
-  arrangementPrerollRevealTimer = window.requestAnimationFrame(revealOnFrame);
+}
+
+function getArrangementLookaheadKey(stepIndex, barStartAt, sessionToken) {
+  return `${sessionToken}:${stepIndex}:${Math.round(barStartAt)}`;
+}
+
+function scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken) {
+  if (!Number.isFinite(sessionToken) || !Number.isFinite(barStartAt)) {
+    return;
+  }
+
+  if (arrangementLookaheadRevealTimer !== null) {
+    window.clearTimeout(arrangementLookaheadRevealTimer);
+  }
+
+  const delayMs = Math.max(0, barStartAt - performance.now());
+  arrangementLookaheadRevealTimer = window.setTimeout(() => {
+    arrangementLookaheadRevealTimer = null;
+    revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
+  }, delayMs);
+}
+
+function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) {
+  if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  let revealedAny = false;
+  tracks.forEach((track) => {
+    if (
+      track.__lookaheadPrerollFor !== sessionToken ||
+      track.__lookaheadPrerollStep !== resolvedStep ||
+      !almostEqual(Number(track.__lookaheadPrerollBarStartAt), barStartAt, 2)
+    ) {
+      return;
+    }
+
+    const clip = getArrangementStepClip(track, resolvedStep);
+    const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
+    const video = getTrackVideo(track);
+    const playbackSignature = getPlaybackStateSignature(clip, sourceUrl);
+    const canRevealPreparedVideo =
+      clip &&
+      sourceUrl &&
+      video &&
+      video.readyState >= 1 &&
+      !video.paused &&
+      !video.ended &&
+      video.src === sourceUrl &&
+      track.__lookaheadPrerollSignature === playbackSignature;
+
+    if (!canRevealPreparedVideo) {
+      clearTrackArrangementLookahead(track);
+      if (clip && sourceUrl) {
+        triggerTrack(track, clip, sessionToken);
+      }
+      return;
+    }
+
+    setTrackBlackout(track, false);
+    setupTrackAudio(track, video, clip);
+    applyTrackVolume(track, clip);
+    applyTrackFx(track, clip);
+    applyVideoFx(track, clip);
+    applyTrackBlend(track, clip);
+    applyTrackOpacity(track, clip);
+    applyTrackPitchAndSpeed(track, clip);
+    applyVideoPitchAndSpeed(video, clip);
+
+    const pulseIndex = getTrackPulseIndex(track, barStartAt);
+    track.__lastPlaybackSignature = playbackSignature;
+    track.__transportPrimedFor = sessionToken;
+    track.__lastRetriggerPulse = Number.isFinite(Number(pulseIndex)) ? pulseIndex : track.__lastRetriggerPulse;
+    if (Number.isFinite(Number(track.stepMs)) && track.stepMs > 0) {
+      track.nextTriggerAt = barStartAt + track.stepMs;
+      track.__transportClockCorrectionPulse = Number.isFinite(Number(pulseIndex)) ? pulseIndex : null;
+      track.__transportClockCorrectionUntil = barStartAt + TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS;
+    }
+
+    track.__lookaheadRevealedFor = sessionToken;
+    track.__lookaheadRevealedStep = resolvedStep;
+    track.__lookaheadRevealedBarStartAt = barStartAt;
+    track.__lookaheadRevealedPulse = pulseIndex;
+    track.__lookaheadPrerollFor = null;
+    track.__lookaheadPrerollStep = null;
+    track.__lookaheadPrerollBarStartAt = null;
+    track.__lookaheadPrerollSignature = null;
+    track.__lookaheadPrerollKey = null;
+    flashTrackTrigger(track);
+    revealedAny = true;
+  });
+
+  return revealedAny;
+}
+
+async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepIndex, barStartAt, sessionToken, lookaheadKey) {
+  const video = ensureTrackVideoElementForPlayback(track, clip);
+  if (!video) {
+    return false;
+  }
+
+  const failLookahead = () => {
+    clearTrackArrangementLookahead(track);
+    return false;
+  };
+  track.__lookaheadPrerollFor = sessionToken;
+  track.__lookaheadPrerollStep = stepIndex;
+  track.__lookaheadPrerollBarStartAt = barStartAt;
+  track.__lookaheadPrerollSignature = null;
+  track.__lookaheadPrerollKey = lookaheadKey;
+
+  setTrackBlackout(track, true);
+  setVideoCorsPolicy(video, sourceUrl);
+  if (video.src !== sourceUrl) {
+    track.__parkedAtAnchorFor = null;
+    track.__parkedPlaybackSignature = null;
+    video.src = sourceUrl;
+    video.load();
+  }
+
+  if (video.networkState !== 0) {
+    video.load();
+  }
+
+  await waitForTrackReady(video);
+  if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
+    return failLookahead();
+  }
+
+  setupTrackAudio(track, video, clip);
+  applyTrackFx(track, clip);
+  applyVideoFx(track, clip);
+  applyTrackBlend(track, clip);
+  applyTrackOpacity(track, clip);
+  applyTrackPitchAndSpeed(track, clip);
+  applyVideoPitchAndSpeed(video, clip);
+  silenceTrackForPreroll(track, video);
+  safeSetCurrentTime(video, clip, track, { force: true });
+  await awaitVideoSeek(video, safeStartTime(clip, video), Math.max(ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS, Math.min(AV_READY_TIMEOUT_MS, barStartAt - performance.now())));
+
+  if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
+    return failLookahead();
+  }
+
+  try {
+    await video.play();
+  } catch {
+    return failLookahead();
+  }
+
+  silenceTrackForPreroll(track, video);
+  await Promise.race([
+    waitForPresentedVideoFrame(video, { timeoutMs: ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS }),
+    waitForVideoPlaybackAdvance(video, video.currentTime, 0.008, ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS),
+  ]);
+
+  if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
+    return failLookahead();
+  }
+
+  try {
+    video.pause();
+  } catch {
+    // Best effort: the final timed preroll below will restore playback.
+  }
+
+  const anchorTime = safeStartTime(clip, video);
+  if (!Number.isFinite(anchorTime)) {
+    return failLookahead();
+  }
+
+  const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
+  const remainingMs = Math.max(0, barStartAt - performance.now());
+  const maxLeadForAnchorMs = (Math.max(0, anchorTime) / speed) * 1000;
+  const noPreAnchorRoom = maxLeadForAnchorMs <= 1;
+  const finalLeadMs = Math.max(
+    0,
+    Math.min(
+      remainingMs - 24,
+      noPreAnchorRoom ? 72 : ARRANGEMENT_FINAL_PREROLL_LEAD_MS,
+      noPreAnchorRoom ? 72 : maxLeadForAnchorMs,
+    ),
+  );
+  const finalStartTime = Math.max(0, anchorTime - (finalLeadMs / 1000) * speed);
+  const finalPrerollState = {
+    ...clip,
+    startTime: finalStartTime,
+  };
+  silenceTrackForPreroll(track, video);
+  safeSetCurrentTime(video, finalPrerollState, track, { force: true });
+  await awaitVideoSeek(video, finalStartTime, Math.max(ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS, Math.min(AV_READY_TIMEOUT_MS, barStartAt - performance.now() + 120)));
+
+  if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt + 16) {
+    return failLookahead();
+  }
+
+  const launchAt = barStartAt - finalLeadMs;
+  const waitMs = Math.max(0, launchAt - performance.now());
+  if (waitMs > 0) {
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, waitMs);
+    });
+  }
+
+  if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt + 16) {
+    return failLookahead();
+  }
+
+  silenceTrackForPreroll(track, video);
+  try {
+    await video.play();
+  } catch {
+    return failLookahead();
+  }
+
+  silenceTrackForPreroll(track, video);
+  track.__transportPrimedFor = sessionToken;
+  track.__lookaheadPrerollFor = sessionToken;
+  track.__lookaheadPrerollStep = stepIndex;
+  track.__lookaheadPrerollBarStartAt = barStartAt;
+  track.__lookaheadPrerollSignature = getPlaybackStateSignature(clip, sourceUrl);
+  track.__lookaheadPrerollKey = lookaheadKey;
+  return true;
+}
+
+function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionToken) {
+  if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
+    return;
+  }
+
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null || !Number.isFinite(Number(barStartAt))) {
+    return;
+  }
+
+  const timeUntilStepMs = barStartAt - performance.now();
+  if (timeUntilStepMs < ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS || timeUntilStepMs > ARRANGEMENT_STEP_LOOKAHEAD_MS) {
+    return;
+  }
+
+  const lookaheadKey = getArrangementLookaheadKey(resolvedStep, barStartAt, sessionToken);
+  if (arrangementLookaheadPrepareKey === lookaheadKey && arrangementLookaheadPreparePromise) {
+    return;
+  }
+
+  const currentStep = getArrangementStepIndex(transport.arrangementStep);
+  const targets = tracks
+    .map((track) => {
+      const currentClip = currentStep === null ? null : getArrangementStepClip(track, currentStep);
+      const currentSourceUrl = currentClip?.source?.mediaUrl || null;
+      const nextClip = getArrangementStepClip(track, resolvedStep);
+      const nextSourceUrl = nextClip?.source?.mediaUrl || getTrackPlaybackSourceUrl(track, nextClip);
+      if (
+        !nextClip ||
+        !nextSourceUrl ||
+        currentSourceUrl ||
+        track.__lookaheadPrerollFor === sessionToken ||
+        track.__lookaheadPrerollKey === lookaheadKey
+      ) {
+        return null;
+      }
+
+      return { track, clip: nextClip, sourceUrl: nextSourceUrl };
+    })
+    .filter(Boolean);
+
+  if (!targets.length) {
+    return;
+  }
+
+  arrangementLookaheadPrepareKey = lookaheadKey;
+  arrangementLookaheadPreparePromise = Promise.all(
+    targets.map(({ track, clip, sourceUrl }) =>
+      prepareArrangementLookaheadTarget(track, clip, sourceUrl, resolvedStep, barStartAt, sessionToken, lookaheadKey),
+    ),
+  )
+    .then((results) => {
+      if (
+        startTransport.bootToken === sessionToken &&
+        transport?.active &&
+        transport.sessionToken === sessionToken &&
+        results.some(Boolean)
+      ) {
+        scheduleArrangementLookaheadReveal(resolvedStep, barStartAt, sessionToken);
+      }
+    })
+    .catch((error) => {
+      console.warn(error);
+    })
+    .finally(() => {
+      if (arrangementLookaheadPrepareKey === lookaheadKey) {
+        arrangementLookaheadPrepareKey = null;
+        arrangementLookaheadPreparePromise = null;
+      }
+    });
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -4944,6 +5403,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
     return;
   }
 
+  clearArrangementLookaheadPreroll(true);
   tracks.forEach((track) => {
     track.lastStep = -1;
     track.nextTriggerAt = 0;
@@ -5009,6 +5469,16 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
 
   if (arrangement.enabled && hasArrangementClips()) {
     updateArrangementStep(arrangement.step, startAt, true);
+    tracks.forEach((track) => {
+      if (track.__prerollRevealFor !== sessionToken) {
+        return;
+      }
+
+      if (Number.isFinite(Number(track.stepMs)) && track.stepMs > 0) {
+        track.__lastRetriggerPulse = 0;
+        track.nextTriggerAt = startAt + track.stepMs;
+      }
+    });
     scheduleArrangementPrerollReveal(sessionToken, startAt);
   } else {
     updateTrackTriggerGrid(startAt);
@@ -5025,6 +5495,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
   }
   startTransport.runningPromise = null;
   clearArrangementPrerollRevealTimer();
+  clearArrangementLookaheadPreroll(true);
 
   if (startTimeControlTrackers.size > 0) {
     startTimeControlTrackers.forEach((frameId) => {
@@ -5684,8 +6155,20 @@ function tickTransport() {
     const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
     const arrangementLength = arrangement.clips.length || 1;
     const currentStep = (transport.arrangementStartStep + elapsedBars) % arrangementLength;
-    updateArrangementStep(currentStep, transport.startedAt + elapsedBars * barMs);
+    const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
+    updateArrangementStep(currentStep, currentStepStartAt);
     reconcileArrangementPlaybackConfidence("transport");
+    const maxLookaheadBars = Math.max(1, Math.min(arrangementLength, Math.ceil(ARRANGEMENT_STEP_LOOKAHEAD_MS / barMs)));
+    for (let lookaheadBar = 1; lookaheadBar <= maxLookaheadBars; lookaheadBar += 1) {
+      const nextStep = getNextArrangementStepStart(elapsedBars + lookaheadBar - 1, barMs);
+      if (!nextStep || nextStep.startAt <= now) {
+        continue;
+      }
+      if (nextStep.startAt - now > ARRANGEMENT_STEP_LOOKAHEAD_MS) {
+        break;
+      }
+      prepareUpcomingArrangementStepPreroll(nextStep.step, nextStep.startAt, transport.sessionToken);
+    }
   }
 
   tracks.forEach((track) => {
@@ -7409,6 +7892,18 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
 
     activeClipCount += 1;
     setTrackBlackout(track, false);
+    if (
+      track.__lookaheadPrerollFor === transport?.sessionToken &&
+      track.__lookaheadPrerollStep === resolvedStep &&
+      almostEqual(Number(track.__lookaheadPrerollBarStartAt), barStartAt, 3)
+    ) {
+      revealArrangementLookaheadPreroll(resolvedStep, barStartAt, transport.sessionToken);
+    }
+    const lookaheadRevealedPulse = Number(track.__lookaheadRevealedPulse);
+    const wasLookaheadRevealed =
+      track.__lookaheadRevealedFor === transport?.sessionToken &&
+      track.__lookaheadRevealedStep === resolvedStep &&
+      almostEqual(Number(track.__lookaheadRevealedBarStartAt), barStartAt, 3);
     const isAtOrAfterBarStart = performance.now() >= barStartAt - 1;
     const shouldRetriggerNow =
       !!force &&
@@ -7416,7 +7911,18 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
       isAtOrAfterBarStart &&
       Number.isFinite(Number(track.stepMs)) &&
       track.stepMs > 0;
-    resetTrackPulseCursor(track, barStartAt, { fireAtReference: !shouldRetriggerNow });
+    resetTrackPulseCursor(track, barStartAt, { fireAtReference: !(shouldRetriggerNow || wasLookaheadRevealed) });
+    if (wasLookaheadRevealed) {
+      if (Number.isFinite(lookaheadRevealedPulse)) {
+        track.__lastRetriggerPulse = lookaheadRevealedPulse;
+        track.nextTriggerAt = barStartAt + track.stepMs;
+      }
+      track.__lookaheadRevealedFor = null;
+      track.__lookaheadRevealedStep = null;
+      track.__lookaheadRevealedBarStartAt = null;
+      track.__lookaheadRevealedPulse = null;
+      return;
+    }
     if (shouldRetriggerNow) {
       track.__lastRetriggerPulse = 0;
       track.nextTriggerAt = barStartAt + track.stepMs;
@@ -7464,11 +7970,15 @@ function reconcileArrangementPlaybackConfidence(source = "playhead") {
     const isBlackout = !!cell?.classList.contains("scene-blackout");
     const video = getTrackVideo(track);
     if (!hasPlayableClip) {
+      const hasIntentionalLookaheadPreroll =
+        track.__lookaheadPrerollFor === transport?.sessionToken &&
+        Number.isFinite(Number(track.__lookaheadPrerollBarStartAt)) &&
+        Number(track.__lookaheadPrerollBarStartAt) > performance.now();
       if (!isBlackout) {
         setTrackBlackout(track, true);
         corrected = true;
       }
-      if (video && !video.paused && typeof video.pause === "function") {
+      if (video && !video.paused && typeof video.pause === "function" && !hasIntentionalLookaheadPreroll) {
         video.pause();
         corrected = true;
       }
