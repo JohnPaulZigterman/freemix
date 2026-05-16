@@ -1970,7 +1970,12 @@ if (!shouldIgnoreLifecycleAutoStop()) {
   });
 }
 
-const restoredStartupSession = restoreCurrentSessionOnStartup();
+let restoredStartupSession = null;
+try {
+  restoredStartupSession = restoreCurrentSessionOnStartup();
+} catch (error) {
+  console.warn("Freemix session restore skipped", error);
+}
 renderWorkstation();
 renderRecentSessionMenu();
 setStatus(restoredStartupSession ? `${normalizeSessionName(restoredStartupSession.name || "Session")}: restored` : "Ready");
@@ -6651,13 +6656,49 @@ function restoreCurrentSessionOnStartup() {
     return null;
   }
 
-  const restored = applySessionSnapshot(current.snapshot, {
-    sessionId: current.id,
-    silent: true,
-    skipRender: true,
-  });
+  const snapshot = current.snapshot?.snapshot || current.snapshot;
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
 
-  return restored ? current : null;
+  const nextTracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length
+    ? snapshot.tracks.slice(0, MAX_TRACK_COUNT).map((track, index) => normalizeSessionTrack(track, index))
+    : createInitialTracks(DEFAULT_TRACK_COUNT);
+  tracks.splice(0, tracks.length, ...nextTracks);
+  appState.tracks = tracks;
+  refreshTrackLookup();
+
+  appState.preferredBpm = clamp(Number(snapshot.state?.preferredBpm), 40, 220) || DEFAULT_BPM;
+  appState.preferredTimeSignature = TIME_SIGNATURE_LOOKUP[snapshot.state?.preferredTimeSignature]
+    ? snapshot.state.preferredTimeSignature
+    : DEFAULT_TIME_SIGNATURE;
+  metronomeEnabled = typeof snapshot.state?.metronomeEnabled === "boolean" ? snapshot.state.metronomeEnabled : true;
+  masterMuted = !!snapshot.state?.masterMuted;
+
+  const savedStepCount = Number(snapshot.state?.arrangementStepCount);
+  const clipStepCount = Array.isArray(snapshot.arrangement?.clips) ? snapshot.arrangement.clips.length : null;
+  const nextStepCount = clamp(
+    Number.isInteger(savedStepCount)
+      ? savedStepCount
+      : Number.isInteger(clipStepCount)
+        ? clipStepCount
+        : DEFAULT_ARRANGEMENT_STEPS,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
+  arrangementStepCount = nextStepCount;
+  const nextArrangement = {
+    ...createInitialArrangement(nextStepCount),
+    ...(snapshot.arrangement && typeof snapshot.arrangement === "object" && !Array.isArray(snapshot.arrangement) ? snapshot.arrangement : {}),
+  };
+  syncArrangementState(nextArrangement);
+  normalizeArrangementState(arrangement, nextStepCount);
+  refreshArrangementHasClipsState();
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
+  arrangementDeleteMode = false;
+
+  return current;
 }
 
 function saveSessionRecord(name, options = {}) {
