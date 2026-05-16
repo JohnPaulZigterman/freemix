@@ -217,8 +217,23 @@
     }
 
 
+    if (id === "arrangementCaptureButton") {
+      window.freemixCaptureSelectedArrangementSlots?.();
+      return true;
+    }
+
+    if (id === "arrangementCopyButton") {
+      window.freemixCopySelectedArrangementScene?.();
+      return true;
+    }
+
+    if (id === "arrangementPasteButton") {
+      window.freemixPasteArrangementClipboardToSelectedScene?.();
+      return true;
+    }
+
     if (id === "arrangementDeleteButton") {
-      toggleArrangementDeleteMode();
+      window.freemixDeleteSelectedArrangementScene?.();
       return true;
     }
 

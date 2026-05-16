@@ -18,6 +18,9 @@
     const playButton = player.querySelector("#playButton");
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
+    const arrangementCaptureButton = player.querySelector("#arrangementCaptureButton");
+    const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
+    const arrangementPasteButton = player.querySelector("#arrangementPasteButton");
     const arrangementDeleteButton = player.querySelector("#arrangementDeleteButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const selectedTargetLabel = player.querySelector("#selectedTargetLabel");
@@ -46,13 +49,23 @@
       arrangementToggle.setAttribute("aria-pressed", String(arrangement.enabled));
     }
 
+    if (arrangementCaptureButton) {
+      arrangementCaptureButton.title = "Capture the current controls into the selected arrangement slot";
+    }
+
+    if (arrangementCopyButton) {
+      arrangementCopyButton.title = "Copy the selected clip, text clip, or whole scene";
+    }
+
+    if (arrangementPasteButton) {
+      arrangementPasteButton.title = "Paste the copied clip, text clip, or scene into the selected target";
+    }
+
     if (arrangementDeleteButton) {
-      arrangementDeleteButton.textContent = arrangementDeleteMode ? "Deleting" : "Delete";
-      arrangementDeleteButton.classList.toggle("active", !!arrangementDeleteMode);
-      arrangementDeleteButton.setAttribute("aria-pressed", String(!!arrangementDeleteMode));
-      arrangementDeleteButton.title = arrangementDeleteMode
-        ? "Delete mode; click filled cells or scenes to remove them"
-        : "Delete scene clips";
+      arrangementDeleteButton.textContent = "Delete";
+      arrangementDeleteButton.classList.remove("active");
+      arrangementDeleteButton.setAttribute("aria-pressed", "false");
+      arrangementDeleteButton.title = "Delete the selected clip, text clip, or whole scene";
     }
 
     if (arrangementLengthSelect) {
@@ -218,13 +231,9 @@
     cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
     cell.textContent = isFilled ? "T" : "";
     cell.draggable = false;
-    cell.title = arrangementDeleteMode
-      ? isFilled
-        ? `Delete text from scene ${stepIndex + 1}`
-        : `Scene ${stepIndex + 1} has no text`
-      : isFilled
-        ? `TEXT scene ${stepIndex + 1}; click to edit`
-        : `Create text in scene ${stepIndex + 1}`;
+    cell.title = isFilled
+      ? `TEXT scene ${stepIndex + 1}; click to edit, copy, paste, or delete`
+      : `Blank TEXT scene ${stepIndex + 1}; click to select, then Capture to create`;
   }
 
   function updateArrangementCell(track, stepIndex) {
@@ -267,18 +276,15 @@
     cell.classList.toggle("has-density-bars", isFilled && densityCount > 1);
     cell.classList.toggle(
       "selected",
-      typeof isArrangementClipSelected === "function" && isArrangementClipSelected(track.id, stepIndex),
+      (typeof isArrangementClipSelected === "function" && isArrangementClipSelected(track.id, stepIndex)) ||
+        (typeof window.isArrangementSceneSelected === "function" && window.isArrangementSceneSelected(stepIndex)),
     );
     cell.textContent = isFilled ? "x" : "";
     const canDragCopy = isFilled;
     cell.draggable = canDragCopy;
-    cell.title = arrangementDeleteMode
-      ? isFilled
-        ? `Delete ${track.name || "Track"} from scene ${stepIndex + 1}`
-        : `Scene ${stepIndex + 1} has no ${track.name || "track"} clip`
-      : isFilled
-        ? `${track.name || "Track"} scene ${stepIndex + 1}; click to edit, drag to copy`
-        : `Capture ${track.name || "track"} into scene ${stepIndex + 1}`;
+    cell.title = isFilled
+      ? `${track.name || "Track"} scene ${stepIndex + 1}; click to edit, drag to copy`
+      : `Blank ${track.name || "track"} scene ${stepIndex + 1}; click to select, then Capture to create`;
     cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
   }
 
