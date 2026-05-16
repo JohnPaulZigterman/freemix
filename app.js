@@ -933,7 +933,6 @@ let textToolbarCollapsed = false;
 let drumToolbarCollapsed = false;
 let drumMasterGain = null;
 let drumLimiter = null;
-let drumNoiseBuffer = null;
 let drumBusDrive = null;
 let drumBusTone = null;
 let drumBusAir = null;
@@ -7972,6 +7971,74 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
   tickTransport();
 }
 
+function resetTrackPlaybackOutput(track) {
+  track.__playbackToken = Number.isFinite(track.__playbackToken) ? track.__playbackToken + 1 : 1;
+  track.nextTriggerAt = Number.POSITIVE_INFINITY;
+  track.lastStep = -1;
+  track.__lastPlaybackSignature = null;
+  track.__parkedAtAnchorFor = null;
+  track.__parkedPlaybackSignature = null;
+  track.__warmLaunchFor = null;
+  track.__prerollRevealFor = null;
+  track.__prerollPlaybackSignature = null;
+  track.__prerollRevealCanSkipSeek = false;
+  track.__lastTransportClockCorrectionAt = 0;
+  track.__lastTransportClockCorrectionPulse = null;
+  track.__transportClockCorrectionPulse = null;
+  track.__transportClockCorrectionUntil = null;
+  track.__awaitingCleanVisualFrame = false;
+  const selectedClip = getArrangementStepClip(track, arrangement?.step);
+  const resetState = selectedClip || track;
+  setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, {
+    mediaStatus: getTrackPlaybackSourceUrl(track, resetState) ? "stopped" : "empty",
+  });
+  removeTrackPrerollStandby(track);
+  const standby = track.__standbyVideoElement;
+  if (standby) {
+    try {
+      standby.pause();
+    } catch {
+      // Best effort cleanup.
+    }
+    setPlaybackVideoRole(standby, "standby");
+  }
+  delete track.__transportPrimedFor;
+  delete track.__transportPrimeAttempt;
+  if (track.__pendingPlaybackFrame) {
+    window.cancelAnimationFrame(track.__pendingPlaybackFrame);
+    track.__pendingPlaybackFrame = null;
+  }
+  disposeTrackAudio(track);
+  const video = getTrackVideo(track);
+  if (!video) {
+    return;
+  }
+
+  if (video.pause && typeof video.pause === "function") {
+    try {
+      video.pause();
+    } catch {
+      // Best effort: keep resetting internal playback even if the browser refuses pause.
+    }
+  }
+  setTrackBlackout(track, false);
+  safeSetCurrentTime(video, resetState);
+}
+
+function stopAllPlaybackOutputs() {
+  tracks.forEach(resetTrackPlaybackOutput);
+
+  playerPanel?.querySelectorAll("video, audio").forEach((media) => {
+    if (media.pause && typeof media.pause === "function") {
+      try {
+        media.pause();
+      } catch {
+        // Best effort hard stop for any media element not tied to a track row.
+      }
+    }
+  });
+}
+
 function stopTransport(resetVideos = true, bumpToken = true) {
   if (bumpToken && Number.isFinite(startTransport.bootToken)) {
     startTransport.bootToken += 1;
@@ -8020,69 +8087,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
   }
 
   if (shouldResetVideos) {
-    tracks.forEach((track) => {
-      track.__playbackToken = Number.isFinite(track.__playbackToken) ? track.__playbackToken + 1 : 1;
-      track.nextTriggerAt = Number.POSITIVE_INFINITY;
-      track.lastStep = -1;
-      track.__lastPlaybackSignature = null;
-      track.__parkedAtAnchorFor = null;
-      track.__parkedPlaybackSignature = null;
-      track.__warmLaunchFor = null;
-      track.__prerollRevealFor = null;
-      track.__prerollPlaybackSignature = null;
-      track.__prerollRevealCanSkipSeek = false;
-      track.__lastTransportClockCorrectionAt = 0;
-      track.__lastTransportClockCorrectionPulse = null;
-      track.__transportClockCorrectionPulse = null;
-      track.__transportClockCorrectionUntil = null;
-      track.__awaitingCleanVisualFrame = false;
-      const selectedClip = getArrangementStepClip(track, arrangement?.step);
-      const resetState = selectedClip || track;
-      setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, {
-        mediaStatus: getTrackPlaybackSourceUrl(track, resetState) ? "stopped" : "empty",
-      });
-      removeTrackPrerollStandby(track);
-      const standby = track.__standbyVideoElement;
-      if (standby) {
-        try {
-          standby.pause();
-        } catch {
-          // Best effort cleanup.
-        }
-        setPlaybackVideoRole(standby, "standby");
-      }
-      delete track.__transportPrimedFor;
-      delete track.__transportPrimeAttempt;
-      if (track.__pendingPlaybackFrame) {
-        window.cancelAnimationFrame(track.__pendingPlaybackFrame);
-        track.__pendingPlaybackFrame = null;
-      }
-      disposeTrackAudio(track);
-      const video = getTrackVideo(track);
-      if (!video) {
-        return;
-      }
-
-      if (video.pause && typeof video.pause === "function") {
-        try {
-          video.pause();
-        } catch {
-          // Best effort: keep resetting internal playback even if the browser refuses pause.
-        }
-      }
-      setTrackBlackout(track, false);
-      safeSetCurrentTime(video, resetState);
-    });
-
-    playerPanel?.querySelectorAll("video, audio").forEach((media) => {
-      if (media.pause && typeof media.pause === "function") {
-        try {
-          media.pause();
-        } catch {
-          // Best effort hard stop for any media element not tied to a track row.
-        }
-      }
-    });
+    stopAllPlaybackOutputs();
   }
 
   if (Number.isFinite(arrangementPlayheadStep)) {
@@ -8611,24 +8616,6 @@ function ensureDrumAudioOutput() {
   return drumMasterGain;
 }
 
-function getDrumNoiseBuffer() {
-  if (!audioContext) {
-    return null;
-  }
-
-  if (drumNoiseBuffer && drumNoiseBuffer.sampleRate === audioContext.sampleRate) {
-    return drumNoiseBuffer;
-  }
-
-  const length = Math.max(1, Math.floor(audioContext.sampleRate * 0.6));
-  drumNoiseBuffer = audioContext.createBuffer(1, length, audioContext.sampleRate);
-  const data = drumNoiseBuffer.getChannelData(0);
-  for (let index = 0; index < length; index += 1) {
-    data[index] = Math.random() * 2 - 1;
-  }
-  return drumNoiseBuffer;
-}
-
 function createDrumSaturationCurve(drive = 2) {
   const samples = 256;
   const curve = new Float32Array(samples);
@@ -8912,146 +8899,6 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
   source.stop(safeWhen + buffer.duration + 0.02);
   if (voiceId === "openHat") {
     openHatTail = gain;
-  }
-}
-
-/*
- * Legacy live drum synth body intentionally removed from the playback path.
- * Drum hits are now pre-rendered with OfflineAudioContext by renderDrumKitBuffers()
- * and played as lightweight AudioBufferSource one-shots.
- */
-function playDrumVoiceLegacyUnused(voiceId, kit, when, volume = 0.8) {
-  const output = ensureDrumAudioOutput();
-  if (!output || masterMuted) {
-    return;
-  }
-
-  const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
-  const safeVolume = clamp(Number(volume), 0, 1);
-  const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
-  const kitProfile = getDrumKitProfile(kitName);
-  const drumHitTrim = voiceId === "kick" ? 0.68 : voiceId === "crashRide" || voiceId === "openHat" ? 0.52 : 0.6;
-  const makeEnvelope = (peak = 0.7, duration = 0.18) => {
-    const envelope = audioContext.createGain();
-    envelope.gain.setValueAtTime(0.0001, safeWhen);
-    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * safeVolume * drumHitTrim), safeWhen + 0.004);
-    envelope.gain.exponentialRampToValueAtTime(0.0001, safeWhen + duration);
-    envelope.connect(output);
-    return envelope;
-  };
-  const makeNoise = (filterType, frequency, peak, duration) => {
-    const noise = audioContext.createBufferSource();
-    const filter = audioContext.createBiquadFilter();
-    noise.buffer = getDrumNoiseBuffer();
-    filter.type = filterType;
-    filter.frequency.setValueAtTime(frequency, safeWhen);
-    noise.connect(filter).connect(makeEnvelope(peak, duration));
-    noise.start(safeWhen);
-    noise.stop(safeWhen + duration + 0.04);
-  };
-
-  if (voiceId === "kick") {
-    const oscillator = audioContext.createOscillator();
-    oscillator.type = kitName === "909" ? "triangle" : "sine";
-    const startFreq = kitProfile.kickStart;
-    const endFreq = kitProfile.kickEnd;
-    oscillator.frequency.setValueAtTime(startFreq, safeWhen);
-    oscillator.frequency.exponentialRampToValueAtTime(endFreq, safeWhen + (kitName === "808" ? 0.3 : 0.12));
-    oscillator.connect(makeEnvelope(kitProfile.kickPeak, kitProfile.kickDecay));
-    oscillator.start(safeWhen);
-    oscillator.stop(safeWhen + kitProfile.kickDecay + 0.08);
-    if (kitName !== "808") {
-      makeNoise("highpass", kitName === "909" ? 3400 : 2600, kitName === "909" ? 0.16 : 0.12, 0.018);
-    }
-    return;
-  }
-
-  if (voiceId === "loTom" || voiceId === "hiTom") {
-    const oscillator = audioContext.createOscillator();
-    oscillator.type = "sine";
-    const isHigh = voiceId === "hiTom";
-    oscillator.frequency.setValueAtTime(isHigh ? kitProfile.tomHigh : kitProfile.tomLow, safeWhen);
-    oscillator.frequency.exponentialRampToValueAtTime(isHigh ? (kitName === "909" ? 118 : 104) : (kitName === "909" ? 84 : 72), safeWhen + 0.18);
-    oscillator.connect(makeEnvelope(isHigh ? 0.46 : 0.55, isHigh ? 0.22 : 0.26));
-    oscillator.start(safeWhen);
-    oscillator.stop(safeWhen + 0.32);
-    return;
-  }
-
-  if (voiceId === "sidestick") {
-    makeNoise("bandpass", kitName === "707" ? 2100 : 1850, 0.36, 0.045);
-    const click = audioContext.createOscillator();
-    click.type = "square";
-    click.frequency.setValueAtTime(kitName === "808" ? 920 : 1120, safeWhen);
-    click.connect(makeEnvelope(0.16, 0.035));
-    click.start(safeWhen);
-    click.stop(safeWhen + 0.045);
-    return;
-  }
-
-  if (voiceId === "snare") {
-    makeNoise("bandpass", kitProfile.snareNoise, kitName === "909" ? 0.68 : kitName === "707" ? 0.62 : 0.55, kitName === "909" ? 0.22 : 0.15);
-    const tone = audioContext.createOscillator();
-    tone.type = "triangle";
-    tone.frequency.setValueAtTime(kitName === "808" ? 190 : 235, safeWhen);
-    tone.connect(makeEnvelope(0.18, 0.12));
-    tone.start(safeWhen);
-    tone.stop(safeWhen + 0.16);
-    return;
-  }
-
-  if (voiceId === "clap") {
-    [0, 0.012, 0.026].forEach((offset) => {
-      const shiftedWhen = safeWhen + offset;
-      const noise = audioContext.createBufferSource();
-      const filter = audioContext.createBiquadFilter();
-      const envelope = audioContext.createGain();
-      noise.buffer = getDrumNoiseBuffer();
-      filter.type = "bandpass";
-      filter.frequency.setValueAtTime(kitName === "707" ? 1500 : 1250, shiftedWhen);
-      envelope.gain.setValueAtTime(0.0001, shiftedWhen);
-      envelope.gain.exponentialRampToValueAtTime(0.28 * safeVolume, shiftedWhen + 0.003);
-      envelope.gain.exponentialRampToValueAtTime(0.0001, shiftedWhen + 0.055);
-      noise.connect(filter).connect(envelope).connect(makeVoiceBus("clap"));
-      noise.start(shiftedWhen);
-      noise.stop(shiftedWhen + 0.08);
-    });
-    makeNoise("bandpass", kitName === "909" ? 1250 : 980, kitName === "808" ? 0.16 : 0.12, kitName === "808" ? 0.24 : 0.16);
-    return;
-  }
-
-  if (voiceId === "closedHat" || voiceId === "openHat") {
-    const isOpen = voiceId === "openHat";
-    makeNoise(
-      "highpass",
-      kitProfile.hatFreq,
-      isOpen ? 0.28 : 0.22,
-      isOpen ? (kitName === "909" ? 0.34 : 0.24) : (kitName === "909" ? 0.075 : 0.055),
-    );
-    return;
-  }
-
-  if (voiceId === "crashRide") {
-    makeNoise("highpass", kitName === "707" ? 5200 : 6200, 0.34, kitName === "808" ? 0.55 : 0.42);
-    const shimmer = audioContext.createOscillator();
-    shimmer.type = "triangle";
-    shimmer.frequency.setValueAtTime(kitName === "909" ? 760 : 690, safeWhen);
-    shimmer.connect(makeEnvelope(0.08, 0.38));
-    shimmer.start(safeWhen);
-    shimmer.stop(safeWhen + 0.45);
-    return;
-  }
-
-  if (voiceId === "cowbell") {
-    const bellGain = makeEnvelope(0.26, kitName === "808" ? 0.18 : 0.13);
-    [kitName === "707" ? 610 : 540, kitName === "707" ? 930 : 845].forEach((frequency) => {
-      const oscillator = audioContext.createOscillator();
-      oscillator.type = "square";
-      oscillator.frequency.setValueAtTime(frequency, safeWhen);
-      oscillator.connect(bellGain);
-      oscillator.start(safeWhen);
-      oscillator.stop(safeWhen + 0.2);
-    });
   }
 }
 
@@ -11818,6 +11665,12 @@ window.renderDrumControlPanel = renderDrumControlPanel;
 window.setArrangementSceneColor = setArrangementSceneColor;
 window.freemixGetArrangementTextClip = getArrangementTextClip;
 window.freemixGetArrangementDrumClip = getArrangementDrumClip;
+window.freemixGetDrumBufferDiagnostics = () => ({
+  rendered: drumRenderedBuffers?.size || 0,
+  expected: DRUM_KITS.length * DRUM_VOICES.length,
+  pending: !!drumRenderPromise,
+  sampleRate: drumRenderedSampleRate,
+});
 window.isArrangementTextClipSelected = isArrangementTextClipSelected;
 window.isArrangementDrumClipSelected = isArrangementDrumClipSelected;
 window.isArrangementSceneSelected = isArrangementSceneSelected;

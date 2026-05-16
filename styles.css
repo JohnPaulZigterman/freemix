@@ -2781,6 +2781,69 @@ input[type="range"]::-moz-range-thumb {
   margin-top: 3px;
 }
 
+.debug-diagnostics {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--clip-selected) 18%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 92%, var(--clip-selected) 8%), var(--panel));
+  color: var(--ink);
+}
+
+.debug-diagnostics-group {
+  display: grid;
+  gap: 3px;
+}
+
+.debug-diagnostics h4 {
+  margin: 0;
+  color: var(--clip-selected);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.debug-diagnostics dl {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.debug-diagnostic-row {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 4px;
+  background: color-mix(in srgb, var(--panel-alt) 68%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.debug-diagnostic-row dt,
+.debug-diagnostic-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.56rem;
+}
+
+.debug-diagnostic-row dt {
+  color: var(--muted);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.debug-diagnostic-row dd {
+  color: var(--ink);
+  font-weight: 800;
+}
+
 .debug-action-button {
   min-height: 18px;
   border: 1px solid var(--line);

@@ -261,6 +261,101 @@
     setStatus("Unknown debug action");
   };
 
+  function formatDiagnosticValue(value) {
+    if (typeof value === "boolean") {
+      return value ? "yes" : "no";
+    }
+
+    if (value === null || typeof value === "undefined" || value === "") {
+      return "none";
+    }
+
+    return String(value);
+  }
+
+  function renderDiagnosticRows(rows) {
+    return rows
+      .map(
+        ([label, value]) => `
+          <div class="debug-diagnostic-row">
+            <dt>${escapeHtml(label)}</dt>
+            <dd>${escapeHtml(formatDiagnosticValue(value))}</dd>
+          </div>
+        `,
+      )
+      .join("");
+  }
+
+  function getMediaDiagnosticSummary() {
+    const trackCount = tracks.length;
+    const loadedCount = tracks.filter((track) => !!track.source).length;
+    const readyCount = tracks.filter((track) => ["ready", "fx-ready", "proxy-ready"].includes(track.mediaStatus)).length;
+    const failedCount = tracks.filter((track) => ["failed", "unsupported"].includes(track.mediaStatus)).length;
+    return `${loadedCount}/${trackCount} loaded, ${readyCount} ready, ${failedCount} failed`;
+  }
+
+  function getAudioDiagnosticSummary() {
+    const routedCount = tracks.filter((track) => !!track.audio?.output).length;
+    const mutedCount = tracks.filter((track) => track.muted).length;
+    return `${routedCount}/${tracks.length} routed, ${mutedCount} muted`;
+  }
+
+  function getDrumDiagnosticSummary() {
+    const drumDiagnostics = typeof window.freemixGetDrumBufferDiagnostics === "function"
+      ? window.freemixGetDrumBufferDiagnostics()
+      : null;
+    if (!drumDiagnostics) {
+      return "unavailable";
+    }
+
+    const rendered = Number(drumDiagnostics.rendered) || 0;
+    const expected = Number(drumDiagnostics.expected) || 0;
+    const pending = drumDiagnostics.pending ? ", rendering" : "";
+    return `${rendered}/${expected} buffers${pending}`;
+  }
+
+  function renderDiagnosticsPanel() {
+    const selectedTarget = typeof window.freemixGetSelectedEditTargetLabel === "function"
+      ? window.freemixGetSelectedEditTargetLabel()
+      : "Editing live tracks";
+    const transportRows = [
+      ["Transport", transport?.active ? "playing" : "stopped"],
+      ["Mode", arrangement.enabled ? "arrangement" : "live"],
+      ["Scene", Number.isFinite(Number(arrangement.step)) ? Number(arrangement.step) + 1 : "none"],
+      ["BPM", transport?.bpm || appState.preferredBpm || DEFAULT_BPM],
+      ["Beat ms", Number.isFinite(Number(transport?.beatMs)) ? Math.round(Number(transport.beatMs)) : "none"],
+      ["Selected", selectedTarget],
+    ];
+    const systemRows = [
+      ["Media", getMediaDiagnosticSummary()],
+      ["Audio", getAudioDiagnosticSummary()],
+      ["Drums", getDrumDiagnosticSummary()],
+      ["Exporting", typeof window.freemixIsExportingVideo === "function" ? window.freemixIsExportingVideo() : false],
+      ["Arrangement clips", typeof hasArrangementClips === "function" ? hasArrangementClips() : false],
+    ];
+    const trackRows = tracks.map((track, index) => [
+      `T${index + 1}`,
+      `${track.mediaStatus || (track.source ? "ready" : "empty")} / ${track.audio?.output ? "audio routed" : "native/none"}`,
+    ]);
+
+    return `
+      <section class="debug-diagnostics" aria-label="Runtime diagnostics">
+        <div class="debug-diagnostics-group">
+          <h4>Transport</h4>
+          <dl>${renderDiagnosticRows(transportRows)}</dl>
+        </div>
+        <div class="debug-diagnostics-group">
+          <h4>Systems</h4>
+          <dl>${renderDiagnosticRows(systemRows)}</dl>
+        </div>
+        <div class="debug-diagnostics-group debug-diagnostics-group--tracks">
+          <h4>Tracks</h4>
+          <dl>${renderDiagnosticRows(trackRows)}</dl>
+        </div>
+      </section>
+    `;
+  }
+
   window.freemixRenderDebugPanel = function renderDebugPanel() {
     return `
       <div class="debug-actions" role="group" aria-label="Debug actions">
@@ -269,6 +364,7 @@
         <button class="debug-action-button" type="button" data-debug-action="dumpState">Dump state</button>
         <button class="debug-action-button" type="button" data-debug-action="simulateTransport">8-bar sweep</button>
       </div>
+      ${renderDiagnosticsPanel()}
     `;
   };
 
