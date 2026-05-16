@@ -20,6 +20,7 @@
     const arrangementToggle = player.querySelector("#arrangementToggle");
     const arrangementDeleteButton = player.querySelector("#arrangementDeleteButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
+    const selectedTargetLabel = player.querySelector("#selectedTargetLabel");
     const timeSignatureSelect = player.querySelector("#timeSignatureSelect");
     const bpmInput = player.querySelector("#bpmInput");
     const meter = player.querySelector(".meter");
@@ -56,6 +57,12 @@
 
     if (arrangementLengthSelect) {
       arrangementLengthSelect.value = String(arrangementStepCount);
+    }
+    if (selectedTargetLabel) {
+      selectedTargetLabel.textContent =
+        typeof window.freemixGetSelectedEditTargetLabel === "function"
+          ? window.freemixGetSelectedEditTargetLabel()
+          : "Editing live tracks";
     }
     if (timeSignatureSelect) {
       timeSignatureSelect.value = resolvePreferredTimeSignature().value;
@@ -151,9 +158,13 @@
     cell.textContent = isFilled ? "x" : "";
     const canDragCopy = isFilled;
     cell.draggable = canDragCopy;
-    cell.title = isFilled
-      ? escapeHtml(`${track.name || "Track"} scene ${stepIndex + 1}; drag to copy, click to select`)
-      : `Capture ${track.name || "track"}`;
+    cell.title = arrangementDeleteMode
+      ? isFilled
+        ? `Delete ${track.name || "Track"} from scene ${stepIndex + 1}`
+        : `Scene ${stepIndex + 1} has no ${track.name || "track"} clip`
+      : isFilled
+        ? `${track.name || "Track"} scene ${stepIndex + 1}; click to edit, drag to copy`
+        : `Capture ${track.name || "track"} into scene ${stepIndex + 1}`;
     cell.classList.toggle("playing", arrangement.step === stepIndex);
   }
 

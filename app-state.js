@@ -20,6 +20,8 @@
       needsHint: true,
     },
   };
+  const MIN_ARRANGEMENT_STEPS = 1;
+  const MAX_ARRANGEMENT_STEPS = 64;
   const PERSISTED_STATE_KEYS = new Set([
     "preferredBpm",
     "preferredTimeSignature",
@@ -110,7 +112,11 @@
   );
   state.masterMuted = state.masterMuted ?? defaultsFromSaved.masterMuted;
   state.metronomeEnabled = state.metronomeEnabled ?? defaultsFromSaved.metronomeEnabled;
-  state.arrangementStepCount = Number(state.arrangementStepCount) || Number(defaultsFromSaved.arrangementStepCount) || 8;
+  state.arrangementStepCount = clamp(
+    Number(state.arrangementStepCount) || Number(defaultsFromSaved.arrangementStepCount) || DEFAULTS.arrangementStepCount,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
   state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
   state.tracks = state.tracks ?? null;
@@ -420,7 +426,11 @@
           preferredBpm: Number(state.preferredBpm) || 92,
           preferredTimeSignature: state.preferredTimeSignature || "4/4",
           metronomeEnabled: !!state.metronomeEnabled,
-          arrangementStepCount: state.arrangementStepCount || 8,
+          arrangementStepCount: clamp(
+            state.arrangementStepCount || DEFAULTS.arrangementStepCount,
+            MIN_ARRANGEMENT_STEPS,
+            MAX_ARRANGEMENT_STEPS,
+          ),
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
           userOnboarding: state.userOnboarding,

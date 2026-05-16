@@ -166,6 +166,15 @@
     updateArrangementStepCount(event);
   }
 
+  function handleArrangementLengthInput(event) {
+    const value = Number(event.target.value);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    event.target.value = String(Math.min(Math.max(Math.round(value), 1), 64));
+  }
+
   function handleTransportClick(target) {
     const id = target?.getAttribute?.("id");
     if (!id) {
@@ -178,6 +187,11 @@
     }
 
     if (id === "stopButton") {
+      if (!transport?.active && arrangement?.enabled && typeof window.freemixSelectArrangementStart === "function") {
+        window.freemixSelectArrangementStart();
+        return true;
+      }
+
       stopTransport();
       return true;
     }
@@ -558,6 +572,11 @@
     if (control.id === "bpmInput") {
       handleBpmInput(event);
       window.freemixRender?.updateTransportRow?.();
+      return;
+    }
+
+    if (control.id === "arrangementStepsSelect") {
+      handleArrangementLengthInput(event);
     }
   }
 
@@ -617,6 +636,57 @@
   }
 
   function onKeydown(event) {
+    const editableTarget = event.target.closest("input, textarea, select, [contenteditable='true']");
+    if (!editableTarget && event.code === "Space") {
+      event.preventDefault();
+      if (transport?.active) {
+        stopTransport();
+      } else {
+        startTransport();
+      }
+      return;
+    }
+
+    if (!editableTarget && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      window.freemixSelectAdjacentArrangementStep?.(event.key === "ArrowRight" ? 1 : -1);
+      return;
+    }
+
+    if (!editableTarget && (event.key === "Delete" || event.key === "Backspace")) {
+      event.preventDefault();
+      window.freemixDeleteSelectedArrangementScene?.();
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      event.preventDefault();
+      window.freemixCopySelectedArrangementScene?.();
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      window.freemixPasteArrangementClipboardToSelectedScene?.();
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
+        window.freemixRedoArrangementEdit?.();
+      } else {
+        window.freemixUndoArrangementEdit?.();
+      }
+      return;
+    }
+
+    if (!editableTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      window.freemixRedoArrangementEdit?.();
+      return;
+    }
+
     const activeInput = event.target.closest(TRACK_NAME_INPUT_SELECTOR);
     if (activeInput) {
       if (event.key === "Enter") {

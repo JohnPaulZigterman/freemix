@@ -132,7 +132,12 @@ const APP_STATE_PROXY_DIRTY_KEYS = new Set([
 ]);
 const DEFAULT_BPM = 92;
 const DEFAULT_ARRANGEMENT_STEPS = 8;
-const ARRANGEMENT_STEP_OPTIONS = [4, 8, 16];
+const MIN_ARRANGEMENT_STEPS = 1;
+const MAX_ARRANGEMENT_STEPS = 64;
+const ARRANGEMENT_STEP_OPTIONS = Array.from(
+  { length: MAX_ARRANGEMENT_STEPS - MIN_ARRANGEMENT_STEPS + 1 },
+  (_, index) => MIN_ARRANGEMENT_STEPS + index,
+);
 const DEFAULT_TIME_SIGNATURE = "4/4";
 const TIME_SIGNATURE_OPTIONS = Object.freeze([
   { value: "2/4", label: "2/4", numerator: 2, denominator: 4, beatsPerBar: 2, noteValue: 4 },
@@ -309,9 +314,10 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
     return;
   }
 
-  const stepCount = Math.max(
-    1,
-    Number.isFinite(Number(targetStepCount)) ? Math.max(1, Math.floor(Number(targetStepCount))) : DEFAULT_ARRANGEMENT_STEPS,
+  const stepCount = clamp(
+    Number.isFinite(Number(targetStepCount)) ? Math.floor(Number(targetStepCount)) : DEFAULT_ARRANGEMENT_STEPS,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
   );
   const existingClips = Array.isArray(arrangementState.clips) ? arrangementState.clips : [];
   arrangementState.clips = existingClips
@@ -412,6 +418,7 @@ function normalizeTrackPreferences(track) {
 
   track.searchTimer = null;
   track.searchRequestId = Number.isFinite(Number(track.searchRequestId)) ? Number(track.searchRequestId) : 0;
+  track.mediaStatus = typeof track.mediaStatus === "string" ? track.mediaStatus : (track.source ? "ready" : "empty");
 }
 
 tracks.forEach(normalizeTrackPreferences);
@@ -525,6 +532,118 @@ let liveControlPersistTimer = null;
 let arrangementPlayheadUpdateFrame = null;
 let searchResultCachePersistTimer = null;
 let sourceMetadataCachePersistTimer = null;
+let arrangementClipboardStep = null;
+let arrangementUndoStack = [];
+let arrangementRedoStack = [];
+const ARRANGEMENT_HISTORY_LIMIT = 50;
+
+function cloneArrangementHistoryPayload(payload) {
+  try {
+    return JSON.parse(JSON.stringify(payload));
+  } catch {
+    return null;
+  }
+}
+
+function captureArrangementEdit(label = "Arrangement edit") {
+  if (!arrangement?.clips) {
+    return;
+  }
+
+  const snapshot = cloneArrangementHistoryPayload({
+    label,
+    arrangementStepCount,
+    arrangement,
+  });
+  if (!snapshot) {
+    return;
+  }
+
+  arrangementUndoStack.push(snapshot);
+  if (arrangementUndoStack.length > ARRANGEMENT_HISTORY_LIMIT) {
+    arrangementUndoStack.shift();
+  }
+  arrangementRedoStack = [];
+}
+
+function restoreArrangementHistorySnapshot(snapshot) {
+  if (!snapshot?.arrangement) {
+    return false;
+  }
+
+  const nextStepCount = clamp(
+    Number(snapshot.arrangementStepCount) || DEFAULT_ARRANGEMENT_STEPS,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
+  const nextArrangement = cloneArrangementHistoryPayload(snapshot.arrangement);
+  if (!nextArrangement) {
+    return false;
+  }
+
+  if (transport?.active) {
+    stopTransport(false);
+  }
+
+  arrangementStepCount = nextStepCount;
+  syncArrangementState(nextArrangement);
+  normalizeArrangementState(arrangement, arrangementStepCount);
+  refreshArrangementHasClipsState();
+  bindTracksToArrangementStep(arrangement.step);
+  renderWorkstation();
+  markAppStateDirty(true);
+  return true;
+}
+
+function undoArrangementEdit() {
+  const snapshot = arrangementUndoStack.pop();
+  if (!snapshot) {
+    setStatus("Nothing to undo");
+    return false;
+  }
+
+  const current = cloneArrangementHistoryPayload({
+    label: "Redo arrangement edit",
+    arrangementStepCount,
+    arrangement,
+  });
+  if (current) {
+    arrangementRedoStack.push(current);
+  }
+
+  if (!restoreArrangementHistorySnapshot(snapshot)) {
+    setStatus("Could not undo arrangement edit", true);
+    return false;
+  }
+
+  setStatus(`${snapshot.label || "Arrangement edit"} undone`);
+  return true;
+}
+
+function redoArrangementEdit() {
+  const snapshot = arrangementRedoStack.pop();
+  if (!snapshot) {
+    setStatus("Nothing to redo");
+    return false;
+  }
+
+  const current = cloneArrangementHistoryPayload({
+    label: "Undo arrangement edit",
+    arrangementStepCount,
+    arrangement,
+  });
+  if (current) {
+    arrangementUndoStack.push(current);
+  }
+
+  if (!restoreArrangementHistorySnapshot(snapshot)) {
+    setStatus("Could not redo arrangement edit", true);
+    return false;
+  }
+
+  setStatus("Arrangement edit redone");
+  return true;
+}
 
 function readJsonFromStorage(storageKey, fallback) {
   if (typeof localStorage === "undefined") {
@@ -1087,6 +1206,20 @@ function arrangementStepHasClips(stepIndex) {
   return !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
 }
 
+function getSelectedEditTargetLabel() {
+  const resolvedStep = getArrangementStepIndex(arrangement?.step);
+  if (resolvedStep === null) {
+    return "Editing live tracks";
+  }
+
+  const hasSceneClips = arrangementStepHasClips(resolvedStep);
+  if (arrangement.enabled || hasSceneClips) {
+    return `Editing scene ${resolvedStep + 1}${hasSceneClips ? "" : " (empty)"}`;
+  }
+
+  return "Editing live tracks";
+}
+
 function setArrangementSceneColor(stepIndex, colorIndex) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
   if (resolvedStep === null) {
@@ -1097,7 +1230,13 @@ function setArrangementSceneColor(stepIndex, colorIndex) {
     arrangement.sceneColors = Array.from({ length: arrangement.clips?.length || arrangementStepCount }, () => DEFAULT_SCENE_COLOR_INDEX);
   }
 
-  arrangement.sceneColors[resolvedStep] = normalizeSceneColorIndex(colorIndex);
+  const nextColorIndex = normalizeSceneColorIndex(colorIndex);
+  if (getArrangementSceneColorIndex(resolvedStep) === nextColorIndex) {
+    return true;
+  }
+
+  captureArrangementEdit(`Changed scene ${resolvedStep + 1} color`);
+  arrangement.sceneColors[resolvedStep] = nextColorIndex;
   if (window.freemixRender?.updateArrangementGrid) {
     refreshArrangementStepCells(resolvedStep);
     window.freemixRender.updateArrangementSceneColorSelector?.();
@@ -2421,11 +2560,16 @@ function renderArrangementPanel() {
           <span>Arr</span>
           <label class="control-field arrangement-length-field">
             <span>Bars</span>
-            <select id="arrangementStepsSelect">
-              ${ARRANGEMENT_STEP_OPTIONS.map(
-                (count) => `<option value="${count}" ${count === arrangementStepCount ? "selected" : ""}>${count}</option>`,
-              ).join("")}
-            </select>
+            <input
+              id="arrangementStepsSelect"
+              type="number"
+              min="${MIN_ARRANGEMENT_STEPS}"
+              max="${MAX_ARRANGEMENT_STEPS}"
+              step="1"
+              value="${arrangementStepCount}"
+              inputmode="numeric"
+              aria-label="Arrangement bars"
+            >
           </label>
           <button
             class="arrangement-toggle ${arrangement.enabled ? "active" : ""}"
@@ -2464,6 +2608,7 @@ function renderArrangementPanel() {
             </button>
           </div>
         </div>
+        <div class="selected-target-label" id="selectedTargetLabel">${escapeHtml(getSelectedEditTargetLabel())}</div>
         ${renderArrangementSceneColorSelector()}
         <div class="arrangement-step-labels" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement steps">
           ${renderArrangementStepLabels()}
@@ -2533,6 +2678,13 @@ function renderArrangementRow(track) {
         const canDragCopy = !!clip;
         const sceneColor = getArrangementSceneColor(index);
         const sceneStyle = sceneColor ? ` style="--scene-track-color: ${sceneColor};"` : "";
+        const title = arrangementDeleteMode
+          ? clip
+            ? `Delete ${track.name} from scene ${index + 1}`
+            : `Scene ${index + 1} has no ${track.name} clip`
+          : clip
+            ? `${track.name} scene ${index + 1}; click to edit, drag to copy`
+            : `Capture ${track.name} into scene ${index + 1}`;
         return `
           <button
             class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${arrangement.step === index ? "playing" : ""}"
@@ -2540,7 +2692,7 @@ function renderArrangementRow(track) {
             data-arr-track="${track.id}"
             data-arr-step="${index}"
             draggable="${canDragCopy ? "true" : "false"}"
-            title="${clip ? escapeHtml(`${track.name} bar ${index + 1}`) : `Capture ${track.name}`}"
+            title="${escapeHtml(title)}"
             ${sceneStyle}
           >
             ${clip ? "x" : ""}
@@ -2949,6 +3101,10 @@ function handleTrackControl(event) {
     return;
   }
 
+  if (!isInputEvent && SCENE_EDITABLE_CONTROLS.has(controlName) && editableState !== track && arrangement?.clips) {
+    captureArrangementEdit(`Changed ${controlName} in scene ${(safeStepIndex ?? 0) + 1}`);
+  }
+
   if (controlName === "durationFilter") {
     editableState.durationFilter = control.value;
     applyArrangementClipControlValue(track, "durationFilter", editableState.durationFilter, editableState);
@@ -3333,6 +3489,25 @@ function waitForTrackReady(video, timeoutMs = AV_READY_TIMEOUT_MS) {
   });
 }
 
+function waitForTrackMetadata(video, timeoutMs = AV_READY_TIMEOUT_MS) {
+  if (!video || video.readyState >= 1) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const done = () => {
+      video.removeEventListener("loadedmetadata", done);
+      video.removeEventListener("error", done);
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+
+    const timeoutId = window.setTimeout(done, timeoutMs);
+    video.addEventListener("loadedmetadata", done, { once: true });
+    video.addEventListener("error", done, { once: true });
+  });
+}
+
 function awaitVideoSeek(video, targetTime, timeoutMs = AV_READY_TIMEOUT_MS) {
   if (!video || !Number.isFinite(targetTime)) {
     return Promise.resolve();
@@ -3446,13 +3621,25 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       video.load();
     }
 
+    if (shouldSeekToAnchor) {
+      await waitForTrackMetadata(video);
+      if (!isCurrentPlaybackAttempt()) {
+        return muted;
+      }
+      const anchorTime = safeStartTime(clip, video);
+      safeSetCurrentTime(video, clip, track, { force: true });
+      await awaitVideoSeek(video, anchorTime);
+    }
+
     await waitForTrackReady(video);
     if (!isCurrentPlaybackAttempt()) {
       return muted;
     }
 
     if (shouldSeekToAnchor) {
-      retriggerVideoAtAnchor(video, clip);
+      const anchorTime = safeStartTime(clip, video);
+      safeSetCurrentTime(video, clip, track, { force: true });
+      await awaitVideoSeek(video, anchorTime);
     }
 
     if (video.paused) {
@@ -3663,7 +3850,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
   }
 
   window.freemixRender?.updateTransportRow?.();
-  setStatus("Playing");
+  setStatus(arrangement.enabled && hasArrangementClips() ? `Arrangement playing: scene ${arrangement.step + 1}` : "Live mode playing");
   tickTransport();
 }
 
@@ -3747,7 +3934,9 @@ function stopTransport(resetVideos = true, bumpToken = true) {
   activeBeatLightIndex = -1;
 
   if (tracks.some((track) => track.source)) {
-    setStatus("Source ready");
+    setStatus(arrangement.enabled ? `Stopped at scene ${arrangement.step + 1}` : "Stopped");
+  } else {
+    setStatus("Stopped");
   }
 }
 
@@ -3797,6 +3986,23 @@ function computeExportBars(mode = "clip") {
 function computeExportDurationMs(mode = "clip") {
   const bars = computeExportBars(mode);
   return Math.max(1, bars) * getTransportBeatMs() * getTransportBeatsPerBar();
+}
+
+function getExportPreflightIssue(mode = "clip") {
+  const exportMode = mode === "arrangement" ? "arrangement" : "clip";
+  if (exportMode === "arrangement") {
+    if (!hasArrangementClips()) {
+      return "No arrangement clips to export";
+    }
+
+    const hasPlayableArrangementClip = arrangement?.clips?.some((step) =>
+      Object.values(step || {}).some((clip) => !!clip?.source?.mediaUrl),
+    );
+    return hasPlayableArrangementClip ? "" : "Arrangement has no playable media";
+  }
+
+  const hasPlayableTrack = tracks.some((track) => !!getTrackPlaybackSourceUrl(track, getTrackPlaybackState(track) || track));
+  return hasPlayableTrack ? "" : "Load a source before exporting";
 }
 
 function getExportBlendMode(track) {
@@ -3994,19 +4200,25 @@ function releaseExportAudioTap(tap) {
 }
 
 async function exportComposition(mode = "clip") {
+  const preflightIssue = getExportPreflightIssue(mode);
+  if (preflightIssue) {
+    setStatus(preflightIssue, true);
+    return false;
+  }
+
   if (isExportingVideo) {
     setStatus("Export already running", true);
-    return;
+    return false;
   }
 
   if (!window.MediaRecorder) {
     setStatus("MediaRecorder not available in this browser", true);
-    return;
+    return false;
   }
 
   if (!window.HTMLCanvasElement || !HTMLCanvasElement.prototype.captureStream) {
     setStatus("Canvas capture not supported", true);
-    return;
+    return false;
   }
 
   const renderTracks = tracks.filter((track) => {
@@ -4350,10 +4562,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   applyTrackOpacity(track, playbackState);
   applyTrackPitchAndSpeed(track, playbackState);
   if (transport?.active) {
-    retriggerVideoAtAnchor(video, playbackState);
-    if (video.paused) {
-      void attemptVideoPlay(video, track, playbackState, playbackToken, { seekToAnchor: false });
-    }
+    void attemptVideoPlay(video, track, playbackState, playbackToken);
   } else {
     void attemptVideoPlay(video, track, playbackState, playbackToken);
   }
@@ -4572,6 +4781,12 @@ function applyArrangementClipControlValue(track, controlName, value, clipState =
 
   if (controlName === "startTime") {
     clip.startTime = Number.isFinite(Number(value)) ? Number(value) : 0;
+    if (!transport?.active) {
+      const video = getTrackVideo(track);
+      if (video) {
+        safeSetCurrentTime(video, clip);
+      }
+    }
     return;
   }
 
@@ -5016,6 +5231,7 @@ function handleArrangementCell(event) {
       return;
     }
 
+    captureArrangementEdit(`Deleted ${track.name} from scene ${stepIndex + 1}`);
     delete step[track.id];
     if (!Object.keys(step).length) {
       arrangement.clips[stepIndex] = {};
@@ -5051,6 +5267,7 @@ function handleArrangementCell(event) {
   }
 
   if (!hasTrackClip) {
+    captureArrangementEdit(`Captured ${track.name} in scene ${stepIndex + 1}`);
     step[track.id] = captureTrackClip(track);
     refreshArrangementHasClipsState();
     setStatus(`${track.name}: placed in ${stepIndex + 1}`);
@@ -5090,6 +5307,7 @@ function handleArrangementStepLabel(event) {
       return;
     }
 
+    captureArrangementEdit(`Deleted scene ${stepIndex + 1}`);
     arrangement.clips[stepIndex] = {};
     refreshArrangementHasClipsState();
 
@@ -5167,6 +5385,7 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
   }
 
   const sourceClips = arrangement.clips[sourceStep];
+  captureArrangementEdit(`Pasted scene ${sourceStep + 1} to ${targetStep + 1}`);
   arrangement.clips[targetStep] = cloneArrangementStep(sourceClips);
   arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(sourceStep);
   arrangement.step = targetStep;
@@ -5192,6 +5411,91 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
 
   renderWorkstation();
   markAppStateDirty();
+  return true;
+}
+
+function copySelectedArrangementScene() {
+  const sourceStep = getArrangementStepIndex(arrangement?.step);
+  if (sourceStep === null || !arrangementStepHasClips(sourceStep)) {
+    setStatus("No selected scene to copy", true);
+    return false;
+  }
+
+  arrangementClipboardStep = cloneArrangementStep(arrangement.clips[sourceStep]);
+  setStatus(`Scene ${sourceStep + 1} copied`);
+  return true;
+}
+
+function pasteArrangementClipboardToSelectedScene() {
+  const targetStep = getArrangementStepIndex(arrangement?.step);
+  if (targetStep === null) {
+    setStatus("Choose a scene first", true);
+    return false;
+  }
+
+  if (!arrangementClipboardStep || typeof arrangementClipboardStep !== "object") {
+    setStatus("No copied scene", true);
+    return false;
+  }
+
+  captureArrangementEdit(`Pasted copied scene to ${targetStep + 1}`);
+  arrangement.clips[targetStep] = cloneArrangementStep(arrangementClipboardStep);
+  refreshArrangementHasClipsState();
+  selectArrangementStep(targetStep);
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+  } else {
+    renderWorkstation();
+  }
+  markAppStateDirty(true);
+  setStatus(`Pasted to scene ${targetStep + 1}`);
+  return true;
+}
+
+function deleteSelectedArrangementScene() {
+  const targetStep = getArrangementStepIndex(arrangement?.step);
+  if (targetStep === null) {
+    setStatus("Choose a scene first", true);
+    return false;
+  }
+
+  if (!arrangement?.clips?.[targetStep] || !Object.keys(arrangement.clips[targetStep]).length) {
+    setStatus(`Scene ${targetStep + 1} is already empty`);
+    return false;
+  }
+
+  captureArrangementEdit(`Deleted scene ${targetStep + 1}`);
+  arrangement.clips[targetStep] = {};
+  refreshArrangementHasClipsState();
+  selectArrangementStep(targetStep);
+  if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementGrid();
+  } else {
+    renderWorkstation();
+  }
+  markAppStateDirty(true);
+  setStatus(`Deleted scene ${targetStep + 1}`);
+  return true;
+}
+
+function selectAdjacentArrangementStep(direction) {
+  const delta = Number(direction);
+  if (!Number.isFinite(delta) || !arrangement?.clips?.length) {
+    return false;
+  }
+
+  const nextStep = clamp((Number(arrangement.step) || 0) + Math.sign(delta), 0, arrangement.clips.length - 1);
+  selectArrangementStep(nextStep);
+  return true;
+}
+
+function selectArrangementStart() {
+  if (!arrangement?.enabled) {
+    return false;
+  }
+
+  selectArrangementStep(0);
+  setStatus("Returned to scene 1");
   return true;
 }
 
@@ -5295,6 +5599,7 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
     return false;
   }
 
+  captureArrangementEdit(`Copied ${source.track.name} clip to scene ${target.stepIndex + 1}`);
   arrangement.clips[target.stepIndex] = arrangement.clips[target.stepIndex] || {};
   arrangement.clips[target.stepIndex][target.track.id] = cloneArrangementClip(source.clip);
   refreshArrangementHasClipsState();
@@ -5330,6 +5635,7 @@ function copyCurrentArrangementSectionToAll() {
   }
 
   const destinationSteps = [];
+  captureArrangementEdit(`Filled arrangement from scene ${sourceStepIndex + 1}`);
   for (let index = 0; index < arrangement.clips.length; index += 1) {
     if (index === sourceStepIndex) {
       continue;
@@ -5439,6 +5745,7 @@ function toggleArrangement() {
 }
 
 function clearArrangement() {
+  captureArrangementEdit("Cleared arrangement");
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementDeleteMode = false;
@@ -5504,17 +5811,34 @@ window.renderArrangementSceneColorSelector = renderArrangementSceneColorSelector
 window.setArrangementSceneColor = setArrangementSceneColor;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
-window.freemixIsArrangementCopyMode = () => !!arrangementCopyMode;
+window.freemixGetSelectedEditTargetLabel = getSelectedEditTargetLabel;
+window.freemixIsArrangementCopyMode = () => false;
 window.freemixArrangementStepHasClips = arrangementStepHasClips;
 window.freemixCanDragCopyArrangementStep = canDragCopyArrangementStep;
 window.freemixBeginArrangementClipDragCopy = beginArrangementClipDragCopy;
 window.freemixHoverArrangementClipDragTarget = hoverArrangementClipDragTarget;
 window.freemixDropArrangementClipDragCopy = dropArrangementClipDragCopy;
 window.freemixClearArrangementDragState = clearArrangementDragState;
+window.freemixCopySelectedArrangementScene = copySelectedArrangementScene;
+window.freemixPasteArrangementClipboardToSelectedScene = pasteArrangementClipboardToSelectedScene;
+window.freemixDeleteSelectedArrangementScene = deleteSelectedArrangementScene;
+window.freemixSelectAdjacentArrangementStep = selectAdjacentArrangementStep;
+window.freemixSelectArrangementStart = selectArrangementStart;
+window.freemixUndoArrangementEdit = undoArrangementEdit;
+window.freemixRedoArrangementEdit = redoArrangementEdit;
 
 function updateArrangementStepCount(event) {
-  const nextLength = Number(event.target.value);
-  if (!Number.isInteger(nextLength) || !ARRANGEMENT_STEP_OPTIONS.includes(nextLength)) {
+  const nextLength = clamp(
+    Math.round(Number(event.target.value)),
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
+  if (!Number.isInteger(nextLength)) {
+    event.target.value = String(arrangementStepCount);
+    return;
+  }
+  event.target.value = String(nextLength);
+  if (nextLength === arrangementStepCount) {
     return;
   }
 
@@ -5523,6 +5847,7 @@ function updateArrangementStepCount(event) {
   if (wasTransportActive) {
     stopTransport(false);
   }
+  captureArrangementEdit(`Changed arrangement length to ${nextLength} bars`);
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementDeleteMode = false;
@@ -5575,6 +5900,9 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   transport.arrangementStep = resolvedStep;
   if (force) {
     transport.arrangementStartStep = resolvedStep;
+    transport.startedAt = barStartAt;
+    transport.nextBeatAt = barStartAt;
+    transport.beatIndex = 0;
   }
   arrangement.step = resolvedStep;
   bindTracksToArrangementStep(resolvedStep);
@@ -5590,10 +5918,19 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
       return;
     }
 
-    resetTrackPulseCursor(track, barStartAt, { fireAtReference: true });
+    const shouldRetriggerNow = !!force && !!transport?.active && Number.isFinite(Number(track.stepMs)) && track.stepMs > 0;
+    resetTrackPulseCursor(track, barStartAt, { fireAtReference: !shouldRetriggerNow });
+    if (shouldRetriggerNow) {
+      track.__lastRetriggerPulse = 0;
+      track.nextTriggerAt = barStartAt + track.stepMs;
+      triggerTrack(track, clip, transport.sessionToken);
+    }
   });
 
   scheduleArrangementPlayheadUpdate();
+  if (force && transport?.active) {
+    setStatus(`Arrangement playing: scene ${resolvedStep + 1}`);
+  }
 }
 
 function scheduleArrangementPlayheadUpdate() {
@@ -5629,12 +5966,15 @@ function selectArrangementStep(stepIndex) {
     transport.beatIndex = 0;
     transport.arrangementStartStep = resolvedStep;
     updateArrangementStep(resolvedStep, now, true);
+    window.freemixRender?.updateTransportRow?.();
     window.freemixRender?.updateArrangementSceneColorSelector?.();
     return;
   }
 
   renderArrangementPlayhead();
+  window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateArrangementSceneColorSelector?.();
+  setStatus(`Editing scene ${resolvedStep + 1}`);
 }
 
 function renderArrangementPlayhead() {
@@ -5893,11 +6233,17 @@ function applySessionSnapshot(rawSnapshot, options = {}) {
   metronomeEnabled = typeof snapshot.state?.metronomeEnabled === "boolean" ? snapshot.state.metronomeEnabled : true;
   masterMuted = !!snapshot.state?.masterMuted;
 
-  const nextStepCount = ARRANGEMENT_STEP_OPTIONS.includes(Number(snapshot.state?.arrangementStepCount))
-    ? Number(snapshot.state.arrangementStepCount)
-    : Array.isArray(snapshot.arrangement?.clips) && ARRANGEMENT_STEP_OPTIONS.includes(snapshot.arrangement.clips.length)
-      ? snapshot.arrangement.clips.length
-      : DEFAULT_ARRANGEMENT_STEPS;
+  const savedStepCount = Number(snapshot.state?.arrangementStepCount);
+  const clipStepCount = Array.isArray(snapshot.arrangement?.clips) ? snapshot.arrangement.clips.length : null;
+  const nextStepCount = clamp(
+    Number.isInteger(savedStepCount)
+      ? savedStepCount
+      : Number.isInteger(clipStepCount)
+        ? clipStepCount
+        : DEFAULT_ARRANGEMENT_STEPS,
+    MIN_ARRANGEMENT_STEPS,
+    MAX_ARRANGEMENT_STEPS,
+  );
   arrangementStepCount = nextStepCount;
   const nextArrangement = {
     ...createInitialArrangement(nextStepCount),
@@ -5909,6 +6255,8 @@ function applySessionSnapshot(rawSnapshot, options = {}) {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementDeleteMode = false;
+  arrangementUndoStack = [];
+  arrangementRedoStack = [];
 
   if (options.sessionId) {
     const library = readSessionLibrary();
@@ -5965,6 +6313,8 @@ function newBlankSession() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementDeleteMode = false;
+  arrangementUndoStack = [];
+  arrangementRedoStack = [];
   syncArrangementState(createInitialArrangement(DEFAULT_ARRANGEMENT_STEPS));
   refreshArrangementHasClipsState();
 
@@ -6349,6 +6699,7 @@ function renderTrackResultsMessage(track, message) {
 async function loadTrackSource(track, result) {
   stopTransport(false);
   disposeTrackAudio(track);
+  track.mediaStatus = "loading";
   setStatus(`${track.name}: loading`);
   renderTrackResultsMessage(track, "Loading media...");
 
@@ -6368,6 +6719,7 @@ async function loadTrackSource(track, result) {
       refreshArrangementHasClipsState();
       refreshArrangementStepCells(arrangement.step);
     }
+    track.mediaStatus = "ready";
     if (window.freemixRender?.updateTrackRow) {
       window.freemixRender.updateTrackRow(track);
       window.freemixRender.updateSourceStrip?.();
@@ -6377,6 +6729,7 @@ async function loadTrackSource(track, result) {
     markAppStateDirty(true);
     setStatus(`${track.name}: ready`);
   } catch (error) {
+    track.mediaStatus = "failed";
     renderTrackResultsMessage(track, "No playable file");
     setStatus(`${track.name}: no file`, true);
     console.warn(error);
@@ -6432,6 +6785,7 @@ function createTrackTemplate(index) {
     stepMs: 0,
     arrangementClip: null,
     source: null,
+    mediaStatus: "empty",
     durationFilter: "quick",
     searchTimer: null,
     searchRequestId: 0,
