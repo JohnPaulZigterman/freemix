@@ -342,8 +342,13 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
   arrangementState.steps = arrangementState.clips.length;
 }
 
+const preferredStartupTrackCount =
+  typeof appStateManager.getPreferredTrackCount === "function"
+    ? appStateManager.getPreferredTrackCount()
+    : DEFAULT_TRACK_COUNT;
+
 if (!Array.isArray(appState.tracks) || appState.tracks.length === 0) {
-  appState.tracks = createInitialTracks(DEFAULT_TRACK_COUNT);
+  appState.tracks = createInitialTracks(preferredStartupTrackCount || DEFAULT_TRACK_COUNT);
 } else if (appState.tracks.length > MAX_TRACK_COUNT) {
   appState.tracks = appState.tracks.slice(0, MAX_TRACK_COUNT);
 }
@@ -1965,9 +1970,10 @@ if (!shouldIgnoreLifecycleAutoStop()) {
   });
 }
 
+const restoredStartupSession = restoreCurrentSessionOnStartup();
 renderWorkstation();
 renderRecentSessionMenu();
-setStatus("Ready");
+setStatus(restoredStartupSession ? `${normalizeSessionName(restoredStartupSession.name || "Session")}: restored` : "Ready");
 
 function normalizeResults(docs) {
   return docs
@@ -6639,6 +6645,21 @@ function getCurrentSessionName() {
   return getCurrentSessionRecord()?.name || "";
 }
 
+function restoreCurrentSessionOnStartup() {
+  const current = getCurrentSessionRecord();
+  if (!current?.snapshot) {
+    return null;
+  }
+
+  const restored = applySessionSnapshot(current.snapshot, {
+    sessionId: current.id,
+    silent: true,
+    skipRender: true,
+  });
+
+  return restored ? current : null;
+}
+
 function saveSessionRecord(name, options = {}) {
   const library = readSessionLibrary();
   const currentRecord = !options.newSession && library.currentSessionId ? library.sessions[library.currentSessionId] : null;
@@ -6758,10 +6779,14 @@ function applySessionSnapshot(rawSnapshot, options = {}) {
     }
   }
 
-  renderWorkstation();
-  renderRecentSessionMenu();
+  if (!options.skipRender) {
+    renderWorkstation();
+    renderRecentSessionMenu();
+  }
   markAppStateDirty(true);
-  setStatus(`${normalizeSessionName(snapshot.name || "Session")}: loaded`);
+  if (!options.silent) {
+    setStatus(`${normalizeSessionName(snapshot.name || "Session")}: loaded`);
+  }
   return true;
 }
 

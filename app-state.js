@@ -12,6 +12,7 @@
     arrangementStepCount: 8,
     arrangementCopyMode: false,
     arrangementCopySourceStep: null,
+    trackCount: 2,
     tracks: null,
     arrangement: null,
     trackSearchRequestCounter: 0,
@@ -22,6 +23,7 @@
   };
   const MIN_ARRANGEMENT_STEPS = 1;
   const MAX_ARRANGEMENT_STEPS = 64;
+  const MAX_PERSISTED_TRACKS = 4;
   const PERSISTED_STATE_KEYS = new Set([
     "preferredBpm",
     "preferredTimeSignature",
@@ -29,6 +31,7 @@
     "metronomeEnabled",
     "arrangementStepCount",
     "arrangementCopyMode",
+    "trackCount",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_KEYS = new Set([
@@ -64,6 +67,7 @@
     "metronomeEnabled",
     "arrangementStepCount",
     "arrangementCopyMode",
+    "trackCount",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_FAVORITE_KEYS = Object.freeze([
@@ -119,6 +123,14 @@
   );
   state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
   state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
+  state.trackCount = clamp(
+    Number(state.trackCount) ||
+      Number(defaultsFromSaved.trackCount) ||
+      inferSavedTrackCount(savedTrackPreferenceState, savedArrangementPreferenceState) ||
+      DEFAULTS.trackCount,
+    1,
+    MAX_PERSISTED_TRACKS,
+  );
   state.tracks = state.tracks ?? null;
   state.arrangement = state.arrangement ?? null;
   state.trackSearchRequestCounter = Number(state.trackSearchRequestCounter) || 0;
@@ -163,6 +175,38 @@
       return min;
     }
     return Math.min(Math.max(next, min), max);
+  }
+
+  function inferTrackIndex(trackId) {
+    const match = String(trackId || "").match(/^track-(\d+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const index = Number(match[1]);
+    return Number.isInteger(index) && index > 0 ? index : null;
+  }
+
+  function inferSavedTrackCount(trackPrefs = {}, arrangementPrefs = {}) {
+    let count = 0;
+
+    Object.keys(sanitizeRecord(trackPrefs)).forEach((trackId) => {
+      const index = inferTrackIndex(trackId);
+      if (index) {
+        count = Math.max(count, index);
+      }
+    });
+
+    sanitizeArrangementClips(arrangementPrefs?.clips).forEach((step) => {
+      Object.keys(step).forEach((trackId) => {
+        const index = inferTrackIndex(trackId);
+        if (index) {
+          count = Math.max(count, index);
+        }
+      });
+    });
+
+    return clamp(count || DEFAULTS.trackCount, 1, MAX_PERSISTED_TRACKS);
   }
 
   function sanitizeUserOnboarding(raw = {}) {
@@ -415,6 +459,11 @@
     return snapshot;
   }
 
+  function getTrackCountSnapshot(trackRows) {
+    const count = Array.isArray(trackRows) ? trackRows.length : Number(state.trackCount);
+    return clamp(count || DEFAULTS.trackCount, 1, MAX_PERSISTED_TRACKS);
+  }
+
   function persist() {
     if (typeof localStorage === "undefined") {
       return;
@@ -434,6 +483,7 @@
           ),
           masterMuted: !!state.masterMuted,
           arrangementCopyMode: !!state.arrangementCopyMode,
+          trackCount: getTrackCountSnapshot(state.tracks),
           userOnboarding: state.userOnboarding,
         },
         trackPreferenceState: buildTrackSnapshot(state.tracks),
@@ -464,6 +514,7 @@
   function markStateDirty(trackRows, force) {
     if (trackRows) {
       state.trackPreferenceState = buildTrackSnapshot(trackRows);
+      state.trackCount = getTrackCountSnapshot(trackRows);
       if (!force && !Array.isArray(trackRows)) {
         // Skip invalid writes for partial callers.
       }
@@ -480,6 +531,7 @@
     hydrateArrangement,
     queuePersist,
     markStateDirty,
+    getPreferredTrackCount: () => getTrackCountSnapshot(state.tracks),
     getTrackPreferenceState: () => state.trackPreferenceState,
     getArrangementPreferenceState: () => state.arrangementPreferenceState,
   };
@@ -499,6 +551,7 @@
     "arrangementStepCount",
     "arrangementCopyMode",
     "arrangementCopySourceStep",
+    "trackCount",
     "tracks",
     "arrangement",
     "trackSearchRequestCounter",
