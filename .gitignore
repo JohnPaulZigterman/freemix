@@ -1,0 +1,6 @@
+node_modules/
+.freemix-media-cache/
+npm-cache/
+*.log
+*.tmp
+*.tmp.mp4

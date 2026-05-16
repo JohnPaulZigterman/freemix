@@ -670,6 +670,9 @@
         const code = Number(sourceError?.code);
         const message = sourceError?.message || (Number.isFinite(code) ? `code ${code}` : "unknown");
         const trackId = video.id.replace("video-", "");
+        if (window.freemixRecoverMediaPlaybackError?.(trackId, video)) {
+          return;
+        }
         window.freemixSetTrackMediaStatus?.(trackId, "failed");
         setStatus(`Media error: ${message}`, true);
       });

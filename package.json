@@ -1,0 +1,28 @@
+{
+  "name": "freemix",
+  "version": "1.0.0",
+  "description": "Freemix VM-420 local playback server",
+  "main": "server.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "devDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JohnPaulZigterman/freemix.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JohnPaulZigterman/freemix/issues"
+  },
+  "homepage": "https://github.com/JohnPaulZigterman/freemix#readme"
+}

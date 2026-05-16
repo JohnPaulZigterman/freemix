@@ -4,6 +4,7 @@ const statusPill = document.querySelector("#statusPill");
 const IA_SEARCH_URL = "https://archive.org/advancedsearch.php";
 const IA_METADATA_URL = "https://archive.org/metadata";
 const IA_DOWNLOAD_URL = "https://archive.org/download";
+const LOCAL_MEDIA_PROXY_ORIGIN = "http://localhost:4200";
 const SEARCH_DELAY_MS = 280;
 const SEARCH_QUERY_MIN_LENGTH = 1;
 const SEARCH_QUERY_TOKEN_MIN_LENGTH = 2;
@@ -118,7 +119,7 @@ const SEARCH_RESULTS_LIMIT = 18;
 const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 4;
 const SEARCH_RESULT_CACHE_STORAGE_KEY = "freemix.searchResultCache.v1";
 const SEARCH_RESULT_CACHE_PERSIST_TTL_MS = 6 * 60 * 60 * 1000;
-const SOURCE_METADATA_CACHE_STORAGE_KEY = "freemix.sourceMetadataCache.v1";
+const SOURCE_METADATA_CACHE_STORAGE_KEY = "freemix.sourceMetadataCache.v2";
 const SOURCE_METADATA_CACHE_PERSIST_TTL_MS = 8 * 60 * 60 * 1000;
 const SOURCE_METADATA_CACHE_PERSIST_MAX_ENTRIES = 40;
 const SEARCH_NETWORK_TIMEOUT_MS = 9000;
@@ -199,6 +200,9 @@ const DURATION_FILTERS = {
 };
 const QUICKSTART_SAMPLE_QUERY = "lo-fi loop";
 const AV_READY_TIMEOUT_MS = 1200;
+const MEDIA_SLICE_DEFAULT_DURATION_SECONDS = 24;
+const MEDIA_SLICE_MIN_DURATION_SECONDS = 8;
+const MEDIA_SLICE_MAX_DURATION_SECONDS = 180;
 const FX_CONTROLS = [
   { key: "eqLow", label: "EQ Low", min: -12, max: 12, step: 1 },
   { key: "eqMid", label: "EQ Mid", min: -12, max: 12, step: 1 },
@@ -210,6 +214,10 @@ const FX_CONTROLS = [
 const FX_CONTROL_INDEX = Object.freeze(Object.fromEntries(FX_CONTROLS.map((entry) => [entry.key, entry])));
 const sourceMetadataCache = new Map();
 const sourceMetadataInflight = new Map();
+const mediaElementSourceNodes = new WeakMap();
+const mediaSliceReadyCache = new Set();
+const mediaSliceFailedCache = new Set();
+const mediaSliceWarmRequests = new Map();
 
 const TRACK_CONTROL_SECTIONS = {
   source: [
@@ -711,6 +719,8 @@ const searchResultCache = new Map();
 const searchRequestInflight = new Map();
 const liveControlSchedulers = new Map();
 const startTimeControlTrackers = new Map();
+let localMediaProxyAvailable = window.location?.protocol === "http:" || window.location?.protocol === "https:";
+let localMediaProxyCheckPromise = null;
 let arrangementPlayheadStep = -1;
 let activeBeatLightIndex = -1;
 let liveControlPersistTimer = null;
@@ -722,6 +732,7 @@ let arrangementClipboardClips = [];
 let arrangementClipboardTextClip = null;
 let selectedArrangementClipKeys = new Set();
 let selectedTextClipStep = null;
+let textToolbarCollapsed = false;
 let arrangementUndoStack = [];
 let arrangementRedoStack = [];
 let debugPanelVisible = false;
@@ -1285,6 +1296,24 @@ function setTrackBlackout(track, isBlackout) {
   cell.classList.toggle("scene-blackout", !!isBlackout);
 }
 
+function syncTrackVideoElementSource(track, video, state = null) {
+  const playbackState = state || getTrackRenderState(track) || getTrackPlaybackState(track) || track;
+  const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+  if (!video || !sourceUrl) {
+    return;
+  }
+
+  const resolvedSourceUrl = new URL(sourceUrl, window.location.href).href;
+  if (video.src === resolvedSourceUrl || video.currentSrc === resolvedSourceUrl) {
+    return;
+  }
+
+  disposeTrackAudio(track);
+  setVideoCorsPolicy(video, sourceUrl);
+  video.setAttribute("src", sourceUrl);
+  video.load();
+}
+
 function getTrackVideo(track) {
   const trackId = track?.id;
   if (!trackId) {
@@ -1635,13 +1664,367 @@ function isBaseTrackPlaybackState(track, playbackState) {
   return !playbackState || playbackState === track || playbackState === baseTrack;
 }
 
+function isRemoteHttpMediaUrl(sourceUrl) {
+  if (!sourceUrl) {
+    return false;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    return mediaUrl.protocol === "http:" || mediaUrl.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isRunningFromLocalMediaProxyOrigin() {
+  const host = window.location?.hostname;
+  return (
+    (window.location?.protocol === "http:" || window.location?.protocol === "https:") &&
+    (host === "localhost" || host === "127.0.0.1") &&
+    String(window.location?.port || "") === "4200"
+  );
+}
+
+function canUseLocalMediaProxy() {
+  return !!localMediaProxyAvailable || isRunningFromLocalMediaProxyOrigin();
+}
+
+function checkLocalMediaProxy() {
+  if (localMediaProxyAvailable) {
+    return Promise.resolve(true);
+  }
+
+  if (localMediaProxyCheckPromise) {
+    return localMediaProxyCheckPromise;
+  }
+
+  localMediaProxyCheckPromise = fetch(`${LOCAL_MEDIA_PROXY_ORIGIN}/proxy-health`, {
+    cache: "no-store",
+    mode: "cors",
+  })
+    .then((response) => {
+      localMediaProxyAvailable = response.ok;
+      if (localMediaProxyAvailable) {
+        refreshMediaPlaybackRoutes();
+      }
+      return localMediaProxyAvailable;
+    })
+    .catch(() => {
+      localMediaProxyAvailable = false;
+      return false;
+    })
+    .finally(() => {
+      localMediaProxyCheckPromise = null;
+    });
+
+  return localMediaProxyCheckPromise;
+}
+
+function enterLocalProxyShellIfAvailable() {
+  if (window.location?.protocol !== "file:") {
+    return;
+  }
+
+  checkLocalMediaProxy().then((isAvailable) => {
+    if (!isAvailable || window.location?.protocol !== "file:") {
+      return;
+    }
+
+    window.location.href = `${LOCAL_MEDIA_PROXY_ORIGIN}/${window.location.search || ""}${window.location.hash || ""}`;
+  });
+}
+
+function isLocalMediaProxyUrl(sourceUrl) {
+  if (!sourceUrl) {
+    return false;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    const localProxyUrl = new URL(LOCAL_MEDIA_PROXY_ORIGIN);
+    const isLocalhostProxy =
+      mediaUrl.origin === localProxyUrl.origin ||
+      mediaUrl.hostname === "localhost" ||
+      mediaUrl.hostname === "127.0.0.1";
+    return (
+      isLocalhostProxy &&
+      (mediaUrl.pathname === "/media-proxy" || mediaUrl.pathname === "/media-cache" || mediaUrl.pathname === "/media-slice")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getOriginalMediaUrlFromProxyUrl(sourceUrl) {
+  if (!isLocalMediaProxyUrl(sourceUrl)) {
+    return null;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    return mediaUrl.searchParams.get("url");
+  } catch {
+    return null;
+  }
+}
+
+function getLocalMediaProxyUrl(sourceUrl) {
+  const proxyOrigin =
+    window.location?.protocol === "http:" || window.location?.protocol === "https:"
+      ? window.location.origin
+      : LOCAL_MEDIA_PROXY_ORIGIN;
+  return `${proxyOrigin}/media-cache?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+function getLocalMediaStreamUrl(sourceUrl) {
+  const proxyOrigin =
+    window.location?.protocol === "http:" || window.location?.protocol === "https:"
+      ? window.location.origin
+      : LOCAL_MEDIA_PROXY_ORIGIN;
+  return `${proxyOrigin}/media-proxy?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+function getSceneDurationSecondsForSlice(state = null) {
+  const timing = getTransportTimingFromState?.();
+  const barMs = Number(timing?.barMs);
+  const bars = Number(state?.bars || state?.barCount || 1);
+  const sceneSeconds = Number.isFinite(barMs) && barMs > 0 ? (barMs / 1000) * Math.max(1, bars || 1) : 0;
+  return clamp(
+    Math.max(MEDIA_SLICE_DEFAULT_DURATION_SECONDS, sceneSeconds + 4),
+    MEDIA_SLICE_MIN_DURATION_SECONDS,
+    MEDIA_SLICE_MAX_DURATION_SECONDS,
+  );
+}
+
+function getMediaSlicePlaybackUrl(sourceUrl, state = null) {
+  const anchor = Number(state?.startTime);
+  if (!Number.isFinite(anchor) || anchor < 0) {
+    return getLocalMediaProxyUrl(sourceUrl);
+  }
+
+  const proxyOrigin =
+    window.location?.protocol === "http:" || window.location?.protocol === "https:"
+      ? window.location.origin
+      : LOCAL_MEDIA_PROXY_ORIGIN;
+  const duration = getSceneDurationSecondsForSlice(state);
+  return `${proxyOrigin}/media-slice?url=${encodeURIComponent(sourceUrl)}&start=${encodeURIComponent(anchor.toFixed(3))}&duration=${encodeURIComponent(duration.toFixed(3))}`;
+}
+
+function getMediaSliceControlUrl(sourceUrl, state = null, action = "warm") {
+  const sliceUrl = getMediaSlicePlaybackUrl(sourceUrl, state);
+  if (!isMediaSlicePlaybackUrl(sliceUrl)) {
+    return null;
+  }
+
+  try {
+    const url = new URL(sliceUrl, window.location.href);
+    url.pathname = action === "status" ? "/media-slice-status" : "/media-slice-warm";
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function markMediaSliceReady(sliceUrl) {
+  if (!sliceUrl) {
+    return;
+  }
+
+  try {
+    const normalizedUrl = new URL(sliceUrl, window.location.href).href;
+    mediaSliceReadyCache.add(normalizedUrl);
+    mediaSliceFailedCache.delete(normalizedUrl);
+  } catch {
+    mediaSliceReadyCache.add(sliceUrl);
+    mediaSliceFailedCache.delete(sliceUrl);
+  }
+}
+
+function unmarkMediaSliceReady(sliceUrl) {
+  if (!sliceUrl) {
+    return;
+  }
+
+  try {
+    mediaSliceReadyCache.delete(new URL(sliceUrl, window.location.href).href);
+  } catch {
+    mediaSliceReadyCache.delete(sliceUrl);
+  }
+}
+
+function isMediaSliceReady(sliceUrl) {
+  if (!sliceUrl) {
+    return false;
+  }
+
+  try {
+    return mediaSliceReadyCache.has(new URL(sliceUrl, window.location.href).href);
+  } catch {
+    return mediaSliceReadyCache.has(sliceUrl);
+  }
+}
+
+function markMediaSliceFailed(sliceUrl) {
+  if (!sliceUrl) {
+    return;
+  }
+
+  try {
+    const normalizedUrl = new URL(sliceUrl, window.location.href).href;
+    mediaSliceFailedCache.add(normalizedUrl);
+    mediaSliceReadyCache.delete(normalizedUrl);
+  } catch {
+    mediaSliceFailedCache.add(sliceUrl);
+    mediaSliceReadyCache.delete(sliceUrl);
+  }
+}
+
+function isMediaSliceFailed(sliceUrl) {
+  if (!sliceUrl) {
+    return false;
+  }
+
+  try {
+    return mediaSliceFailedCache.has(new URL(sliceUrl, window.location.href).href);
+  } catch {
+    return mediaSliceFailedCache.has(sliceUrl);
+  }
+}
+
+function requestMediaSliceWarm(sourceUrl, state = null, sliceUrl = null) {
+  const playbackSliceUrl = sliceUrl || getMediaSlicePlaybackUrl(sourceUrl, state);
+  if (!playbackSliceUrl || isMediaSliceReady(playbackSliceUrl) || isMediaSliceFailed(playbackSliceUrl)) {
+    return;
+  }
+
+  const warmUrl = getMediaSliceControlUrl(sourceUrl, state, "warm");
+  if (!warmUrl || mediaSliceWarmRequests.has(warmUrl)) {
+    return;
+  }
+
+  const warmRequest = fetch(warmUrl, { cache: "no-store" })
+    .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`Slice warm failed: ${response.status}`))))
+    .then((payload) => {
+      if (payload?.ready) {
+        markMediaSliceReady(playbackSliceUrl);
+        if (window.freemixRender?.updateSourceStrip) {
+          window.freemixRender.updateSourceStrip();
+        }
+        matchingTracks.forEach((track) => window.freemixRender?.updateTrackRow?.(track));
+        if (!transport?.active) {
+          refreshMediaPlaybackRoutes();
+        }
+      }
+    })
+    .catch((error) => {
+      console.warn(error);
+    })
+    .finally(() => {
+      mediaSliceWarmRequests.delete(warmUrl);
+      matchingTracks.forEach((track) => window.freemixRender?.updateTrackRow?.(track));
+    });
+
+  mediaSliceWarmRequests.set(warmUrl, warmRequest);
+  const matchingTracks = tracks.filter((track) => {
+    const renderState = getTrackRenderState(track);
+    const renderSourceUrl = renderState?.source?.mediaUrl || track?.source?.mediaUrl || "";
+    return renderSourceUrl === sourceUrl;
+  });
+  matchingTracks.forEach((track) => window.freemixRender?.updateTrackRow?.(track));
+}
+
+function isMediaSlicePlaybackUrl(sourceUrl) {
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    return isLocalMediaProxyUrl(mediaUrl.href) && mediaUrl.pathname === "/media-slice";
+  } catch {
+    return false;
+  }
+}
+
+function getMediaSliceOriginalStart(sourceUrl) {
+  if (!isMediaSlicePlaybackUrl(sourceUrl)) {
+    return 0;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    const parsed = Number(mediaUrl.searchParams.get("start"));
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getMediaPlaybackUrl(sourceUrl, state = null) {
+  if (!sourceUrl || !isRemoteHttpMediaUrl(sourceUrl) || !canUseLocalMediaProxy()) {
+    if (sourceUrl && isRemoteHttpMediaUrl(sourceUrl) && !localMediaProxyAvailable) {
+      checkLocalMediaProxy().then((isAvailable) => {
+        if (isAvailable && window.freemixRender?.updateSourceStrip) {
+          window.freemixRender.updateSourceStrip();
+        }
+      });
+    }
+    return sourceUrl || null;
+  }
+
+  try {
+    const mediaUrl = new URL(sourceUrl, window.location.href);
+    if (isLocalMediaProxyUrl(mediaUrl.href) || mediaUrl.origin === window.location.origin) {
+      return mediaUrl.href;
+    }
+  } catch {
+    return sourceUrl;
+  }
+
+  const sliceUrl = getMediaSlicePlaybackUrl(sourceUrl, state);
+  if (isMediaSliceReady(sliceUrl)) {
+    return sliceUrl;
+  }
+  if (isMediaSliceFailed(sliceUrl)) {
+    return getLocalMediaProxyUrl(sourceUrl);
+  }
+
+  requestMediaSliceWarm(sourceUrl, state, sliceUrl);
+  return null;
+}
+
 function getTrackPlaybackSourceUrl(track, overrideState) {
   const playbackState = getTrackPlaybackState(track, overrideState);
   if (playbackState?.source?.mediaUrl) {
-    return playbackState.source.mediaUrl;
+    return getMediaPlaybackUrl(playbackState.source.mediaUrl, playbackState);
   }
 
-  return isBaseTrackPlaybackState(track, playbackState) ? track?.source?.mediaUrl || null : null;
+  return isBaseTrackPlaybackState(track, playbackState) ? getMediaPlaybackUrl(track?.source?.mediaUrl, playbackState) : null;
+}
+
+function refreshMediaPlaybackRoutes() {
+  if (!Array.isArray(tracks)) {
+    return;
+  }
+
+  tracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    const playbackState = getTrackPlaybackState(track) || track;
+    const nextSourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+    if (!video || !nextSourceUrl) {
+      return;
+    }
+
+    const resolvedNextSourceUrl = new URL(nextSourceUrl, window.location.href).href;
+    if (video.currentSrc === resolvedNextSourceUrl || video.src === resolvedNextSourceUrl) {
+      return;
+    }
+
+    disposeTrackAudio(track);
+    setVideoCorsPolicy(video, nextSourceUrl);
+    video.src = nextSourceUrl;
+    video.load();
+    setupTrackAudio(track, video, playbackState);
+    applyTrackVolume(track, playbackState);
+    applyTrackFx(track, playbackState);
+  });
 }
 
 function playbackSignatureNumber(value, fallback = 0) {
@@ -1711,6 +2094,9 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
       applyTrackPitchAndSpeed(track, playbackState);
     })
     .catch((error) => {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       if (error instanceof DOMException) {
         setStatus(`Playback failed: ${error.name}`, true);
       } else {
@@ -2915,15 +3301,23 @@ function shouldDisableWebAudioForSource(sourceUrl) {
     return true;
   }
 
-  const isUnknownOrigin = window.location?.origin === "null" || !window.location?.origin;
-  if (window.location?.protocol === "file:" || isUnknownOrigin) {
-    return true;
-  }
-
   try {
     const mediaUrl = new URL(sourceUrl, window.location.href);
+    if (isLocalMediaProxyUrl(mediaUrl.href)) {
+      return false;
+    }
+
+    if (mediaUrl.protocol === "blob:" || mediaUrl.protocol === "data:" || mediaUrl.protocol === "file:") {
+      return false;
+    }
+
     if (!mediaUrl.protocol.startsWith("http")) {
       return false;
+    }
+
+    const isUnknownOrigin = window.location?.origin === "null" || !window.location?.origin;
+    if (window.location?.protocol === "file:" || isUnknownOrigin) {
+      return true;
     }
 
     return mediaUrl.origin !== window.location.origin;
@@ -2985,7 +3379,7 @@ function createAnchorSeekState(targetTrack, overrideState) {
     return null;
   }
 
-  const rawSourceUrl = playbackState.source?.mediaUrl || track.source?.mediaUrl;
+  const rawSourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
   const sourceUrl = typeof rawSourceUrl === "string" && rawSourceUrl.length > 0 ? rawSourceUrl : null;
   const rawStart = Number(playbackState.startTime);
   const startTime = Number.isFinite(rawStart)
@@ -3159,6 +3553,7 @@ function invalidateUiNodeCache() {
     if (track) {
       track.__cacheVideoCell = null;
       track.__cacheVideoElement = null;
+      track.__activeVideoElement = null;
     }
   });
   activeBeatLightIndex = -1;
@@ -3492,6 +3887,7 @@ try {
 renderWorkstation();
 renderRecentSessionMenu();
 setStatus(restoredStartupSession ? `${normalizeSessionName(restoredStartupSession.name || "Session")}: restored` : "Ready");
+enterLocalProxyShellIfAvailable();
 
 function normalizeResults(docs) {
   return docs
@@ -4028,17 +4424,18 @@ async function fetchPlayableSource(result, signal) {
     }
 
     const metadata = signal ? await awaitWithAbort(response.json(), signal) : await response.json();
-    const file = choosePlayableFile(metadata.files ?? []);
+    const playableFiles = choosePlayableFiles(metadata.files ?? []);
+    const file = playableFiles[0];
     if (!file) {
       throw new Error("No playable video file found.");
     }
+    const mediaSource = createInternetArchiveMediaSource(result, file);
 
     return {
       ...result,
       duration: Number(metadata.metadata?.runtime) || 0,
-      mediaUrl: `${IA_DOWNLOAD_URL}/${encodeURIComponent(result.identifier)}/${encodePath(file.name)}`,
-      mediaName: file.name,
-      mediaFormat: file.format ?? "video",
+      ...mediaSource,
+      mediaAlternates: playableFiles.slice(1).map((alternateFile) => createInternetArchiveMediaSource(result, alternateFile)),
     };
   })();
 
@@ -4084,6 +4481,10 @@ function pruneSourceMetadataCache() {
 }
 
 function choosePlayableFile(files) {
+  return choosePlayableFiles(files)[0];
+}
+
+function choosePlayableFiles(files) {
   const candidates = files
     .filter((file) => {
       const name = file.name ?? "";
@@ -4104,19 +4505,56 @@ function choosePlayableFile(files) {
     }))
     .sort((a, b) => a.score - b.score || a.numericSize - b.numericSize);
 
-  return candidates[0];
+  return candidates;
+}
+
+function createInternetArchiveMediaSource(result, file) {
+  return {
+    mediaUrl: `${IA_DOWNLOAD_URL}/${encodeURIComponent(result.identifier)}/${encodePath(file.name)}`,
+    mediaName: file.name,
+    mediaFormat: file.format ?? "video",
+    mediaCodecScore: file.score,
+  };
 }
 
 function scorePlayableFile(file) {
-  const name = file.name.toLowerCase();
+  const name = (file.name ?? "").toLowerCase();
   const format = (file.format ?? "").toLowerCase();
-  let score = 100;
+  const combined = `${name} ${format}`;
+  const isMp4 = /\.(mp4|m4v)$/i.test(name);
+  const isWebm = /\.webm$/i.test(name);
+  const isOgv = /\.ogv$/i.test(name);
+  const mentionsModernMp4Codec =
+    combined.includes("h.264") ||
+    combined.includes("h264") ||
+    combined.includes("x264") ||
+    combined.includes("avc") ||
+    combined.includes("aac");
+  const mentionsBrowserWebmCodec =
+    combined.includes("webm") ||
+    combined.includes("vp8") ||
+    combined.includes("vp9") ||
+    combined.includes("vorbis") ||
+    combined.includes("opus");
+  const mentionsLegacyMpeg4 =
+    combined.includes("512kb mpeg4") ||
+    combined.includes("512kb mpeg-4") ||
+    (combined.includes("mpeg4") && !mentionsModernMp4Codec) ||
+    (combined.includes("mpeg-4") && !mentionsModernMp4Codec) ||
+    combined.includes("divx") ||
+    combined.includes("xvid");
+  let score = 1000;
 
-  if (name.endsWith(".mp4")) score -= 50;
-  if (format.includes("h.264") || format.includes("mpeg4")) score -= 30;
-  if (name.includes("512kb") || name.includes("360") || name.includes("480")) score -= 10;
-  if (name.includes("1080") || name.includes("720")) score += 15;
-  if (name.endsWith(".ogv")) score += 20;
+  if (isWebm) score -= 260;
+  if (isMp4) score -= 220;
+  if (mentionsModernMp4Codec) score -= 210;
+  if (mentionsBrowserWebmCodec) score -= 140;
+  if (name.includes("360") || name.includes("480")) score -= 40;
+  if (name.includes("720")) score += 30;
+  if (name.includes("1080")) score += 80;
+  if (name.includes("512kb")) score += isMp4 ? 80 : 20;
+  if (mentionsLegacyMpeg4) score += 280;
+  if (isOgv) score += 420;
 
   return score;
 }
@@ -4592,7 +5030,7 @@ function renderVideoCell(track, index) {
         ? `<video
               class="track-video"
               id="video-${track.id}"
-              src="${renderSource.mediaUrl}"
+              src="${escapeHtml(getMediaPlaybackUrl(renderSource.mediaUrl, renderState) || "")}"
               preload="auto"
                playsinline
              ></video>`
@@ -4701,6 +5139,263 @@ function setTrackMediaStatus(trackOrId, status, options = {}) {
 
 window.freemixSetTrackMediaStatus = setTrackMediaStatus;
 
+function recoverMediaPlaybackError(trackOrId, video) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  const currentSource = video?.currentSrc || video?.src || "";
+  try {
+    const currentUrl = new URL(currentSource, window.location.href);
+    if (currentUrl.pathname === "/media-slice") {
+      unmarkMediaSliceReady(currentUrl.href);
+      const originalSource = getOriginalMediaUrlFromProxyUrl(currentSource);
+      if (!track || !video || !originalSource) {
+        setStatus(`${track?.name || "Track"}: slice playback failed`, true);
+        return false;
+      }
+
+      disposeTrackAudio(track);
+      video.removeAttribute("src");
+      video.load();
+      track.audioFxStatus = "waiting";
+      setTrackMediaStatus(track, "loading");
+      setStatus(`${track.name}: rebuilding FX media slice`);
+
+      const rebuildUrl = new URL(currentUrl.href);
+      rebuildUrl.pathname = "/media-slice-warm";
+      rebuildUrl.searchParams.set("force", "1");
+      fetch(rebuildUrl.href, { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`Slice rebuild failed: ${response.status}`))))
+        .then((payload) => {
+          if (!payload?.ready) {
+            throw new Error("Slice rebuild did not produce ready media.");
+          }
+          markMediaSliceReady(currentUrl.href);
+          const retryUrl = new URL(currentUrl.href);
+          retryUrl.searchParams.set("retry", String(Date.now()));
+          setVideoCorsPolicy(video, retryUrl.href);
+          video.src = retryUrl.href;
+          video.load();
+          setTrackMediaStatus(track, "loading");
+          window.freemixRender?.updateTrackRow?.(track);
+          setStatus(`${track.name}: FX media rebuilt`);
+        })
+        .catch((error) => {
+          console.warn(error);
+          setTrackMediaStatus(track, "failed");
+          setStatus(`${track.name}: FX media rebuild failed`, true);
+        });
+      return true;
+    }
+
+    if (currentUrl.pathname === "/media-cache") {
+      setTrackMediaStatus(track, "failed");
+      setStatus(`${track?.name || "Track"}: full-cache media failed`, true);
+      return false;
+    }
+  } catch {
+    // Continue with best-effort recovery.
+  }
+
+  if (track && video) {
+    const playbackState = getTrackPlaybackState(track) || track;
+    const source = playbackState?.source || track.source;
+    const alternates = Array.isArray(source?.mediaAlternates) ? source.mediaAlternates : [];
+    if (alternates.length) {
+      const [alternate, ...remainingAlternates] = alternates;
+      const nextSource = {
+        ...source,
+        mediaUrl: alternate.mediaUrl,
+        mediaName: alternate.mediaName,
+        mediaFormat: alternate.mediaFormat,
+        mediaCodecScore: alternate.mediaCodecScore,
+        mediaAlternates: remainingAlternates,
+      };
+      playbackState.source = nextSource;
+      if (playbackState === track) {
+        track.source = nextSource;
+      }
+      selectedSource = getFirstLoadedTrackSource() || nextSource;
+      disposeTrackAudio(track);
+      const nextPlaybackUrl = getMediaPlaybackUrl(nextSource.mediaUrl, { ...playbackState, source: nextSource });
+      setVideoCorsPolicy(video, nextPlaybackUrl);
+      video.src = nextPlaybackUrl;
+      video.load();
+      setTrackMediaStatus(track, "loading");
+      if (window.freemixRender?.updateTrackRow) {
+        window.freemixRender.updateTrackRow(track);
+        window.freemixRender.updateSourceStrip?.();
+      }
+      setStatus(`${track.name}: trying alternate media file`);
+      return true;
+    }
+
+    if (source?.identifier && !source?.__refreshingMediaAlternates) {
+      source.__refreshingMediaAlternates = true;
+      setStatus(`${track.name}: checking alternate media files`);
+      fetchPlayableSource(source)
+        .then((freshSource) => {
+          const currentOriginalSource = getOriginalMediaUrlFromProxyUrl(currentSource) || source.mediaUrl;
+          const refreshedAlternates = [freshSource, ...(freshSource.mediaAlternates || [])].filter(
+            (candidate) => candidate?.mediaUrl && candidate.mediaUrl !== currentOriginalSource,
+          );
+          if (!refreshedAlternates.length) {
+            source.__refreshingMediaAlternates = false;
+            setTrackMediaStatus(track, "failed");
+            setStatus(`${track.name}: no browser-decodable alternate found`, true);
+            return;
+          }
+
+          const [alternate, ...remainingAlternates] = refreshedAlternates;
+          const nextSource = {
+            ...source,
+            mediaUrl: alternate.mediaUrl,
+            mediaName: alternate.mediaName,
+            mediaFormat: alternate.mediaFormat,
+            mediaCodecScore: alternate.mediaCodecScore,
+            mediaAlternates: remainingAlternates,
+            __refreshingMediaAlternates: false,
+          };
+          playbackState.source = nextSource;
+          if (playbackState === track) {
+            track.source = nextSource;
+          }
+          selectedSource = getFirstLoadedTrackSource() || nextSource;
+          disposeTrackAudio(track);
+          const nextPlaybackUrl = getMediaPlaybackUrl(nextSource.mediaUrl, { ...playbackState, source: nextSource });
+          setVideoCorsPolicy(video, nextPlaybackUrl);
+          video.src = nextPlaybackUrl;
+          video.load();
+          setTrackMediaStatus(track, "loading");
+          if (window.freemixRender?.updateTrackRow) {
+            window.freemixRender.updateTrackRow(track);
+            window.freemixRender.updateSourceStrip?.();
+          }
+          setStatus(`${track.name}: trying alternate media file`);
+        })
+        .catch((error) => {
+          source.__refreshingMediaAlternates = false;
+          setTrackMediaStatus(track, "failed");
+          setStatus(`${track.name}: alternate media check failed`, true);
+          console.warn(error);
+        });
+      return true;
+    }
+  }
+
+  const originalSource = getOriginalMediaUrlFromProxyUrl(currentSource);
+  if (!track || !video || !originalSource) {
+    return false;
+  }
+
+  if (isRemoteHttpMediaUrl(originalSource)) {
+    const playbackSource = getMediaPlaybackUrl(originalSource);
+    if (!playbackSource || playbackSource === originalSource || !isLocalMediaProxyUrl(playbackSource)) {
+      track.audioFxStatus = "waiting";
+      setStatus(`${track.name}: audio FX waiting for local media cache`, true);
+      return false;
+    }
+
+    disposeTrackAudio(track);
+    setVideoCorsPolicy(video, playbackSource);
+    video.src = playbackSource;
+    video.load();
+    track.audioFxStatus = "waiting";
+    setTrackMediaStatus(track, "loading");
+    setStatus(`${track.name}: retrying through FX media cache`);
+    return true;
+  }
+
+  disposeTrackAudio(track);
+  setVideoCorsPolicy(video, originalSource);
+  video.src = originalSource;
+  video.load();
+  track.audioFxStatus = "waiting";
+  setTrackMediaStatus(track, "loading");
+  setStatus(`${track.name}: retrying media playback`);
+  return true;
+}
+
+window.freemixRecoverMediaPlaybackError = recoverMediaPlaybackError;
+
+function getTrackMediaPrepState(track, renderState = getTrackRenderState(track)) {
+  const sourceUrl = renderState?.source?.mediaUrl || track?.source?.mediaUrl || "";
+  if (!sourceUrl) {
+    return {
+      status: "empty",
+      label: "No media",
+      detail: "Search to load",
+    };
+  }
+
+  const sliceUrl = getMediaSlicePlaybackUrl(sourceUrl, renderState);
+  const warmUrl = getMediaSliceControlUrl(sourceUrl, renderState, "warm");
+  const isReady = isMediaSliceReady(sliceUrl);
+  const isFailedSlice = isMediaSliceFailed(sliceUrl);
+  if (!isReady && !isFailedSlice && warmUrl && !mediaSliceWarmRequests.has(warmUrl)) {
+    requestMediaSliceWarm(sourceUrl, renderState, sliceUrl);
+  }
+  const isRendering = !!warmUrl && mediaSliceWarmRequests.has(warmUrl);
+  const mediaStatus = getTrackMediaStatus(track, renderState?.source || track.source);
+
+  if (mediaStatus === "failed" || track?.audioFxStatus === "failed") {
+    return {
+      status: "failed",
+      label: "Media failed",
+      detail: "Try another source",
+    };
+  }
+
+  if (isRendering) {
+    return {
+      status: "rendering",
+      label: "Rendering slice",
+      detail: "Preparing FX media",
+    };
+  }
+
+  if (isReady) {
+    return {
+      status: "ready",
+      label: "Ready",
+      detail: "Slice cached",
+    };
+  }
+
+  if (isFailedSlice) {
+    return {
+      status: "loading",
+      label: "Full-cache fallback",
+      detail: "Slice unavailable",
+    };
+  }
+
+  if (mediaStatus === "loading" || track?.audioFxStatus === "waiting") {
+    return {
+      status: "loading",
+      label: "Loading media",
+      detail: "Opening source",
+    };
+  }
+
+  return {
+    status: "streaming",
+    label: "Streaming fallback",
+    detail: "Slice queued",
+  };
+}
+
+function renderTrackMediaPrep(track, renderState = getTrackRenderState(track)) {
+  const prep = getTrackMediaPrepState(track, renderState);
+  return `
+    <div class="track-media-prep" data-media-prep="${escapeHtml(prep.status)}" aria-live="polite">
+      <div class="track-media-prep-copy">
+        <span>${escapeHtml(prep.label)}</span>
+        <small>${escapeHtml(prep.detail)}</small>
+      </div>
+      <div class="track-media-prep-bar" aria-hidden="true"><span></span></div>
+    </div>
+  `;
+}
+
 function renderTrackControlRow(track) {
   const renderState = getTrackRenderState(track);
   const renderSource = renderState.source || track.source;
@@ -4775,6 +5470,7 @@ function renderTrackControlRow(track) {
         </div>
       </div>
       <div class="track-row-body">
+        ${renderTrackMediaPrep(track, renderState)}
         <div class="track-channel-row track-channel-row--top">
           <div class="track-source">
             ${sourceControls}
@@ -4820,9 +5516,20 @@ function renderTextControlPanel() {
     (option) => `<option value="${escapeHtml(option.value)}" ${selectedField?.font === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
   ).join("");
   return `
-    <article class="track-row text-editor-row${selectedTextClipStep !== null ? " selected" : ""}" data-text-editor="true">
+    <article class="track-row text-editor-row${selectedTextClipStep !== null ? " selected" : ""}${textToolbarCollapsed ? " is-collapsed" : ""}" data-text-editor="true">
       <div class="track-row-label">
         <div class="track-row-title">
+          <button
+            class="track-state-chip track-title-action track-collapse-toggle"
+            type="button"
+            data-text-action="toggle-toolbar"
+            aria-pressed="${!textToolbarCollapsed}"
+            aria-expanded="${!textToolbarCollapsed}"
+            aria-label="${textToolbarCollapsed ? "Expand text toolbar" : "Collapse text toolbar"}"
+            title="${textToolbarCollapsed ? "Expand text toolbar" : "Collapse text toolbar"}"
+          >
+            ${textToolbarCollapsed ? "Show" : "Hide"}
+          </button>
           <span class="track-row-name text-row-name">TEXT</span>
         </div>
         <div class="track-state-chips" aria-label="Text layer states">
@@ -4871,10 +5578,12 @@ function renderTextControlPanel() {
             <span>X</span>
             <input type="range" min="0" max="100" step="1" value="${selectedField?.x ?? 50}" data-text-control="x" ${disabled}>
           </label>
+          <button class="text-tool-button text-tool-button--mini" type="button" data-text-action="center-x" ${disabled}>Center</button>
           <label class="control-field">
             <span>Y</span>
             <input type="range" min="0" max="100" step="1" value="${selectedField?.y ?? 50}" data-text-control="y" ${disabled}>
           </label>
+          <button class="text-tool-button text-tool-button--mini" type="button" data-text-action="center-y" ${disabled}>Center</button>
           <label class="control-field">
             <span>Opacity</span>
             <input type="range" min="0" max="1" step="0.01" value="${selectedField?.opacity ?? 1}" data-text-control="opacity" ${disabled}>
@@ -5368,6 +6077,7 @@ function handleTrackControl(event) {
     applyTrackFx(track, editableState);
     applyVideoFx(track, editableState);
     updateTrackModeChips(track);
+    requestTrackAudioFxRoute(track, editableState);
   }
 
   if (controlName === "muted") {
@@ -5472,6 +6182,13 @@ function handleTextControl(event) {
 }
 
 function handleTextAction(action) {
+  if (action === "toggle-toolbar") {
+    textToolbarCollapsed = !textToolbarCollapsed;
+    window.freemixRender?.updateTextEditor?.();
+    syncArrangementTrackHeights();
+    return true;
+  }
+
   const stepIndex = selectedTextClipStep !== null ? selectedTextClipStep : getArrangementStepIndex(arrangement?.step);
   if (stepIndex === null) {
     return false;
@@ -5499,6 +6216,18 @@ function handleTextAction(action) {
     const fieldIndex = Math.max(0, textClip.fields.findIndex((field) => field.id === textClip.selectedFieldId));
     textClip.fields.splice(fieldIndex, 1);
     textClip.selectedFieldId = textClip.fields[Math.max(0, fieldIndex - 1)]?.id || textClip.fields[0]?.id || null;
+  } else if (action === "center-x" || action === "center-y") {
+    const field = textClip.fields.find((item) => item.id === textClip.selectedFieldId) || textClip.fields[0];
+    if (!field) {
+      return false;
+    }
+
+    captureArrangementEdit(`Centered TEXT ${action === "center-x" ? "X" : "Y"} in scene ${stepIndex + 1}`);
+    if (action === "center-x") {
+      field.x = 50;
+    } else {
+      field.y = 50;
+    }
   } else {
     return false;
   }
@@ -5860,6 +6589,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
   const clip = clipState || track;
   const clipVolume = clamp(targetVolume, 0, 1);
   const clipSourceUrl = getTrackPlaybackSourceUrl(track, clip);
+  const requiresFxRoute = shouldRouteAudioThroughFx(track, clip);
   const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : 0;
   const shouldSeekToAnchor = options.seekToAnchor !== false;
   const isCurrentPlaybackAttempt = () => track?.__playbackToken === tokenAtStart;
@@ -5868,7 +6598,8 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     return Promise.resolve(false);
   }
 
-  if (clipSourceUrl && clipSourceUrl !== video.src) {
+  const sourceWasChanged = !!(clipSourceUrl && clipSourceUrl !== video.src);
+  if (sourceWasChanged) {
     setVideoCorsPolicy(video, clipSourceUrl);
     video.src = clipSourceUrl;
     video.load();
@@ -5882,7 +6613,13 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     if (!isCurrentPlaybackAttempt()) {
       return muted;
     }
-    if (track.audio && !webAudioDisabled && audioContext && audioContext.state !== "running") {
+    if (requiresFxRoute && !webAudioDisabled) {
+      try {
+        await ensureAudioContext();
+      } catch (error) {
+        console.warn(error);
+      }
+    } else if (track.audio && !webAudioDisabled && audioContext && audioContext.state !== "running") {
       try {
         await ensureAudioContext();
       } catch (error) {
@@ -5897,8 +6634,10 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     }
 
     const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
-    if (video.muted !== muted) {
-      video.muted = muted;
+    const usesCapturedAudio = hasLiveAudioGraph && track.audio?.route === "capture-stream";
+    const targetVideoMuted = usesCapturedAudio || (requiresFxRoute && !hasLiveAudioGraph) ? true : muted;
+    if (video.muted !== targetVideoMuted) {
+      video.muted = targetVideoMuted;
     }
 
     if (hasLiveAudioGraph && track.audio?.output?.gain) {
@@ -5906,17 +6645,18 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       if (!almostEqual(track.audio.output.gain.value, targetGain)) {
         track.audio.output.gain.value = targetGain;
       }
-      if (!almostEqual(video.volume, 1)) {
-        video.volume = 1;
+      const targetElementVolume = usesCapturedAudio ? 0 : 1;
+      if (!almostEqual(video.volume, targetElementVolume)) {
+        video.volume = targetElementVolume;
       }
     } else {
-      const targetVideoVolume = muted ? 0 : clipVolume;
+      const targetVideoVolume = requiresFxRoute ? 0 : muted ? 0 : clipVolume;
       if (!almostEqual(video.volume, targetVideoVolume)) {
         video.volume = targetVideoVolume;
       }
     }
 
-    if (video.readyState < 2 && video.networkState !== 0) {
+    if (video.readyState < 2 && video.networkState === video.NETWORK_NO_SOURCE) {
       video.load();
     }
 
@@ -5948,6 +6688,17 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       if (!isCurrentPlaybackAttempt()) {
         return false;
       }
+      if (error instanceof DOMException && error.name === "AbortError") {
+        await waitForTrackReady(video, AV_READY_TIMEOUT_MS * 2);
+        if (!isCurrentPlaybackAttempt()) {
+          return false;
+        }
+        if (video.paused) {
+          await video.play();
+        }
+        return shouldBeMuted;
+      }
+
       if (shouldBeMuted || !(error instanceof DOMException)) {
         if (error instanceof DOMException) {
           setStatus(`Playback blocked: ${error.name}`, true);
@@ -5966,10 +6717,11 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         if (track.audio) {
           disposeTrackAudio(track);
         }
-        if (video.muted !== shouldBeMuted) {
-          video.muted = shouldBeMuted;
+        const retryMuted = requiresFxRoute ? true : shouldBeMuted;
+        if (video.muted !== retryMuted) {
+          video.muted = retryMuted;
         }
-        const fallbackVolume = shouldBeMuted ? 0 : clipVolume;
+        const fallbackVolume = requiresFxRoute ? 0 : shouldBeMuted ? 0 : clipVolume;
         if (!almostEqual(video.volume, fallbackVolume)) {
           video.volume = fallbackVolume;
         }
@@ -6013,6 +6765,9 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         if (!isCurrentPlaybackAttempt()) {
           return false;
         }
+        if (fallbackError instanceof DOMException && fallbackError.name === "AbortError") {
+          return false;
+        }
         if (fallbackError instanceof DOMException) {
           setStatus(`Playback blocked: ${fallbackError.name}`, true);
         } else {
@@ -6021,7 +6776,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
 
         try {
           const recovered = await nativeRetry();
-          if (!shouldBeMuted && recovered) {
+          if (!requiresFxRoute && !shouldBeMuted && recovered) {
             video.muted = false;
             applyTrackVolume(track, clipState);
           }
@@ -6035,7 +6790,8 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       if (!isCurrentPlaybackAttempt()) {
         return false;
       }
-      if (wasMuted && !shouldBeMuted) {
+      prepareTrackAudioFxForPlayback(track, clipState);
+      if (!requiresFxRoute && wasMuted && !shouldBeMuted) {
         video.muted = false;
         applyTrackVolume(track, clipState);
       } else {
@@ -6044,8 +6800,9 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
 
       const nativeVolume = shouldBeMuted ? 0 : clipVolume;
       const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
-      const finalVideoMuted = hasLiveAudioGraph ? false : shouldBeMuted;
-      const finalVideoVolume = hasLiveAudioGraph ? 1 : nativeVolume;
+      const usesCapturedAudio = hasLiveAudioGraph && track.audio?.route === "capture-stream";
+      const finalVideoMuted = usesCapturedAudio || (requiresFxRoute && !hasLiveAudioGraph) ? true : hasLiveAudioGraph ? false : shouldBeMuted;
+      const finalVideoVolume = usesCapturedAudio || (requiresFxRoute && !hasLiveAudioGraph) ? 0 : hasLiveAudioGraph ? 1 : nativeVolume;
       if (video.muted !== finalVideoMuted) {
         video.muted = finalVideoMuted;
       }
@@ -6057,6 +6814,9 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         if (!almostEqual(track.audio.output.gain.value, targetGain)) {
           track.audio.output.gain.value = targetGain;
         }
+      } else if (requiresFxRoute && !hasLiveAudioGraph) {
+        track.audioFxStatus = "unrouted";
+        setStatus(`${track.name}: audio waiting for FX route`, true);
       }
 
       return true;
@@ -6066,6 +6826,11 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
         return false;
       }
       const hasName = error instanceof DOMException ? error.name : "";
+      if (hasName === "AbortError") {
+        setTrackMediaStatus(track, sourceWasChanged ? "loading" : "ready");
+        return false;
+      }
+
       if (error instanceof DOMException) {
         setStatus(`Playback failed: ${error.name}`, true);
         if (error.name === "NotSupportedError") {
@@ -7018,6 +7783,11 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
+  const requiresFxRoute = shouldRouteAudioThroughFx(track, playbackState);
+  if (requiresFxRoute) {
+    prepareTrackAudioFxForPlayback(track, playbackState);
+  }
+
   const canFastRetrigger =
     !!transport?.active &&
     !sourceChanged &&
@@ -7025,13 +7795,12 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     !video.paused &&
     !video.ended;
   const hasStableAudioRoute =
-    webAudioDisabled ||
-    !audioContext ||
-    audioContext.state !== "running" ||
-    hasLiveTrackAudioGraph(track, video);
+    !requiresFxRoute ||
+    (!webAudioDisabled && audioContext?.state === "running" && hasLiveTrackAudioGraph(track, video));
   if (canFastRetrigger && hasStableAudioRoute && track.__lastPlaybackSignature === playbackSignature) {
     safeSetCurrentTime(video, playbackState, track, { force: true });
     applyTrackVolume(track, playbackState);
+    applyTrackFx(track, playbackState);
     applyTrackPitchAndSpeed(track, playbackState);
     track.__warmLaunchFor = null;
     track.__prerollRevealFor = null;
@@ -7049,6 +7818,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     !video.paused &&
     !video.ended;
   if (canRevealWarmLaunch) {
+    prepareTrackAudioFxForPlayback(track, playbackState);
     const canRevealPrerollWithoutSeek =
       track.__prerollRevealFor === transportSessionToken &&
       track.__prerollPlaybackSignature === playbackSignature &&
@@ -7081,6 +7851,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   setupTrackAudio(track, video, playbackState);
+  prepareTrackAudioFxForPlayback(track, playbackState);
   applyTrackVolume(track, playbackState);
   applyTrackFx(track, playbackState);
   applyVideoFx(track, playbackState);
@@ -7258,7 +8029,13 @@ function updateTrackDuration(video) {
 
   const trackId = video.id.replace("video-", "");
   const track = getTrackById(trackId);
-  const maxDurationValue = String(Math.max(0, video.duration));
+  const videoSource = video.currentSrc || video.src || "";
+  const isSliceSource = isMediaSlicePlaybackUrl(videoSource);
+  const activeState = track ? getTrackPlaybackState(track) || track : null;
+  const sourceDuration = Number(activeState?.source?.durationSeconds ?? track?.source?.durationSeconds);
+  const maxDurationValue = String(
+    Math.max(0, Number.isFinite(sourceDuration) && sourceDuration > 0 ? sourceDuration : video.duration),
+  );
   getTrackControls({ id: trackId }, "startTime").forEach((range) => {
     if (range.max !== maxDurationValue) {
       range.max = maxDurationValue;
@@ -7275,7 +8052,11 @@ function updateTrackDuration(video) {
     return;
   }
 
-  const activeState = getTrackPlaybackState(track) || track;
+  if (isSliceSource) {
+    syncStartControls(track);
+    return;
+  }
+
   const safeStart = safeStartTime(activeState, video);
   if (!Number.isFinite(safeStart)) {
     return;
@@ -7416,10 +8197,37 @@ function hasLiveTrackAudioGraph(track, video = null) {
   );
 }
 
+function shouldRouteAudioThroughFx(track, state = track) {
+  return !!getTrackPlaybackSourceUrl(track, state);
+}
+
+function prepareTrackAudioFxForPlayback(track, state = track) {
+  if (!shouldRouteAudioThroughFx(track, state)) {
+    return false;
+  }
+
+  const video = getTrackVideo(track);
+  if (!webAudioDisabled && audioContext?.state === "running" && video) {
+    syncTrackVideoElementSource(track, video, state);
+    setupTrackAudio(track, video, state);
+  } else {
+    requestTrackAudioFxRoute(track, state);
+  }
+  if (track.audio) {
+    applyAudioFxToGraph(track.audio, state);
+  } else {
+    applyTrackFx(track, state);
+  }
+  applyTrackVolume(track, state);
+  return hasLiveTrackAudioGraph(track, video);
+}
+
 function applyTrackVolume(track, state = track) {
   const { muted: isMuted, volume } = getClipVolumeState(track, state);
   const video = getTrackVideo(track);
   const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
+  const usesCapturedAudio = hasLiveAudioGraph && track.audio?.route === "capture-stream";
+  const requiresFxRoute = shouldRouteAudioThroughFx(track, state);
 
   if (!hasLiveAudioGraph && track.audio) {
     disposeTrackAudio(track);
@@ -7430,16 +8238,118 @@ function applyTrackVolume(track, state = track) {
   }
 
   if (video) {
-    const nextMuted = hasLiveAudioGraph ? false : isMuted;
+    const nextMuted = usesCapturedAudio || (requiresFxRoute && !hasLiveAudioGraph) ? true : hasLiveAudioGraph ? false : isMuted;
     if (video.muted !== nextMuted) {
       video.muted = nextMuted;
     }
 
-    const nextVolume = hasLiveAudioGraph ? 1 : isMuted ? 0 : volume;
+    const nextVolume = usesCapturedAudio || (requiresFxRoute && !hasLiveAudioGraph) ? 0 : hasLiveAudioGraph ? 1 : isMuted ? 0 : volume;
     if (!almostEqual(video.volume, nextVolume)) {
       video.volume = nextVolume;
     }
   }
+}
+
+function createTrackAudioGraph(track, video, source, route = "media-element") {
+  const low = audioContext.createBiquadFilter();
+  const mid = audioContext.createBiquadFilter();
+  const high = audioContext.createBiquadFilter();
+  const drive = audioContext.createWaveShaper();
+  const dryGain = audioContext.createGain();
+  const delay = audioContext.createDelay(1);
+  const delayGain = audioContext.createGain();
+  const reverb = audioContext.createConvolver();
+  const reverbGain = audioContext.createGain();
+  const output = audioContext.createGain();
+
+  low.type = "lowshelf";
+  low.frequency.value = 220;
+  mid.type = "peaking";
+  mid.frequency.value = 1200;
+  mid.Q.value = 1.35;
+  high.type = "highshelf";
+  high.frequency.value = 3200;
+  dryGain.gain.value = 1;
+  delay.delayTime.value = 0.25;
+  reverb.buffer = getReverbImpulse(audioContext);
+  output.gain.value = 0;
+
+  source.connect(low).connect(mid).connect(high).connect(drive);
+  drive.connect(dryGain).connect(output);
+  drive.connect(delay).connect(delayGain).connect(output);
+  drive.connect(reverb).connect(reverbGain).connect(output);
+  output.connect(audioContext.destination);
+
+  track.audio = {
+    mediaElement: video,
+    source,
+    route,
+    low,
+    mid,
+    high,
+    drive,
+    delay,
+    delayGain,
+    reverb,
+    reverbGain,
+    output,
+  };
+  track.audioFxStatus = route === "capture-stream" ? "capture-fx" : "webaudio";
+  return true;
+}
+
+function setupTrackCapturedAudio(track, video, state = track) {
+  const captureStream = video?.captureStream || video?.mozCaptureStream;
+  if (!captureStream || !audioContext || audioContext.state !== "running") {
+    return false;
+  }
+
+  try {
+    const stream = captureStream.call(video);
+    if (!stream?.getAudioTracks?.().length) {
+      if (!track.__captureAudioRetryBound) {
+        track.__captureAudioRetryBound = true;
+        const retryCapture = () => {
+          track.__captureAudioRetryBound = false;
+          requestTrackAudioFxRoute(track, state);
+        };
+        video.addEventListener("loadedmetadata", retryCapture, { once: true });
+        video.addEventListener("canplay", retryCapture, { once: true });
+        video.addEventListener("play", retryCapture, { once: true });
+      }
+      return false;
+    }
+
+    const source = audioContext.createMediaStreamSource(stream);
+    createTrackAudioGraph(track, video, source, "capture-stream");
+    track.audio.stream = stream;
+    return true;
+  } catch (error) {
+    console.warn(error);
+    if (track?.audio) {
+      disposeTrackAudio(track);
+    }
+    track.audioFxStatus = "capture-failed";
+    return false;
+  }
+}
+
+function getMediaElementSourceNode(video) {
+  if (!video || !audioContext) {
+    return null;
+  }
+
+  const cached = mediaElementSourceNodes.get(video);
+  if (cached?.context === audioContext && cached.source) {
+    return cached.source;
+  }
+
+  const source = audioContext.createMediaElementSource(video);
+  mediaElementSourceNodes.set(video, {
+    context: audioContext,
+    source,
+  });
+  return source;
 }
 
 function setupTrackAudio(track, video, state = track) {
@@ -7452,6 +8362,10 @@ function setupTrackAudio(track, video, state = track) {
 
   const sourceUrl = getTrackPlaybackSourceUrl(track, state);
   if (shouldDisableWebAudioForSource(sourceUrl)) {
+    if (setupTrackCapturedAudio(track, video, state)) {
+      return true;
+    }
+
     if (track.audio) {
       disposeTrackAudio(track);
     }
@@ -7472,85 +8386,154 @@ function setupTrackAudio(track, video, state = track) {
   }
 
   try {
-    const source = audioContext.createMediaElementSource(video);
-    const low = audioContext.createBiquadFilter();
-    const mid = audioContext.createBiquadFilter();
-    const high = audioContext.createBiquadFilter();
-    const drive = audioContext.createWaveShaper();
-    const dryGain = audioContext.createGain();
-    const delay = audioContext.createDelay(1);
-    const delayGain = audioContext.createGain();
-    const reverb = audioContext.createConvolver();
-    const reverbGain = audioContext.createGain();
-    const output = audioContext.createGain();
-
-    low.type = "lowshelf";
-    low.frequency.value = 180;
-    mid.type = "peaking";
-    mid.frequency.value = 1100;
-    mid.Q.value = 0.8;
-    high.type = "highshelf";
-    high.frequency.value = 3600;
-    dryGain.gain.value = 1;
-    delay.delayTime.value = 0.25;
-    reverb.buffer = getReverbImpulse(audioContext);
-    output.gain.value = 0;
-
-    source.connect(low).connect(mid).connect(high).connect(drive);
-    drive.connect(dryGain).connect(output);
-    drive.connect(delay).connect(delayGain).connect(output);
-    drive.connect(reverb).connect(reverbGain).connect(output);
-    output.connect(audioContext.destination);
-
-    track.audio = {
-      mediaElement: video,
-      source,
-      low,
-      mid,
-      high,
-      drive,
-      delay,
-      delayGain,
-      reverb,
-      reverbGain,
-      output,
-    };
-    track.audioFxStatus = "webaudio";
-    return true;
+    const source = getMediaElementSourceNode(video);
+    return createTrackAudioGraph(track, video, source, "media-element");
   } catch (error) {
     console.warn(error);
     if (track?.audio) {
       disposeTrackAudio(track);
     }
+    if (setupTrackCapturedAudio(track, video, state)) {
+      return true;
+    }
     track.audio = null;
     track.audioFxStatus = "failed";
-    setStatus("WebAudio failed; using native clip audio");
+    setStatus("Audio FX route failed");
     return false;
   }
 }
 
-function applyTrackFx(track, state = track) {
-  const audio = track.audio;
-  if (!audio) {
-    return;
+function ensureTrackAudioFxRoute(track, state = track) {
+  const video = getTrackVideo(track);
+  if (!track || !video) {
+    return null;
   }
 
+  if (hasLiveTrackAudioGraph(track, video)) {
+    return track.audio;
+  }
+
+  if (track.audio) {
+    disposeTrackAudio(track);
+  }
+
+  const sourceUrl = getTrackPlaybackSourceUrl(track, state);
+  if (!sourceUrl || shouldDisableWebAudioForSource(sourceUrl)) {
+    if (sourceUrl && setupTrackAudio(track, video, state)) {
+      return hasLiveTrackAudioGraph(track, video) ? track.audio : null;
+    }
+
+    track.audioFxStatus = sourceUrl ? "native-audio" : "empty";
+    return null;
+  }
+
+  if (webAudioDisabled || !audioContext || audioContext.state !== "running") {
+    track.audioFxStatus = "waiting";
+    return null;
+  }
+
+  setupTrackAudio(track, video, state);
+  return hasLiveTrackAudioGraph(track, video) ? track.audio : null;
+}
+
+function requestTrackAudioFxRoute(track, state = track) {
+  const sourceUrl = getTrackPlaybackSourceUrl(track, state);
+  if (!track || !sourceUrl || webAudioDisabled) {
+    return false;
+  }
+
+  if (shouldDisableWebAudioForSource(sourceUrl)) {
+    if (ensureTrackAudioFxRoute(track, state)) {
+      applyTrackVolume(track, state);
+      applyTrackFx(track, state);
+      return true;
+    }
+
+    const rawSourceUrl = state?.source?.mediaUrl || track?.source?.mediaUrl;
+    if (rawSourceUrl && isRemoteHttpMediaUrl(rawSourceUrl) && !localMediaProxyAvailable) {
+      checkLocalMediaProxy().then((isAvailable) => {
+        if (!isAvailable) {
+          return;
+        }
+
+        const playbackSourceUrl = getTrackPlaybackSourceUrl(track, state);
+        const video = getTrackVideo(track);
+        if (video && playbackSourceUrl && video.src !== playbackSourceUrl) {
+          setVideoCorsPolicy(video, playbackSourceUrl);
+          video.src = playbackSourceUrl;
+          video.load();
+        }
+        ensureAudioContext()
+          .then(() => {
+            if (!ensureTrackAudioFxRoute(track, state)) {
+              return;
+            }
+
+            applyTrackVolume(track, state);
+            applyTrackFx(track, state);
+          })
+          .catch((error) => {
+            console.warn(error);
+            track.audioFxStatus = "failed";
+          });
+      });
+    }
+    return false;
+  }
+
+  if (ensureTrackAudioFxRoute(track, state)) {
+    applyTrackVolume(track, state);
+    applyTrackFx(track, state);
+    return true;
+  }
+
+  ensureAudioContext()
+    .then(() => {
+      if (!ensureTrackAudioFxRoute(track, state)) {
+        return;
+      }
+
+      applyTrackVolume(track, state);
+      applyTrackFx(track, state);
+    })
+    .catch((error) => {
+      console.warn(error);
+      track.audioFxStatus = "failed";
+    });
+
+  return true;
+}
+
+function applyAudioFxToGraph(audio, state = {}) {
   const fxState = state?.fx || {};
-  const eqLow = clamp(Number(fxState.eqLow), -12, 12);
-  const eqMid = clamp(Number(fxState.eqMid), -12, 12);
-  const eqHigh = clamp(Number(fxState.eqHigh), -12, 12);
+  const eqLow = clamp(Number(fxState.eqLow), -12, 12) * 1.75;
+  const eqMid = clamp(Number(fxState.eqMid), -12, 12) * 1.75;
+  const eqHigh = clamp(Number(fxState.eqHigh), -12, 12) * 1.75;
   const tube = clamp(Number(fxState.tube), 0, 1);
   const delay = clamp(Number(fxState.delay), 0, 1);
   const reverb = clamp(Number(fxState.reverb), 0, 1);
 
-  audio.low.gain.value = eqLow;
-  audio.mid.gain.value = eqMid;
-  audio.high.gain.value = eqHigh;
+  const now = audioContext?.currentTime ?? 0;
+  audio.low.gain.cancelScheduledValues(now);
+  audio.mid.gain.cancelScheduledValues(now);
+  audio.high.gain.cancelScheduledValues(now);
+  audio.low.gain.setTargetAtTime(eqLow, now, 0.012);
+  audio.mid.gain.setTargetAtTime(eqMid, now, 0.012);
+  audio.high.gain.setTargetAtTime(eqHigh, now, 0.012);
   audio.drive.curve = getTubeCurve(tube);
   audio.drive.oversample = "4x";
   audio.delay.delayTime.value = 0.12 + delay * 0.5;
   audio.delayGain.gain.value = delay * 0.42;
   audio.reverbGain.gain.value = reverb * 0.45;
+}
+
+function applyTrackFx(track, state = track) {
+  const audio = ensureTrackAudioFxRoute(track, state);
+  if (!audio) {
+    return;
+  }
+
+  applyAudioFxToGraph(audio, state);
 }
 
 function applyVideoFx(track, state = track) {
@@ -7630,6 +8613,16 @@ function disposeTrackAudio(track) {
     return;
   }
 
+  if (track.audio.stream?.getTracks) {
+    track.audio.stream.getTracks().forEach((mediaTrack) => {
+      try {
+        mediaTrack.stop();
+      } catch {
+        // Already stopped.
+      }
+    });
+  }
+
   Object.values(track.audio).forEach((node) => {
     if (node?.disconnect) {
       try {
@@ -7704,7 +8697,10 @@ function safeStartTime(track, video) {
     return 0;
   }
 
-  return playableStartTime(track.startTime, video);
+  const mediaSource = video?.currentSrc || video?.src || "";
+  const sliceStart = getMediaSliceOriginalStart(mediaSource);
+  const localStartTime = isMediaSlicePlaybackUrl(mediaSource) ? Number(track.startTime) - sliceStart : Number(track.startTime);
+  return playableStartTime(Math.max(0, localStartTime), video);
 }
 
 function getAlignedTrackTriggerTime(track, referenceTime = performance.now(), options = {}) {
