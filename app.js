@@ -773,8 +773,10 @@ let arrangementClipboardStep = null;
 let arrangementClipboardKind = null;
 let arrangementClipboardClips = [];
 let arrangementClipboardTextClip = null;
+let arrangementClipboardTextClips = [];
 let selectedArrangementClipKeys = new Set();
 let selectedTextClipStep = null;
+let selectedTextClipSteps = new Set();
 let selectedArrangementSceneStep = null;
 let textToolbarCollapsed = false;
 let arrangementUndoStack = [];
@@ -3726,7 +3728,11 @@ function isArrangementClipSelected(trackId, stepIndex) {
 
 function isArrangementTextClipSelected(stepIndex) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
-  return resolvedStep !== null && (selectedTextClipStep === resolvedStep || selectedArrangementSceneStep === resolvedStep);
+  return resolvedStep !== null && (
+    selectedTextClipStep === resolvedStep ||
+    selectedTextClipSteps.has(resolvedStep) ||
+    selectedArrangementSceneStep === resolvedStep
+  );
 }
 
 function isArrangementSceneSelected(stepIndex) {
@@ -3753,6 +3759,11 @@ function renderArrangementClipSelection() {
     if (selection) {
       setArrangementClipSelectedClass(selection.trackId, selection.stepIndex, true);
     }
+  });
+  selectedTextClipSteps.forEach((stepIndex) => {
+    playerPanel
+      ?.querySelector(`.arrangement-text-cell[data-arr-step="${stepIndex}"]`)
+      ?.classList.add("selected");
   });
   if (selectedTextClipStep !== null) {
     playerPanel
@@ -3781,6 +3792,7 @@ function selectArrangementClip(trackId, stepIndex, options = {}) {
   });
   const key = getArrangementClipSelectionKey(trackId, resolvedStep);
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set();
   selectedArrangementSceneStep = null;
   if (options.additive) {
     if (selectedArrangementClipKeys.has(key)) {
@@ -3799,17 +3811,54 @@ function selectArrangementClip(trackId, stepIndex, options = {}) {
   return true;
 }
 
-function selectArrangementTextClip(stepIndex) {
+function selectArrangementTextClip(stepIndex, options = {}) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
   if (resolvedStep === null) {
     return false;
   }
 
-  selectedArrangementClipKeys = new Set();
-  selectedTextClipStep = resolvedStep;
+  selectedArrangementSceneStep = null;
+  if (options.additive) {
+    if (selectedTextClipSteps.has(resolvedStep)) {
+      selectedTextClipSteps.delete(resolvedStep);
+    } else {
+      selectedTextClipSteps.add(resolvedStep);
+      selectedTextClipStep = resolvedStep;
+    }
+  } else {
+    selectedArrangementClipKeys = new Set();
+    selectedTextClipSteps = new Set([resolvedStep]);
+    selectedTextClipStep = resolvedStep;
+  }
+
+  if (!selectedTextClipSteps.size && !selectedArrangementClipKeys.size) {
+    selectedTextClipSteps.add(resolvedStep);
+    selectedTextClipStep = resolvedStep;
+  } else if (!selectedTextClipSteps.size) {
+    selectedTextClipStep = null;
+  } else if (!selectedTextClipSteps.has(selectedTextClipStep)) {
+    selectedTextClipStep = Array.from(selectedTextClipSteps).at(-1) ?? null;
+  }
   selectedArrangementSceneStep = null;
   renderArrangementClipSelection();
   return true;
+}
+
+function getSelectedTextClipSteps() {
+  const steps = new Set();
+  selectedTextClipSteps.forEach((stepIndex) => {
+    const resolvedStep = getArrangementStepIndex(stepIndex);
+    if (resolvedStep !== null) {
+      steps.add(resolvedStep);
+    }
+  });
+  if (selectedTextClipStep !== null && typeof selectedTextClipStep !== "undefined") {
+    const activeTextStep = getArrangementStepIndex(selectedTextClipStep);
+    if (activeTextStep !== null) {
+      steps.add(activeTextStep);
+    }
+  }
+  return Array.from(steps).sort((a, b) => a - b);
 }
 
 function getSelectedArrangementClipTargets() {
@@ -3841,6 +3890,7 @@ function selectArrangementSceneClips(stepIndex) {
     tracks.map((track) => getArrangementClipSelectionKey(track.id, resolvedStep)),
   );
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set([resolvedStep]);
   selectedArrangementSceneStep = resolvedStep;
   renderArrangementClipSelection();
   return true;
@@ -3853,6 +3903,14 @@ function getFirstLoadedTrackSource() {
 
 function getArrangementClearMenu() {
   return playerPanel?.querySelector("#arrangementClearMenu") || null;
+}
+
+function getArrangementControlsMenu() {
+  return playerPanel?.querySelector("#arrangementControlsMenu") || null;
+}
+
+function getArrangementControlsButton() {
+  return playerPanel?.querySelector("#arrangementControlsButton") || null;
 }
 
 function invalidateUiNodeCache() {
@@ -5180,7 +5238,65 @@ function renderArrangementPanel() {
           >
             Fill
           </button>
+          <button
+            class="arrangement-action arrangement-controls"
+            type="button"
+            id="arrangementControlsButton"
+            aria-expanded="false"
+            aria-controls="arrangementControlsMenu"
+            title="Show arrangement controls guide"
+          >
+            Controls
+          </button>
           <button class="arrangement-clear" type="button" id="arrangementClear">Clear</button>
+        </div>
+        <div
+          class="arrangement-controls-menu"
+          id="arrangementControlsMenu"
+          data-open="false"
+          hidden
+        >
+          <div class="arrangement-controls-menu__header">
+            <span>Arrangement controls</span>
+            <button
+              class="arrangement-controls-menu__close"
+              type="button"
+              id="arrangementControlsClose"
+              title="Close arrangement controls guide"
+            >
+              Close
+            </button>
+          </div>
+          <dl class="arrangement-controls-list">
+            <div>
+              <dt>Clip click</dt>
+              <dd>Selects exactly one clip slot for editing.</dd>
+            </div>
+            <div>
+              <dt>Ctrl + click</dt>
+              <dd>Adds or removes individual clips from the selection.</dd>
+            </div>
+            <div>
+              <dt>Scene number</dt>
+              <dd>Selects the whole scene across all tracks.</dd>
+            </div>
+            <div>
+              <dt>Capture</dt>
+              <dd>Writes the current controls into the selected slot or scene.</dd>
+            </div>
+            <div>
+              <dt>Copy / Paste</dt>
+              <dd>Copies and pastes the selected clip, text clip, or full scene.</dd>
+            </div>
+            <div>
+              <dt>Delete</dt>
+              <dd>Removes only the selected clip, text clip, or selected scene.</dd>
+            </div>
+            <div>
+              <dt>Fill</dt>
+              <dd>Copies the selected source scene into empty scenes.</dd>
+            </div>
+          </dl>
         </div>
         <div class="arrangement-clear-group">
           <div class="arrangement-clear-menu" id="arrangementClearMenu" data-open="false" hidden>
@@ -9395,8 +9511,9 @@ function handleArrangementTextCell(event) {
     return;
   }
 
+  const isMultiSelect = !!(event.ctrlKey || event.metaKey);
   selectArrangementStep(stepIndex);
-  selectArrangementTextClip(stepIndex);
+  selectArrangementTextClip(stepIndex, { additive: isMultiSelect });
   window.freemixRender?.updateArrangementGrid?.();
   window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateTextEditor?.();
@@ -9488,6 +9605,10 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
 }
 
 function getSelectedArrangementSceneStep() {
+  if (selectedArrangementSceneStep === null || typeof selectedArrangementSceneStep === "undefined") {
+    return null;
+  }
+
   return getArrangementStepIndex(selectedArrangementSceneStep);
 }
 
@@ -9528,43 +9649,43 @@ function refreshArrangementCommandUi(stepIndex, statusMessage = "", options = {}
 }
 
 function captureSelectedArrangementSlots() {
-  if (selectedTextClipStep !== null) {
-    const targetStep = selectedTextClipStep;
-    captureArrangementEdit(`Created TEXT in scene ${targetStep + 1}`);
-    ensureArrangementTextClip(targetStep);
-    refreshArrangementCommandUi(targetStep, `TEXT ready in scene ${targetStep + 1}`);
-    selectArrangementTextClip(targetStep);
-    return true;
-  }
-
   const sceneStep = getSelectedArrangementSceneStep();
+  const textSteps = sceneStep === null ? getSelectedTextClipSteps() : [];
   const targets = sceneStep !== null
     ? tracks.map((track) => ({ track, stepIndex: sceneStep }))
     : getSelectedArrangementClipTargets();
+  const hasTextTargets = textSteps.length > 0;
 
-  if (!targets.length) {
+  if (!targets.length && !hasTextTargets) {
     setStatus("Select a clip slot first", true);
     return false;
   }
 
   const capturableTargets = targets.filter(({ track }) => !!track?.source);
-  if (!capturableTargets.length) {
+  if (!capturableTargets.length && !hasTextTargets) {
     setStatus("Load a source on the selected track first", true);
     return false;
   }
 
   captureArrangementEdit("Captured selected arrangement slot");
+  textSteps.forEach((targetStep) => {
+    ensureArrangementTextClip(targetStep);
+  });
   capturableTargets.forEach(({ track, stepIndex }) => {
     arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
     arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
   });
 
-  const targetStep = capturableTargets[0].stepIndex;
+  const targetStep = capturableTargets[0]?.stepIndex ?? textSteps[0];
+  const captureCount = capturableTargets.length + textSteps.length;
   refreshArrangementCommandUi(
     targetStep,
-    `${capturableTargets.length} clip${capturableTargets.length === 1 ? "" : "s"} captured`,
+    `${captureCount} clip${captureCount === 1 ? "" : "s"} captured`,
     { selectScene: sceneStep !== null },
   );
+  textSteps.forEach((stepIndex) => selectedTextClipSteps.add(stepIndex));
+  selectedTextClipStep = textSteps.at(-1) ?? selectedTextClipStep;
+  renderArrangementClipSelection();
   return true;
 }
 
@@ -9588,24 +9709,35 @@ function copySelectedArrangementScene() {
         clip: cloneArrangementClip(clip),
       }));
     arrangementClipboardTextClip = cloneTextClip(getArrangementTextClip(sceneStep));
+    arrangementClipboardTextClips = arrangementClipboardTextClip
+      ? [{ stepIndex: sceneStep, clip: cloneTextClip(arrangementClipboardTextClip) }]
+      : [];
     setStatus(`Scene ${sceneStep + 1} copied`);
     return true;
   }
 
-  if (selectedTextClipStep !== null) {
-    const sourceStep = selectedTextClipStep;
-    const textClip = getArrangementTextClip(sourceStep);
-    if (!textClip) {
-      setStatus("No selected text clip to copy", true);
-      return false;
-    }
-
+  const selectedTextClips = getSelectedTextClipSteps()
+    .map((sourceStep) => ({
+      stepIndex: sourceStep,
+      clip: getArrangementTextClip(sourceStep),
+    }))
+    .filter((entry) => entry.clip);
+  if (selectedTextClips.length) {
     arrangementClipboardKind = "text";
-    arrangementClipboardTextClip = cloneTextClip(textClip);
+    arrangementClipboardTextClips = selectedTextClips.map((entry) => ({
+      stepIndex: entry.stepIndex,
+      clip: cloneTextClip(entry.clip),
+    }));
+    arrangementClipboardTextClip = cloneTextClip(arrangementClipboardTextClips[0]?.clip);
     arrangementClipboardClips = [];
     arrangementClipboardStep = null;
-    setStatus(`TEXT scene ${sourceStep + 1} copied`);
+    setStatus(`${selectedTextClips.length} TEXT clip${selectedTextClips.length === 1 ? "" : "s"} copied`);
     return true;
+  }
+
+  if (getSelectedTextClipSteps().length) {
+      setStatus("No selected text clip to copy", true);
+      return false;
   }
 
   const selectedClips = getSelectedArrangementClipTargets()
@@ -9630,6 +9762,7 @@ function copySelectedArrangementScene() {
     clip: cloneArrangementClip(entry.clip),
   }));
   arrangementClipboardTextClip = null;
+  arrangementClipboardTextClips = [];
   arrangementClipboardStep = null;
   setStatus(`${arrangementClipboardClips.length} clip${arrangementClipboardClips.length === 1 ? "" : "s"} copied`);
   return true;
@@ -9678,17 +9811,48 @@ function pasteArrangementClipboardToSelectedScene() {
     return pasteArrangementClipboardToScene(sceneStep);
   }
 
-  if (selectedTextClipStep !== null) {
-    const targetStep = selectedTextClipStep;
-    if (!arrangementClipboardTextClip && arrangementClipboardKind !== "scene") {
+  const selectedTextSteps = getSelectedTextClipSteps();
+  if (selectedTextSteps.length) {
+    const copiedTextClips = arrangementClipboardKind === "scene"
+      ? [{ clip: arrangementClipboardTextClip }]
+      : arrangementClipboardTextClips.length
+        ? arrangementClipboardTextClips
+        : arrangementClipboardTextClip
+          ? [{ clip: arrangementClipboardTextClip }]
+          : [];
+    if (!copiedTextClips.length || !copiedTextClips.some((entry) => entry.clip)) {
       setStatus("No copied TEXT clip", true);
       return false;
     }
 
     captureArrangementEdit("Pasted TEXT clip");
-    setArrangementTextClip(targetStep, cloneTextClip(arrangementClipboardTextClip));
-    refreshArrangementCommandUi(targetStep, `TEXT pasted to scene ${targetStep + 1}`);
-    selectArrangementTextClip(targetStep);
+    const pastedSteps = [];
+    if (selectedTextSteps.length === 1 && copiedTextClips.length > 1) {
+      const startStep = selectedTextSteps[0];
+      copiedTextClips.forEach((entry, index) => {
+        const targetStep = getArrangementStepIndex(startStep + index);
+        if (targetStep === null || !entry.clip) {
+          return;
+        }
+        setArrangementTextClip(targetStep, cloneTextClip(entry.clip));
+        pastedSteps.push(targetStep);
+      });
+    } else {
+      selectedTextSteps.forEach((targetStep, index) => {
+        const entry = copiedTextClips[index] || copiedTextClips[0];
+        if (!entry?.clip) {
+          return;
+        }
+        setArrangementTextClip(targetStep, cloneTextClip(entry.clip));
+        pastedSteps.push(targetStep);
+      });
+    }
+
+    const firstPastedStep = pastedSteps[0] ?? selectedTextSteps[0];
+    refreshArrangementCommandUi(firstPastedStep, `${pastedSteps.length} TEXT clip${pastedSteps.length === 1 ? "" : "s"} pasted`);
+    selectedTextClipSteps = new Set(pastedSteps);
+    selectedTextClipStep = pastedSteps.at(-1) ?? firstPastedStep;
+    renderArrangementClipSelection();
     return true;
   }
 
@@ -9744,17 +9908,23 @@ function deleteSelectedArrangementScene() {
     return true;
   }
 
-  if (selectedTextClipStep !== null) {
-    const stepIndex = selectedTextClipStep;
-    if (!getArrangementTextClip(stepIndex)) {
+  const selectedTextSteps = getSelectedTextClipSteps();
+  if (selectedTextSteps.length) {
+    const filledTextSteps = selectedTextSteps.filter((stepIndex) => getArrangementTextClip(stepIndex));
+    if (!filledTextSteps.length) {
       setStatus("Selected text slot is already empty");
       return false;
     }
 
     captureArrangementEdit("Deleted selected text");
-    setArrangementTextClip(stepIndex, null);
+    filledTextSteps.forEach((stepIndex) => setArrangementTextClip(stepIndex, null));
     selectedTextClipStep = null;
-    refreshArrangementCommandUi(stepIndex, "TEXT deleted");
+    selectedTextClipSteps = new Set(selectedTextSteps);
+    refreshArrangementCommandUi(
+      filledTextSteps[0],
+      `${filledTextSteps.length} TEXT clip${filledTextSteps.length === 1 ? "" : "s"} deleted`,
+    );
+    renderArrangementClipSelection();
     return true;
   }
 
@@ -10062,9 +10232,11 @@ function clearArrangement() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
+  arrangementClipboardTextClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set();
   selectedArrangementSceneStep = null;
   syncArrangementState(createInitialArrangement());
   refreshArrangementHasClipsState();
@@ -10097,6 +10269,39 @@ function openArrangementClearMenu() {
   clearMenu.setAttribute("data-open", "true");
 }
 
+function setArrangementControlsMenuOpen(isOpen) {
+  const controlsMenu = getArrangementControlsMenu();
+  const controlsButton = getArrangementControlsButton();
+  if (!controlsMenu) {
+    return;
+  }
+
+  controlsMenu.hidden = !isOpen;
+  controlsMenu.setAttribute("data-open", String(!!isOpen));
+  if (controlsButton) {
+    controlsButton.setAttribute("aria-expanded", String(!!isOpen));
+    controlsButton.classList.toggle("active", !!isOpen);
+  }
+}
+
+function openArrangementControlsMenu() {
+  setArrangementControlsMenuOpen(true);
+}
+
+function closeArrangementControlsMenu() {
+  setArrangementControlsMenuOpen(false);
+}
+
+function toggleArrangementControlsMenu() {
+  const controlsMenu = getArrangementControlsMenu();
+  setArrangementControlsMenuOpen(!(controlsMenu?.getAttribute("data-open") === "true" && controlsMenu?.hidden === false));
+}
+
+function isArrangementControlsMenuOpen() {
+  const controlsMenu = getArrangementControlsMenu();
+  return controlsMenu?.getAttribute("data-open") === "true" && controlsMenu?.hidden === false;
+}
+
 function closeArrangementClearMenu() {
   const clearMenu = getArrangementClearMenu();
   if (!clearMenu) {
@@ -10121,6 +10326,10 @@ window.confirmClearArrangement = confirmClearArrangement;
 window.closeArrangementClearMenu = closeArrangementClearMenu;
 window.openArrangementClearMenu = openArrangementClearMenu;
 window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
+window.closeArrangementControlsMenu = closeArrangementControlsMenu;
+window.openArrangementControlsMenu = openArrangementControlsMenu;
+window.toggleArrangementControlsMenu = toggleArrangementControlsMenu;
+window.isArrangementControlsMenuOpen = isArrangementControlsMenuOpen;
 window.renderArrangementGrid = renderArrangementGrid;
 window.renderArrangementGridRows = renderArrangementGridRows;
 window.renderArrangementStepLabels = renderArrangementStepLabels;
@@ -10175,9 +10384,11 @@ function updateArrangementStepCount(event) {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
+  arrangementClipboardTextClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set();
   selectedArrangementSceneStep = null;
   arrangementStepCount = nextLength;
   syncArrangementState(createInitialArrangement(nextLength));
@@ -10741,9 +10952,11 @@ function hydrateSessionSnapshot(rawSnapshot, options = {}) {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
+  arrangementClipboardTextClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set();
   selectedArrangementSceneStep = null;
 
   if (options.resetHistory !== false) {
@@ -10822,9 +11035,11 @@ function newBlankSession() {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
+  arrangementClipboardTextClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
+  selectedTextClipSteps = new Set();
   selectedArrangementSceneStep = null;
   arrangementUndoStack = [];
   arrangementRedoStack = [];

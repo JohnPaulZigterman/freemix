@@ -1194,6 +1194,83 @@ input[type="number"]:focus {
   min-height: var(--arr-track-height, var(--control-h-sm));
 }
 
+.arrangement-controls-menu {
+  display: none;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 2px 0 4px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--clip-selected) 18%);
+  border-radius: 3px 2px 3px 2px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 92%, var(--silver) 8%), var(--panel));
+  color: var(--ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
+    0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
+.arrangement-controls-menu[data-open="true"] {
+  display: grid;
+}
+
+.arrangement-controls-menu__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--amber);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.arrangement-controls-menu__close {
+  min-height: var(--control-h-sm);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--control);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.58rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.arrangement-controls-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 5px 8px;
+  margin: 0;
+}
+
+.arrangement-controls-list div {
+  display: grid;
+  gap: 1px;
+  padding: 4px 5px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  background: color-mix(in srgb, var(--panel-alt) 70%, transparent);
+}
+
+.arrangement-controls-list dt {
+  color: var(--clip-selected);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.arrangement-controls-list dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1.25;
+  text-transform: none;
+}
+
 .arrangement-corner,
 .arrangement-step-label,
 .arrangement-track-label {

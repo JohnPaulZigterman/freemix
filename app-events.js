@@ -244,6 +244,16 @@
       return true;
     }
 
+    if (id === "arrangementControlsButton") {
+      window.toggleArrangementControlsMenu?.();
+      return true;
+    }
+
+    if (id === "arrangementControlsClose") {
+      window.closeArrangementControlsMenu?.();
+      return true;
+    }
+
     if (id === "exportClipButton") {
       if (typeof window.freemixExportClip === "function") {
         window.freemixExportClip();
@@ -371,7 +381,11 @@
     const arrangementCell = target.closest(".arrangement-cell");
     if (arrangementCell) {
       if (arrangementCell.matches("[data-arr-text='true']")) {
-        handleArrangementTextCell({ currentTarget: arrangementCell });
+        handleArrangementTextCell({
+          currentTarget: arrangementCell,
+          ctrlKey: !!event?.ctrlKey,
+          metaKey: !!event?.metaKey,
+        });
         return;
       }
 
