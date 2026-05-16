@@ -117,7 +117,37 @@
 
     const trackCell = player.querySelector(`.video-cell[data-track-id="${track.id}"]`);
     if (trackCell) {
-      trackCell.outerHTML = renderVideoCell(track, Math.max(trackIndex, 0));
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = renderVideoCell(track, Math.max(trackIndex, 0)).trim();
+      const nextTrackCell = wrapper.firstElementChild;
+      const currentVideo = trackCell.querySelector(".track-video");
+      const nextVideo = nextTrackCell?.querySelector?.(".track-video");
+      const resolveSource =
+        typeof window.resolveMediaElementSourceUrl === "function"
+          ? window.resolveMediaElementSourceUrl
+          : (sourceUrl) => {
+              try {
+                return new URL(sourceUrl || "", window.location.href).href;
+              } catch {
+                return String(sourceUrl || "");
+              }
+            };
+      const currentSource = currentVideo ? resolveSource(currentVideo.currentSrc || currentVideo.src || currentVideo.getAttribute("src")) : "";
+      const nextSource = nextVideo ? resolveSource(nextVideo.currentSrc || nextVideo.src || nextVideo.getAttribute("src")) : "";
+      const canPreserveVideo = !!currentVideo && !!nextVideo && !!currentSource && currentSource === nextSource;
+
+      if (nextTrackCell && canPreserveVideo) {
+        nextVideo.replaceWith(currentVideo);
+        trackCell.replaceWith(nextTrackCell);
+      } else if (nextTrackCell) {
+        track.__cacheVideoElement = null;
+        track.__activeVideoElement = null;
+        trackCell.replaceWith(nextTrackCell);
+      } else {
+        track.__cacheVideoElement = null;
+        track.__activeVideoElement = null;
+        trackCell.outerHTML = renderVideoCell(track, Math.max(trackIndex, 0));
+      }
     }
 
     if (typeof window.applyTrackControlVisibility === "function") {

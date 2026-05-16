@@ -1,5 +1,6 @@
 ﻿const fs = require("node:fs");
 const http = require("node:http");
+const https = require("node:https");
 const crypto = require("node:crypto");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -683,46 +684,176 @@ async function proxyMedia(request, response, requestUrl) {
     return;
   }
 
-  const headers = {
-    "user-agent": "Freemix-VM420/1.0",
-    accept: request.headers.accept || "*/*",
-  };
+  streamRemoteMedia(targetUrl, request, response);
+}
 
-  if (request.headers.range) {
-    headers.range = request.headers.range;
+function liveMedia(request, response, requestUrl) {
+  const targetUrl = requestUrl.searchParams.get("url");
+  if (!targetUrl || !isAllowedProxyUrl(targetUrl)) {
+    sendText(response, 400, "Unsupported live media URL");
+    return;
   }
 
+  if (!ffmpegPath) {
+    proxyMedia(request, response, requestUrl);
+    return;
+  }
+
+  const start = Math.max(0, Number(requestUrl.searchParams.get("start")) || 0);
+  const seekArgs = start > 0 ? ["-ss", String(start)] : [];
+  response.writeHead(200, {
+    "access-control-allow-origin": "*",
+    "cache-control": "no-store",
+    "content-type": "video/webm",
+  });
+
+  const ffmpeg = spawn(ffmpegPath, [
+    "-hide_banner",
+    "-nostdin",
+    "-loglevel",
+    "warning",
+    ...seekArgs,
+    "-user_agent",
+    "Freemix-VM420/1.0",
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_delay_max",
+    "3",
+    "-i",
+    targetUrl,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+    "-c:v",
+    "libvpx",
+    "-deadline",
+    "realtime",
+    "-cpu-used",
+    "6",
+    "-b:v",
+    "1400k",
+    "-maxrate",
+    "1800k",
+    "-bufsize",
+    "2800k",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "libopus",
+    "-b:a",
+    "128k",
+    "-ar",
+    "48000",
+    "-cluster_time_limit",
+    "1000",
+    "-f",
+    "webm",
+    "pipe:1",
+  ]);
+
+  ffmpeg.stdout.pipe(response);
+  ffmpeg.stderr.on("data", (chunk) => {
+    const text = chunk.toString().trim();
+    if (text) {
+      console.warn(text);
+    }
+  });
+  ffmpeg.on("error", (error) => {
+    console.error(error);
+    if (!response.destroyed) {
+      response.destroy(error);
+    }
+  });
+  response.on("close", () => {
+    if (!ffmpeg.killed) {
+      ffmpeg.kill("SIGTERM");
+    }
+  });
+}
+
+function streamRemoteMedia(targetUrl, clientRequest, clientResponse, redirectCount = 0) {
+  let parsedUrl;
   try {
-    const upstream = await fetch(targetUrl, {
-      headers,
-      redirect: "follow",
-    });
+    parsedUrl = new URL(targetUrl);
+  } catch {
+    sendText(clientResponse, 400, "Unsupported media proxy URL");
+    return;
+  }
 
-    const responseHeaders = {
-      "access-control-allow-origin": "*",
-      "accept-ranges": upstream.headers.get("accept-ranges") || "bytes",
-      "cache-control": "public, max-age=3600",
-      "content-type": upstream.headers.get("content-type") || "application/octet-stream",
-    };
-
-    ["content-length", "content-range", "last-modified", "etag"].forEach((header) => {
-      const value = upstream.headers.get(header);
-      if (value) {
-        responseHeaders[header] = value;
+  const transport = parsedUrl.protocol === "https:" ? https : http;
+  let upstreamResponseStream = null;
+  let upstreamCompleted = false;
+  const upstreamRequest = transport.request(
+    parsedUrl,
+    {
+      method: "GET",
+      headers: {
+        "user-agent": "Freemix-VM420/1.0",
+        accept: clientRequest.headers.accept || "*/*",
+        ...(clientRequest.headers.range ? { range: clientRequest.headers.range } : {}),
+      },
+    },
+    (upstreamResponse) => {
+      upstreamResponseStream = upstreamResponse;
+      const statusCode = Number(upstreamResponse.statusCode) || 502;
+      const location = upstreamResponse.headers.location;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && location && redirectCount < 8) {
+        upstreamResponse.resume();
+        const redirectedUrl = new URL(location, parsedUrl).href;
+        if (!isAllowedProxyUrl(redirectedUrl)) {
+          sendText(clientResponse, 400, "Unsupported media redirect URL");
+          return;
+        }
+        streamRemoteMedia(redirectedUrl, clientRequest, clientResponse, redirectCount + 1);
+        return;
       }
-    });
 
-    response.writeHead(upstream.status, responseHeaders);
-    if (!upstream.body) {
-      response.end();
+      const responseHeaders = {
+        "access-control-allow-origin": "*",
+        "accept-ranges": upstreamResponse.headers["accept-ranges"] || "bytes",
+        "cache-control": "public, max-age=3600",
+        "content-type": upstreamResponse.headers["content-type"] || "application/octet-stream",
+      };
+
+      ["content-length", "content-range", "last-modified", "etag"].forEach((header) => {
+        const value = upstreamResponse.headers[header];
+        if (value) {
+          responseHeaders[header] = value;
+        }
+      });
+
+      clientResponse.writeHead(statusCode, responseHeaders);
+      upstreamResponse.on("end", () => {
+        upstreamCompleted = true;
+      });
+      upstreamResponse.pipe(clientResponse);
+    },
+  );
+
+  upstreamRequest.on("error", (error) => {
+    console.error(error);
+    if (!clientResponse.headersSent) {
+      sendText(clientResponse, 502, "Media proxy failed");
+    } else {
+      clientResponse.destroy(error);
+    }
+  });
+
+  clientResponse.on("close", () => {
+    if (upstreamCompleted || clientResponse.writableEnded) {
       return;
     }
 
-    Readable.fromWeb(upstream.body).pipe(response);
-  } catch (error) {
-    console.error(error);
-    sendText(response, 502, "Media proxy failed");
-  }
+    upstreamRequest.destroy();
+    if (upstreamResponseStream && !upstreamResponseStream.destroyed) {
+      upstreamResponseStream.destroy();
+    }
+  });
+
+  upstreamRequest.end();
 }
 
 function serveStatic(response, pathname) {
@@ -761,8 +892,22 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  if (requestUrl.pathname === "/favicon.ico") {
+    response.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "public, max-age=86400",
+    });
+    response.end();
+    return;
+  }
+
   if (requestUrl.pathname === "/media-proxy") {
     proxyMedia(request, response, requestUrl);
+    return;
+  }
+
+  if (requestUrl.pathname === "/media-live") {
+    liveMedia(request, response, requestUrl);
     return;
   }
 
