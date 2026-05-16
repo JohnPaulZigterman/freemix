@@ -106,7 +106,7 @@ body {
 }
 
 .search-panel {
-  z-index: 10;
+  z-index: 3000;
   padding: 3px 5px;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
@@ -165,11 +165,13 @@ body {
   margin-bottom: 3px;
   padding-bottom: 3px;
   border-bottom: 1px solid var(--line);
+  position: relative;
+  z-index: 2000;
 }
 
 .file-menu {
   position: relative;
-  z-index: 20;
+  z-index: 2100;
   flex: 0 0 auto;
 }
 
@@ -203,6 +205,7 @@ body {
   position: absolute;
   top: calc(100% + 5px);
   left: 0;
+  z-index: 2200;
   display: grid;
   min-width: 210px;
   gap: 2px;
@@ -404,6 +407,7 @@ input[type="search"]:focus {
   background: var(--panel);
   box-shadow: var(--shadow);
   position: relative;
+  z-index: 1;
 }
 
 .workstation {

@@ -45,6 +45,7 @@ const MAX_TRACK_TRIGGER_BURST_PER_FRAME = 8;
 const SOURCE_METADATA_REQUEST_TTL_MS = 60_000;
 const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
+const ARRANGEMENT_START_PREROLL_MS = 140;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
   new Set([
     "volume",
@@ -1492,6 +1493,8 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
   }
 
   const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : track.__playbackToken;
+  applyTrackVolume(track, playbackState);
+  applyTrackPitchAndSpeed(track, playbackState);
   void video.play()
     .then(() => {
       if (Number.isFinite(tokenAtStart) && track.__playbackToken !== tokenAtStart) {
@@ -1504,6 +1507,7 @@ function launchParkedVideo(video, track, playbackState, playbackToken) {
       }
 
       applyTrackVolume(track, playbackState);
+      applyTrackPitchAndSpeed(track, playbackState);
     })
     .catch((error) => {
       if (error instanceof DOMException) {
@@ -1530,12 +1534,156 @@ async function warmLaunchVideoForTransport(video, track, playbackState, sessionT
     }
 
     safeSetCurrentTime(video, playbackState, track, { force: true });
+    video.muted = true;
+    video.volume = 0;
     track.__warmLaunchFor = sessionToken;
     return true;
   } catch {
     track.__warmLaunchFor = null;
     return false;
   }
+}
+
+function silenceTrackForPreroll(track, video) {
+  if (video) {
+    video.muted = true;
+    video.volume = 0;
+  }
+
+  if (track?.audio?.output?.gain) {
+    track.audio.output.gain.value = 0;
+  }
+}
+
+function getArrangementPrerollClipTargets(stepIndex = arrangement?.step) {
+  if (!arrangement.enabled || !hasArrangementClips()) {
+    return [];
+  }
+
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return [];
+  }
+
+  return tracks
+    .map((track) => {
+      const clip = getArrangementStepClip(track, resolvedStep);
+      const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
+      return clip && sourceUrl ? { track, clip, sourceUrl } : null;
+    })
+    .filter(Boolean);
+}
+
+function getPrerollStartState(clip, video, leadMs = ARRANGEMENT_START_PREROLL_MS) {
+  const anchorTime = safeStartTime(clip, video);
+  if (!Number.isFinite(anchorTime)) {
+    return null;
+  }
+
+  const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
+  const mediaLeadSeconds = (Math.max(0, leadMs) / 1000) * speed;
+  const startTime = Math.max(0, anchorTime - mediaLeadSeconds);
+
+  return {
+    state: {
+      ...clip,
+      startTime,
+    },
+    anchorTime,
+    exact: anchorTime - startTime >= Math.min(mediaLeadSeconds, 0.025),
+  };
+}
+
+async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT_START_PREROLL_MS) {
+  const targets = getArrangementPrerollClipTargets(arrangement.step);
+  if (!Number.isFinite(sessionToken) || targets.length === 0) {
+    return null;
+  }
+
+  const preparedTargets = (
+    await Promise.all(
+      targets.map(async ({ track, clip, sourceUrl }) => {
+        const video = ensureTrackVideoElementForPlayback(track, clip);
+        if (!video) {
+          return null;
+        }
+
+        setVideoCorsPolicy(video, sourceUrl);
+        if (video.src !== sourceUrl) {
+          track.__parkedAtAnchorFor = null;
+          track.__parkedPlaybackSignature = null;
+          video.src = sourceUrl;
+          video.load();
+        }
+
+        await waitForTrackReady(video);
+        if (startTransport.bootToken !== sessionToken) {
+          return null;
+        }
+
+        const preroll = getPrerollStartState(clip, video, leadMs);
+        if (!preroll) {
+          return null;
+        }
+
+        setupTrackAudio(track, video, clip);
+        applyTrackFx(track, clip);
+        applyVideoFx(track, clip);
+        applyTrackBlend(track, clip);
+        applyTrackOpacity(track, clip);
+        applyTrackPitchAndSpeed(track, clip);
+        silenceTrackForPreroll(track, video);
+        safeSetCurrentTime(video, preroll.state, track, { force: true });
+        await awaitVideoSeek(video, safeStartTime(preroll.state, video));
+        if (startTransport.bootToken !== sessionToken) {
+          return null;
+        }
+
+        try {
+          await video.play();
+        } catch {
+          return null;
+        }
+
+        silenceTrackForPreroll(track, video);
+        return {
+          track,
+          clip,
+          video,
+          sourceUrl,
+          prerollState: preroll.state,
+          exact: preroll.exact,
+        };
+      }),
+    )
+  ).filter(Boolean);
+
+  if (startTransport.bootToken !== sessionToken || preparedTargets.length === 0) {
+    return null;
+  }
+
+  preparedTargets.forEach(({ track, video, prerollState }) => {
+    silenceTrackForPreroll(track, video);
+    safeSetCurrentTime(video, prerollState, track, { force: true });
+  });
+
+  await Promise.all(
+    preparedTargets.map(({ video, prerollState }) => awaitVideoSeek(video, safeStartTime(prerollState, video))),
+  );
+
+  if (startTransport.bootToken !== sessionToken) {
+    return null;
+  }
+
+  preparedTargets.forEach(({ track, video, clip, sourceUrl, exact }) => {
+    silenceTrackForPreroll(track, video);
+    track.__warmLaunchFor = sessionToken;
+    track.__prerollRevealFor = sessionToken;
+    track.__prerollPlaybackSignature = getPlaybackStateSignature(clip, sourceUrl);
+    track.__prerollRevealCanSkipSeek = !!exact;
+  });
+
+  return performance.now() + Math.max(0, leadMs);
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -1902,10 +2050,10 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
   track.__transportPrimedFor = parkedAtAnchor ? sessionToken : null;
   track.__parkedAtAnchorFor = parkedAtAnchor ? sessionToken : null;
   track.__parkedPlaybackSignature = parkedAtAnchor ? getPlaybackStateSignature(primingState, primingSourceUrl) : null;
-  setupTrackAudio(track, video);
+  setupTrackAudio(track, video, primingState);
   applyTrackVolume(track, primingState);
   applyTrackPitchAndSpeed(track, primingState);
-  if (parkedAtAnchor && startTransport.bootToken === sessionToken) {
+  if (parkedAtAnchor && startTransport.bootToken === sessionToken && !(arrangement.enabled && hasArrangementClips())) {
     await warmLaunchVideoForTransport(video, track, primingState, sessionToken);
   }
 }
@@ -3854,13 +4002,22 @@ async function startTransport() {
         return;
       }
 
+      const arrangementStartAt =
+        arrangement.enabled && hasArrangementClips()
+          ? await prepareArrangementStartPreroll(startToken)
+          : null;
+
+      if (startTransport.bootToken !== startToken) {
+        return;
+      }
+
       // Start transport scheduling in the click stack to keep browser autoplay context
       // aligned with the user gesture that initiated playback.
       if (startTransport.bootToken !== bootToken) {
         return;
       }
 
-      startTransportWithState(startToken);
+      startTransportWithState(startToken, { startAt: arrangementStartAt });
     } catch (error) {
       console.warn(error);
       setStatus("Playback start failed", true);
@@ -4162,7 +4319,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       }
     }
     if (!webAudioDisabled && audioContext?.state === "running") {
-      setupTrackAudio(track, video);
+      setupTrackAudio(track, video, clip);
     }
     if (!isCurrentPlaybackAttempt()) {
       return muted;
@@ -4354,7 +4511,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     });
 }
 
-function startTransportWithState(sessionToken = startTransport.bootToken) {
+function startTransportWithState(sessionToken = startTransport.bootToken, options = {}) {
   if (startTransport.bootToken !== sessionToken) {
     return;
   }
@@ -4382,13 +4539,26 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
       video.src = sourceUrl;
       video.load();
     }
-    safeSetCurrentTime(video, playbackState);
-    setupTrackAudio(track, video);
-    applyTrackVolume(track, playbackState);
+    const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
+    const hasActivePreroll =
+      track.__prerollRevealFor === sessionToken &&
+      track.__prerollPlaybackSignature === playbackSignature &&
+      !video.paused &&
+      !video.ended;
+    if (!hasActivePreroll) {
+      safeSetCurrentTime(video, playbackState);
+    }
+    setupTrackAudio(track, video, playbackState);
+    if (hasActivePreroll) {
+      silenceTrackForPreroll(track, video);
+    } else {
+      applyTrackVolume(track, playbackState);
+    }
   });
 
   const now = performance.now();
-  const startAt = now;
+  const requestedStartAt = Number(options?.startAt);
+  const startAt = Number.isFinite(requestedStartAt) && requestedStartAt > now ? requestedStartAt : now;
   const timing = getTransportTimingFromState();
   syncTransportState({
     active: true,
@@ -4474,6 +4644,9 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.__parkedAtAnchorFor = null;
       track.__parkedPlaybackSignature = null;
       track.__warmLaunchFor = null;
+      track.__prerollRevealFor = null;
+      track.__prerollPlaybackSignature = null;
+      track.__prerollRevealCanSkipSeek = false;
       delete track.__transportPrimedFor;
       delete track.__transportPrimeAttempt;
       if (track.__pendingPlaybackFrame) {
@@ -4716,7 +4889,7 @@ function createExportAudioTap() {
         return;
       }
 
-      setupTrackAudio(track, video);
+      setupTrackAudio(track, video, getTrackPlaybackState(track) || track);
       const output = track.audio?.output;
       if (!output) {
         return;
@@ -5157,6 +5330,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   if (sourceChanged) {
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
+    track.__prerollRevealFor = null;
+    track.__prerollPlaybackSignature = null;
+    track.__prerollRevealCanSkipSeek = false;
     video.src = sourceUrl;
     video.load();
   }
@@ -5178,6 +5354,41 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     applyTrackVolume(track, playbackState);
     applyTrackPitchAndSpeed(track, playbackState);
     track.__warmLaunchFor = null;
+    track.__prerollRevealFor = null;
+    track.__prerollPlaybackSignature = null;
+    track.__prerollRevealCanSkipSeek = false;
+    flashTrackTrigger(track);
+    return;
+  }
+
+  const canRevealWarmLaunch =
+    !!transport?.active &&
+    !sourceChanged &&
+    track.__warmLaunchFor === transportSessionToken &&
+    video.readyState >= 1 &&
+    !video.paused &&
+    !video.ended;
+  if (canRevealWarmLaunch) {
+    const canRevealPrerollWithoutSeek =
+      track.__prerollRevealFor === transportSessionToken &&
+      track.__prerollPlaybackSignature === playbackSignature &&
+      track.__prerollRevealCanSkipSeek;
+    if (!canRevealPrerollWithoutSeek) {
+      safeSetCurrentTime(video, playbackState, track, { force: true });
+    }
+    applyTrackVolume(track, playbackState);
+    applyTrackFx(track, playbackState);
+    applyVideoFx(track, playbackState);
+    applyTrackBlend(track, playbackState);
+    applyTrackOpacity(track, playbackState);
+    applyTrackPitchAndSpeed(track, playbackState);
+    track.__lastPlaybackSignature = playbackSignature;
+    track.__warmLaunchFor = null;
+    track.__prerollRevealFor = null;
+    track.__prerollPlaybackSignature = null;
+    track.__prerollRevealCanSkipSeek = false;
+    track.__parkedAtAnchorFor = null;
+    track.__parkedPlaybackSignature = null;
     flashTrackTrigger(track);
     return;
   }
@@ -5189,7 +5400,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__pendingPlaybackFrame = null;
   }
 
-  setupTrackAudio(track, video);
+  setupTrackAudio(track, video, playbackState);
   applyTrackVolume(track, playbackState);
   applyTrackFx(track, playbackState);
   applyVideoFx(track, playbackState);
@@ -5208,6 +5419,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
     track.__warmLaunchFor = null;
+    track.__prerollRevealFor = null;
+    track.__prerollPlaybackSignature = null;
+    track.__prerollRevealCanSkipSeek = false;
     flashTrackTrigger(track);
     return;
   }
@@ -5217,6 +5431,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
 
   if (canFastRetrigger) {
     track.__warmLaunchFor = null;
+    track.__prerollRevealFor = null;
+    track.__prerollPlaybackSignature = null;
+    track.__prerollRevealCanSkipSeek = false;
     flashTrackTrigger(track);
     return;
   }
@@ -5552,7 +5769,7 @@ function applyTrackVolume(track, state = track) {
   }
 }
 
-function setupTrackAudio(track, video) {
+function setupTrackAudio(track, video, state = track) {
   if (webAudioDisabled || !audioContext || audioContext.state !== "running" || !video) {
     if (track.audio) {
       disposeTrackAudio(track);
@@ -5560,10 +5777,12 @@ function setupTrackAudio(track, video) {
     return false;
   }
 
-  if (shouldDisableWebAudioForSource(getTrackPlaybackSourceUrl(track))) {
+  const sourceUrl = getTrackPlaybackSourceUrl(track, state);
+  if (shouldDisableWebAudioForSource(sourceUrl)) {
     if (track.audio) {
       disposeTrackAudio(track);
     }
+    track.audioFxStatus = sourceUrl ? "native-audio" : "empty";
     return false;
   }
 
@@ -5622,6 +5841,7 @@ function setupTrackAudio(track, video) {
       reverbGain,
       output,
     };
+    track.audioFxStatus = "webaudio";
     return true;
   } catch (error) {
     console.warn(error);
@@ -5629,6 +5849,7 @@ function setupTrackAudio(track, video) {
       disposeTrackAudio(track);
     }
     track.audio = null;
+    track.audioFxStatus = "failed";
     setStatus("WebAudio failed; using native clip audio");
     return false;
   }
@@ -5846,6 +6067,10 @@ function getTrackPulseIndex(track, referenceTime = performance.now()) {
   }
 
   const transportStart = Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now();
+  if (referenceTime < transportStart - 1) {
+    return null;
+  }
+
   const delta = Math.max(0, referenceTime - transportStart);
   return Math.floor(delta / stepMs + 1e-6);
 }
@@ -6654,7 +6879,13 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
 
     activeClipCount += 1;
     setTrackBlackout(track, false);
-    const shouldRetriggerNow = !!force && !!transport?.active && Number.isFinite(Number(track.stepMs)) && track.stepMs > 0;
+    const isAtOrAfterBarStart = performance.now() >= barStartAt - 1;
+    const shouldRetriggerNow =
+      !!force &&
+      !!transport?.active &&
+      isAtOrAfterBarStart &&
+      Number.isFinite(Number(track.stepMs)) &&
+      track.stepMs > 0;
     resetTrackPulseCursor(track, barStartAt, { fireAtReference: !shouldRetriggerNow });
     if (shouldRetriggerNow) {
       track.__lastRetriggerPulse = 0;
