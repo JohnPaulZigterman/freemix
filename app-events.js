@@ -355,6 +355,11 @@
 
     const arrangementCell = target.closest(".arrangement-cell");
     if (arrangementCell) {
+      if (arrangementCell.matches("[data-arr-text='true']")) {
+        handleArrangementTextCell({ currentTarget: arrangementCell });
+        return;
+      }
+
       handleArrangementCell({
         currentTarget: arrangementCell,
         ctrlKey: !!event?.ctrlKey,
@@ -375,7 +380,9 @@
       return null;
     }
 
-    const trackId = element.getAttribute("data-arr-track");
+    const trackId = element.matches("[data-arr-text='true']")
+      ? "__text"
+      : element.getAttribute("data-arr-track");
     const step = Number(element.getAttribute("data-arr-step"));
     return trackId && Number.isInteger(step) ? { trackId, step } : null;
   }
@@ -504,6 +511,18 @@
       return;
     }
 
+    const textAction = target.closest("[data-text-action]");
+    if (textAction) {
+      handleTextAction(textAction.getAttribute("data-text-action"));
+      return;
+    }
+
+    const textButton = target.closest("[data-text-control]");
+    if (textButton && textButton.matches("button")) {
+      handleTextControl({ type: "change", currentTarget: textButton, target: textButton });
+      return;
+    }
+
     const clearAction = target.closest(".arrangement-clear-action");
     if (clearAction) {
       const menu = getArrangementClearMenu();
@@ -573,6 +592,12 @@
       return;
     }
 
+    const textControl = control.closest("[data-text-control]");
+    if (textControl) {
+      handleTextControl({ type: event.type, target: textControl, currentTarget: textControl });
+      return;
+    }
+
     if (control.id === "bpmInput") {
       handleBpmInput(event);
       window.freemixRender?.updateTransportRow?.();
@@ -613,6 +638,12 @@
       }
 
       handleTrackControl({ type: event.type, target: trackControl, currentTarget: trackControl });
+      return;
+    }
+
+    const textControl = control.closest("[data-text-control]");
+    if (textControl) {
+      handleTextControl({ type: event.type, target: textControl, currentTarget: textControl });
     }
   }
 

@@ -54,6 +54,8 @@ const ARRANGEMENT_COLD_START_BURN_IN_MS = 1600;
 const ARRANGEMENT_COLD_START_BURN_IN_MIN_FRAMES = 8;
 const ARRANGEMENT_STEP_LOOKAHEAD_MS = 8000;
 const ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS = 220;
+const ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS = 90;
+const ARRANGEMENT_LOOKAHEAD_MAX_RETRIES = 2;
 const TRANSPORT_CLOCK_CORRECTION_MAX_WINDOW_MS = 220;
 const TRANSPORT_CLOCK_CORRECTION_MIN_WINDOW_MS = 42;
 const LIVE_CONTROL_DEBOUNCE_CONTROLS = Object.freeze(
@@ -318,6 +320,20 @@ const ARRANGEMENT_SCENE_COLORS = Object.freeze([
   { id: "teal", label: "Teal", value: "#36d6d0" },
 ]);
 const DEFAULT_SCENE_COLOR_INDEX = 0;
+const TEXT_TRACK_ID = "__text";
+const TEXT_TRACK_LABEL = "TEXT";
+const TEXT_FONT_OPTIONS = Object.freeze([
+  { value: "Impact, Haettenschweiler, 'Arial Black', sans-serif", label: "Impact" },
+  { value: "Georgia, 'Times New Roman', serif", label: "Serif" },
+  { value: "'Trebuchet MS', Verdana, sans-serif", label: "Groove" },
+  { value: "'Courier New', Courier, monospace", label: "Mono" },
+  { value: "'Arial Black', Arial, sans-serif", label: "Block" },
+  { value: "'Brush Script MT', cursive", label: "Script" },
+]);
+const TEXT_ALIGN_OPTIONS = Object.freeze(["left", "center", "right"]);
+const TEXT_DEFAULT_COLOR = "#f4f1df";
+const TEXT_DEFAULT_STROKE_COLOR = "#050607";
+const TEXT_DEFAULT_SHADOW_COLOR = "#000000";
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -336,6 +352,12 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
     .map((clip) => (clip && typeof clip === "object" && !Array.isArray(clip) ? clip : {}));
   while (arrangementState.clips.length < stepCount) {
     arrangementState.clips.push({});
+  }
+
+  const existingTextClips = Array.isArray(arrangementState.textClips) ? arrangementState.textClips : [];
+  arrangementState.textClips = existingTextClips.slice(0, stepCount).map(normalizeTextClip);
+  while (arrangementState.textClips.length < stepCount) {
+    arrangementState.textClips.push(null);
   }
 
   const existingSceneColors = Array.isArray(arrangementState.sceneColors) ? arrangementState.sceneColors : [];
@@ -387,6 +409,8 @@ let arrangementPrerollRevealTimer = null;
 let arrangementLookaheadRevealTimer = null;
 let arrangementLookaheadPrepareKey = null;
 let arrangementLookaheadPreparePromise = null;
+const arrangementLookaheadRevealTimers = new Map();
+const arrangementLookaheadPrepareKeys = new Set();
 if (appState.transport && typeof appState.transport === "object") {
   if (appState.transport.active || appState.transport.frameId) {
     appState.transport = null;
@@ -442,6 +466,147 @@ function normalizeTrackPreferences(track) {
 }
 
 tracks.forEach(normalizeTrackPreferences);
+
+function createTextField(overrides = {}) {
+  const fieldId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? `text-${crypto.randomUUID()}`
+      : `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return normalizeTextField({
+    id: fieldId,
+    text: "TEXT",
+    font: TEXT_FONT_OPTIONS[0].value,
+    size: 28,
+    color: TEXT_DEFAULT_COLOR,
+    bold: true,
+    italic: false,
+    underline: false,
+    stroke: true,
+    strokeWidth: 2,
+    strokeColor: TEXT_DEFAULT_STROKE_COLOR,
+    shadow: true,
+    shadowColor: TEXT_DEFAULT_SHADOW_COLOR,
+    shadowBlur: 8,
+    shadowX: 3,
+    shadowY: 3,
+    align: "center",
+    x: 50,
+    y: 50,
+    opacity: 1,
+    ...overrides,
+  });
+}
+
+function normalizeTextField(field, index = 0) {
+  const source = field && typeof field === "object" && !Array.isArray(field) ? field : {};
+  const font = TEXT_FONT_OPTIONS.some((option) => option.value === source.font)
+    ? source.font
+    : TEXT_FONT_OPTIONS[0].value;
+  const align = TEXT_ALIGN_OPTIONS.includes(source.align) ? source.align : "center";
+  return {
+    id: typeof source.id === "string" && source.id ? source.id : `text-field-${index + 1}`,
+    text: typeof source.text === "string" ? source.text.slice(0, 240) : "",
+    font,
+    size: clamp(Number(source.size), 10, 72),
+    color: typeof source.color === "string" && source.color ? source.color : TEXT_DEFAULT_COLOR,
+    bold: typeof source.bold === "boolean" ? source.bold : true,
+    italic: !!source.italic,
+    underline: !!source.underline,
+    stroke: typeof source.stroke === "boolean" ? source.stroke : true,
+    strokeWidth: clamp(Number(source.strokeWidth), 0, 8),
+    strokeColor: typeof source.strokeColor === "string" && source.strokeColor ? source.strokeColor : TEXT_DEFAULT_STROKE_COLOR,
+    shadow: typeof source.shadow === "boolean" ? source.shadow : true,
+    shadowColor: typeof source.shadowColor === "string" && source.shadowColor ? source.shadowColor : TEXT_DEFAULT_SHADOW_COLOR,
+    shadowBlur: clamp(Number(source.shadowBlur), 0, 24),
+    shadowX: clamp(Number(source.shadowX), -24, 24),
+    shadowY: clamp(Number(source.shadowY), -24, 24),
+    align,
+    x: clamp(Number(source.x), 0, 100),
+    y: clamp(Number(source.y), 0, 100),
+    opacity: clamp(Number(source.opacity), 0, 1),
+  };
+}
+
+function normalizeTextClip(clip) {
+  if (!clip || typeof clip !== "object" || Array.isArray(clip)) {
+    return null;
+  }
+
+  const rawFields = Array.isArray(clip.fields)
+    ? clip.fields
+    : typeof clip.text === "string"
+      ? [{ ...clip, id: "text-field-1" }]
+      : [];
+  const fields = rawFields.map(normalizeTextField).filter((field) => field.text || rawFields.length === 1);
+  if (!fields.length) {
+    return null;
+  }
+
+  const selectedFieldId = fields.some((field) => field.id === clip.selectedFieldId)
+    ? clip.selectedFieldId
+    : fields[0].id;
+  return {
+    fields,
+    selectedFieldId,
+  };
+}
+
+function createTextClip(overrides = {}) {
+  const field = createTextField(overrides.field || {});
+  return normalizeTextClip({
+    fields: [field],
+    selectedFieldId: field.id,
+    ...overrides,
+  });
+}
+
+function getArrangementTextClip(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null || !arrangement?.textClips) {
+    return null;
+  }
+
+  return normalizeTextClip(arrangement.textClips[resolvedStep]);
+}
+
+function setArrangementTextClip(stepIndex, textClip) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  if (!Array.isArray(arrangement.textClips)) {
+    arrangement.textClips = Array.from({ length: arrangement.clips?.length || arrangementStepCount }, () => null);
+  }
+
+  arrangement.textClips[resolvedStep] = normalizeTextClip(textClip);
+  return true;
+}
+
+function ensureArrangementTextClip(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  let clip = getArrangementTextClip(resolvedStep);
+  if (!clip) {
+    clip = createTextClip();
+    setArrangementTextClip(resolvedStep, clip);
+  }
+
+  return clip;
+}
+
+function getSelectedTextField(stepIndex = arrangement?.step) {
+  const clip = getArrangementTextClip(stepIndex);
+  if (!clip?.fields?.length) {
+    return null;
+  }
+
+  return clip.fields.find((field) => field.id === clip.selectedFieldId) || clip.fields[0];
+}
+
 function syncArrangementState(nextArrangement) {
   arrangement = nextArrangement;
   appState.arrangement = nextArrangement;
@@ -554,7 +719,9 @@ let searchResultCachePersistTimer = null;
 let sourceMetadataCachePersistTimer = null;
 let arrangementClipboardStep = null;
 let arrangementClipboardClips = [];
+let arrangementClipboardTextClip = null;
 let selectedArrangementClipKeys = new Set();
+let selectedTextClipStep = null;
 let arrangementUndoStack = [];
 let arrangementRedoStack = [];
 let debugPanelVisible = false;
@@ -1256,6 +1423,11 @@ function getArrangementStepPrimaryClip(stepIndex = arrangement?.step) {
   return activeTrack ? step[activeTrack.id] : null;
 }
 
+function arrangementStepHasText(stepIndex) {
+  const clip = getArrangementTextClip(stepIndex);
+  return !!clip?.fields?.some((field) => String(field.text || "").trim());
+}
+
 function getArrangementClipColorIndex(clip, stepIndex = arrangement?.step) {
   if (clip && Number.isFinite(Number(clip.colorIndex))) {
     return normalizeSceneColorIndex(clip.colorIndex);
@@ -1293,10 +1465,16 @@ function arrangementStepHasClips(stepIndex) {
   }
 
   const step = arrangement?.clips?.[resolvedStep];
-  return !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
+  const hasVideoClips = !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
+  return hasVideoClips || arrangementStepHasText(resolvedStep);
 }
 
 function getSelectedEditTargetLabel() {
+  if (selectedTextClipStep !== null) {
+    const textClip = getArrangementTextClip(selectedTextClipStep);
+    return `Editing TEXT / scene ${selectedTextClipStep + 1}${textClip ? "" : " (blank)"}`;
+  }
+
   const selectedTargets = getSelectedArrangementClipTargets();
   if (selectedTargets.length === 1) {
     const [{ track, stepIndex }] = selectedTargets;
@@ -2241,6 +2419,7 @@ function clearTrackArrangementLookahead(track) {
   track.__lookaheadRevealedStep = null;
   track.__lookaheadRevealedBarStartAt = null;
   track.__lookaheadRevealedPulse = null;
+  track.__lookaheadRetryCount = 0;
 }
 
 function clearArrangementLookaheadPreroll(clearTracks = false) {
@@ -2248,11 +2427,28 @@ function clearArrangementLookaheadPreroll(clearTracks = false) {
     window.clearTimeout(arrangementLookaheadRevealTimer);
     arrangementLookaheadRevealTimer = null;
   }
+  arrangementLookaheadRevealTimers.forEach((timerId) => {
+    window.clearTimeout(timerId);
+  });
+  arrangementLookaheadRevealTimers.clear();
+  arrangementLookaheadPrepareKeys.clear();
   arrangementLookaheadPrepareKey = null;
   arrangementLookaheadPreparePromise = null;
   if (clearTracks) {
     tracks.forEach(clearTrackArrangementLookahead);
   }
+}
+
+function setTrackLookaheadStatus(track, status, details = {}) {
+  if (!track) {
+    return;
+  }
+
+  track.__lookaheadStatus = {
+    status,
+    at: performance.now(),
+    ...details,
+  };
 }
 
 function getNextArrangementStepStart(currentElapsedBars, barMs) {
@@ -2282,15 +2478,22 @@ function scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken)
     return;
   }
 
-  if (arrangementLookaheadRevealTimer !== null) {
-    window.clearTimeout(arrangementLookaheadRevealTimer);
+  const timerKey = getArrangementLookaheadKey(stepIndex, barStartAt, sessionToken);
+  const existingTimer = arrangementLookaheadRevealTimers.get(timerKey);
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer);
   }
 
   const delayMs = Math.max(0, barStartAt - performance.now());
-  arrangementLookaheadRevealTimer = window.setTimeout(() => {
-    arrangementLookaheadRevealTimer = null;
+  const nextTimer = window.setTimeout(() => {
+    arrangementLookaheadRevealTimers.delete(timerKey);
+    if (arrangementLookaheadRevealTimer === nextTimer) {
+      arrangementLookaheadRevealTimer = null;
+    }
     revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
   }, delayMs);
+  arrangementLookaheadRevealTimers.set(timerKey, nextTimer);
+  arrangementLookaheadRevealTimer = nextTimer;
 }
 
 function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) {
@@ -2317,6 +2520,7 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
     const video = getTrackVideo(track);
     const playbackSignature = getPlaybackStateSignature(clip, sourceUrl);
+    const revealAt = performance.now();
     const canRevealPreparedVideo =
       clip &&
       sourceUrl &&
@@ -2328,6 +2532,11 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
       track.__lookaheadPrerollSignature === playbackSignature;
 
     if (!canRevealPreparedVideo) {
+      setTrackLookaheadStatus(track, "fallback", {
+        scene: resolvedStep + 1,
+        targetInMs: Math.round(barStartAt - revealAt),
+        reason: "not-ready-at-reveal",
+      });
       clearTrackArrangementLookahead(track);
       if (clip && sourceUrl) {
         triggerTrack(track, clip, sessionToken);
@@ -2359,6 +2568,12 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     track.__lookaheadRevealedStep = resolvedStep;
     track.__lookaheadRevealedBarStartAt = barStartAt;
     track.__lookaheadRevealedPulse = pulseIndex;
+    setTrackLookaheadStatus(track, "revealed", {
+      scene: resolvedStep + 1,
+      targetInMs: Math.round(barStartAt - revealAt),
+      currentTime: Number(video.currentTime.toFixed(3)),
+      anchor: Number((clip?.startTime || 0).toFixed?.(3) || clip?.startTime || 0),
+    });
     track.__lookaheadPrerollFor = null;
     track.__lookaheadPrerollStep = null;
     track.__lookaheadPrerollBarStartAt = null;
@@ -2377,10 +2592,58 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
     return false;
   }
 
-  const failLookahead = () => {
+  const failLookahead = (reason = "failed") => {
+    const retryCount = Number(track.__lookaheadRetryCount) || 0;
+    const remainingMs = barStartAt - performance.now();
+    setTrackLookaheadStatus(track, "failed", {
+      scene: stepIndex + 1,
+      targetInMs: Math.round(remainingMs),
+      reason,
+      retries: retryCount,
+    });
     clearTrackArrangementLookahead(track);
+    if (
+      startTransport.bootToken === sessionToken &&
+      transport?.active &&
+      transport.sessionToken === sessionToken &&
+      remainingMs > ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS + ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS &&
+      retryCount < ARRANGEMENT_LOOKAHEAD_MAX_RETRIES
+    ) {
+      track.__lookaheadRetryCount = retryCount + 1;
+      setTrackLookaheadStatus(track, "retrying", {
+        scene: stepIndex + 1,
+        targetInMs: Math.round(remainingMs),
+        reason,
+        retries: retryCount + 1,
+      });
+      window.setTimeout(() => {
+        if (
+          startTransport.bootToken !== sessionToken ||
+          !transport?.active ||
+          transport.sessionToken !== sessionToken ||
+          performance.now() >= barStartAt
+        ) {
+          return;
+        }
+
+        void prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepIndex, barStartAt, sessionToken, lookaheadKey)
+          .then((prepared) => {
+            if (prepared) {
+              scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken);
+            }
+          })
+          .catch((error) => {
+            console.warn(error);
+          });
+      }, ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS);
+    }
     return false;
   };
+  setTrackLookaheadStatus(track, "loading", {
+    scene: stepIndex + 1,
+    targetInMs: Math.round(barStartAt - performance.now()),
+    source: sourceUrl,
+  });
   track.__lookaheadPrerollFor = sessionToken;
   track.__lookaheadPrerollStep = stepIndex;
   track.__lookaheadPrerollBarStartAt = barStartAt;
@@ -2402,7 +2665,7 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
 
   await waitForTrackReady(video);
   if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
-    return failLookahead();
+    return failLookahead("ready-timeout");
   }
 
   setupTrackAudio(track, video, clip);
@@ -2413,19 +2676,29 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   applyTrackPitchAndSpeed(track, clip);
   applyVideoPitchAndSpeed(video, clip);
   silenceTrackForPreroll(track, video);
+  setTrackLookaheadStatus(track, "seeking", {
+    scene: stepIndex + 1,
+    targetInMs: Math.round(barStartAt - performance.now()),
+    anchor: Number(clip?.startTime || 0),
+  });
   safeSetCurrentTime(video, clip, track, { force: true });
   await awaitVideoSeek(video, safeStartTime(clip, video), Math.max(ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS, Math.min(AV_READY_TIMEOUT_MS, barStartAt - performance.now())));
 
   if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
-    return failLookahead();
+    return failLookahead("initial-seek-late");
   }
 
   try {
     await video.play();
   } catch {
-    return failLookahead();
+    return failLookahead("warm-play-failed");
   }
 
+  setTrackLookaheadStatus(track, "decoding", {
+    scene: stepIndex + 1,
+    targetInMs: Math.round(barStartAt - performance.now()),
+    currentTime: Number(video.currentTime.toFixed(3)),
+  });
   silenceTrackForPreroll(track, video);
   await Promise.race([
     waitForPresentedVideoFrame(video, { timeoutMs: ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS }),
@@ -2433,7 +2706,7 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   ]);
 
   if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt) {
-    return failLookahead();
+    return failLookahead("decode-late");
   }
 
   try {
@@ -2444,7 +2717,7 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
 
   const anchorTime = safeStartTime(clip, video);
   if (!Number.isFinite(anchorTime)) {
-    return failLookahead();
+    return failLookahead("bad-anchor");
   }
 
   const speed = Math.max(0.1, Math.abs(Number(clip?.speed) || 1));
@@ -2464,12 +2737,19 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
     ...clip,
     startTime: finalStartTime,
   };
+  setTrackLookaheadStatus(track, "arming", {
+    scene: stepIndex + 1,
+    targetInMs: Math.round(barStartAt - performance.now()),
+    anchor: Number(anchorTime.toFixed(3)),
+    finalLeadMs: Math.round(finalLeadMs),
+    finalStartTime: Number(finalStartTime.toFixed(3)),
+  });
   silenceTrackForPreroll(track, video);
   safeSetCurrentTime(video, finalPrerollState, track, { force: true });
   await awaitVideoSeek(video, finalStartTime, Math.max(ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS, Math.min(AV_READY_TIMEOUT_MS, barStartAt - performance.now() + 120)));
 
   if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt + 16) {
-    return failLookahead();
+    return failLookahead("final-seek-late");
   }
 
   const launchAt = barStartAt - finalLeadMs;
@@ -2481,14 +2761,14 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   }
 
   if (startTransport.bootToken !== sessionToken || performance.now() >= barStartAt + 16) {
-    return failLookahead();
+    return failLookahead("launch-late");
   }
 
   silenceTrackForPreroll(track, video);
   try {
     await video.play();
   } catch {
-    return failLookahead();
+    return failLookahead("timed-play-failed");
   }
 
   silenceTrackForPreroll(track, video);
@@ -2498,10 +2778,18 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   track.__lookaheadPrerollBarStartAt = barStartAt;
   track.__lookaheadPrerollSignature = getPlaybackStateSignature(clip, sourceUrl);
   track.__lookaheadPrerollKey = lookaheadKey;
+  setTrackLookaheadStatus(track, "armed", {
+    scene: stepIndex + 1,
+    targetInMs: Math.round(barStartAt - performance.now()),
+    anchor: Number(anchorTime.toFixed(3)),
+    finalLeadMs: Math.round(finalLeadMs),
+    currentTime: Number(video.currentTime.toFixed(3)),
+    retries: Number(track.__lookaheadRetryCount) || 0,
+  });
   return true;
 }
 
-function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionToken) {
+function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionToken, options = {}) {
   if (!transport?.active || transport.sessionToken !== sessionToken || startTransport.bootToken !== sessionToken) {
     return;
   }
@@ -2512,12 +2800,13 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
   }
 
   const timeUntilStepMs = barStartAt - performance.now();
-  if (timeUntilStepMs < ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS || timeUntilStepMs > ARRANGEMENT_STEP_LOOKAHEAD_MS) {
+  const allowEarly = !!options.allowEarly;
+  if (timeUntilStepMs < ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS || (!allowEarly && timeUntilStepMs > ARRANGEMENT_STEP_LOOKAHEAD_MS)) {
     return;
   }
 
   const lookaheadKey = getArrangementLookaheadKey(resolvedStep, barStartAt, sessionToken);
-  if (arrangementLookaheadPrepareKey === lookaheadKey && arrangementLookaheadPreparePromise) {
+  if (arrangementLookaheadPrepareKeys.has(lookaheadKey)) {
     return;
   }
 
@@ -2547,6 +2836,7 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
   }
 
   arrangementLookaheadPrepareKey = lookaheadKey;
+  arrangementLookaheadPrepareKeys.add(lookaheadKey);
   arrangementLookaheadPreparePromise = Promise.all(
     targets.map(({ track, clip, sourceUrl }) =>
       prepareArrangementLookaheadTarget(track, clip, sourceUrl, resolvedStep, barStartAt, sessionToken, lookaheadKey),
@@ -2566,11 +2856,58 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
       console.warn(error);
     })
     .finally(() => {
+      arrangementLookaheadPrepareKeys.delete(lookaheadKey);
       if (arrangementLookaheadPrepareKey === lookaheadKey) {
         arrangementLookaheadPrepareKey = null;
         arrangementLookaheadPreparePromise = null;
       }
     });
+}
+
+function prepareInitialFutureArrangementEntrances(sessionToken, startAt, barMs) {
+  if (
+    !arrangement.enabled ||
+    !hasArrangementClips() ||
+    !transport?.active ||
+    transport.sessionToken !== sessionToken ||
+    !Number.isFinite(Number(startAt)) ||
+    !Number.isFinite(Number(barMs)) ||
+    barMs <= 0
+  ) {
+    return;
+  }
+
+  const arrangementLength = arrangement?.clips?.length || 0;
+  const startStep = getArrangementStepIndex(arrangement.step);
+  if (!arrangementLength || startStep === null) {
+    return;
+  }
+
+  tracks.forEach((track) => {
+    const startingClip = getArrangementStepClip(track, startStep);
+    const startingSourceUrl = startingClip?.source?.mediaUrl || null;
+    if (startingSourceUrl) {
+      return;
+    }
+
+    for (let offset = 1; offset <= arrangementLength; offset += 1) {
+      const futureStep = (startStep + offset) % arrangementLength;
+      const futureClip = getArrangementStepClip(track, futureStep);
+      const futureSourceUrl = futureClip?.source?.mediaUrl || null;
+      if (!futureSourceUrl) {
+        continue;
+      }
+
+      const futureStartAt = startAt + offset * barMs;
+      setTrackLookaheadStatus(track, "queued", {
+        scene: futureStep + 1,
+        targetInMs: Math.round(futureStartAt - performance.now()),
+        source: futureSourceUrl,
+      });
+      prepareUpcomingArrangementStepPreroll(futureStep, futureStartAt, sessionToken, { allowEarly: true });
+      break;
+    }
+  });
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -2704,6 +3041,11 @@ function isArrangementClipSelected(trackId, stepIndex) {
   return selectedArrangementClipKeys.has(getArrangementClipSelectionKey(trackId, stepIndex));
 }
 
+function isArrangementTextClipSelected(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  return resolvedStep !== null && selectedTextClipStep === resolvedStep;
+}
+
 function setArrangementClipSelectedClass(trackId, stepIndex, isSelected) {
   const cell = playerPanel?.querySelector(
     `.arrangement-cell[data-arr-track="${trackId}"][data-arr-step="${stepIndex}"]`,
@@ -2721,6 +3063,11 @@ function renderArrangementClipSelection() {
       setArrangementClipSelectedClass(selection.trackId, selection.stepIndex, true);
     }
   });
+  if (selectedTextClipStep !== null) {
+    playerPanel
+      ?.querySelector(`.arrangement-text-cell[data-arr-step="${selectedTextClipStep}"]`)
+      ?.classList.add("selected");
+  }
 }
 
 function selectArrangementClip(trackId, stepIndex, options = {}) {
@@ -2733,6 +3080,7 @@ function selectArrangementClip(trackId, stepIndex, options = {}) {
     cell.classList.remove("selected");
   });
   const key = getArrangementClipSelectionKey(trackId, resolvedStep);
+  selectedTextClipStep = null;
   if (options.additive) {
     if (selectedArrangementClipKeys.has(key)) {
       selectedArrangementClipKeys.delete(key);
@@ -2747,6 +3095,19 @@ function selectArrangementClip(trackId, stepIndex, options = {}) {
     selectedArrangementClipKeys.add(key);
   }
   renderArrangementClipSelection();
+  return true;
+}
+
+function selectArrangementTextClip(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  selectedArrangementClipKeys = new Set();
+  selectedTextClipStep = resolvedStep;
+  renderArrangementClipSelection();
+  window.freemixRender?.updateTransportRow?.();
   return true;
 }
 
@@ -2778,6 +3139,7 @@ function selectArrangementSceneClips(stepIndex) {
   selectedArrangementClipKeys = new Set(
     tracks.map((track) => getArrangementClipSelectionKey(track.id, resolvedStep)),
   );
+  selectedTextClipStep = null;
   renderArrangementClipSelection();
   return true;
 }
@@ -3812,6 +4174,18 @@ function getDebugSnapshot() {
           stepMs: Number.isFinite(Number(track.stepMs)) ? Number(track.stepMs.toFixed(2)) : null,
           nextTriggerInMs: Number.isFinite(Number(track.nextTriggerAt)) ? Math.round(track.nextTriggerAt - performance.now()) : null,
           primed: track.__transportPrimedFor === transport?.sessionToken,
+          lookahead: {
+            status: track.__lookaheadStatus?.status || null,
+            scene: track.__lookaheadStatus?.scene || (Number.isFinite(Number(track.__lookaheadPrerollStep)) ? Number(track.__lookaheadPrerollStep) + 1 : null),
+            targetInMs: Number.isFinite(Number(track.__lookaheadPrerollBarStartAt))
+              ? Math.round(Number(track.__lookaheadPrerollBarStartAt) - performance.now())
+              : track.__lookaheadStatus?.targetInMs ?? null,
+            anchor: track.__lookaheadStatus?.anchor ?? null,
+            finalLeadMs: track.__lookaheadStatus?.finalLeadMs ?? null,
+            retries: track.__lookaheadStatus?.retries ?? (Number(track.__lookaheadRetryCount) || 0),
+            reason: track.__lookaheadStatus?.reason || null,
+            ageMs: Number.isFinite(Number(track.__lookaheadStatus?.at)) ? Math.round(performance.now() - track.__lookaheadStatus.at) : null,
+          },
         },
         audio: {
           graph: hasLiveTrackAudioGraph(track, video),
@@ -3922,6 +4296,7 @@ function renderWorkstation() {
       <div class="performance-grid">
         <div class="video-matrix layout-stack ${loadedTracks.length ? "has-sources" : "no-sources"}" aria-label="Video sources">
           ${tracks.map((track, index) => renderVideoCell(track, index)).join("")}
+          ${renderTextOverlay()}
         </div>
 
       <div class="arrangement-track-inline">
@@ -3941,6 +4316,7 @@ function renderWorkstation() {
               </button>
             </div>
             ${tracks.map((track) => renderTrackControlRow(track)).join("")}
+            ${renderTextControlPanel()}
           </div>
           </div>
         </div>
@@ -4143,8 +4519,38 @@ function renderArrangementRow(track) {
   `;
 }
 
+function renderArrangementTextRow() {
+  return `
+    ${arrangement.textClips
+      .map((clip, index) => {
+        const textClip = normalizeTextClip(clip);
+        const isFilled = !!textClip?.fields?.some((field) => String(field.text || "").trim());
+        const title = arrangementDeleteMode
+          ? isFilled
+            ? `Delete text from scene ${index + 1}`
+            : `Scene ${index + 1} has no text`
+          : isFilled
+            ? `TEXT scene ${index + 1}; click to edit`
+            : `Create text in scene ${index + 1}`;
+        return `
+          <button
+            class="arrangement-cell arrangement-text-cell ${isFilled ? "filled" : ""} ${isArrangementTextClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            type="button"
+            data-arr-text="true"
+            data-arr-step="${index}"
+            draggable="false"
+            title="${escapeHtml(title)}"
+          >
+            ${isFilled ? "T" : ""}
+          </button>
+        `;
+      })
+      .join("")}
+  `;
+}
+
 function renderArrangementGridRows() {
-  return tracks
+  const videoRows = tracks
     .map(
       (track) => `
         <div class="arrangement-track-row" data-track-id="${track.id}">
@@ -4156,6 +4562,14 @@ function renderArrangementGridRows() {
       `,
     )
     .join("");
+  return `${videoRows}
+    <div class="arrangement-track-row arrangement-text-row" data-track-id="${TEXT_TRACK_ID}">
+      <div class="arrangement-track-label text-track-label" title="Text overlay">
+        ${TEXT_TRACK_LABEL}
+      </div>
+      ${renderArrangementTextRow()}
+    </div>
+  `;
 }
 
 function renderArrangementGrid() {
@@ -4192,6 +4606,53 @@ function renderVideoCell(track, index) {
       <div class="trigger-flash" aria-hidden="true"></div>
     </div>
   `;
+}
+
+function getActiveTextClipForDisplay() {
+  const stepIndex =
+    transport?.active && arrangement.enabled && Number.isFinite(Number(transport.arrangementStep))
+      ? transport.arrangementStep
+      : arrangement?.step;
+  return {
+    stepIndex: getArrangementStepIndex(stepIndex),
+    clip: getArrangementTextClip(stepIndex),
+  };
+}
+
+function renderTextOverlay() {
+  const { clip } = getActiveTextClipForDisplay();
+  const fields = clip?.fields || [];
+  return `
+    <div class="text-overlay-layer" id="textOverlayLayer" aria-hidden="true">
+      ${fields.map(renderTextOverlayField).join("")}
+    </div>
+  `;
+}
+
+function renderTextOverlayField(field) {
+  const text = String(field?.text || "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const xPosition = clamp(Number(field.x), 0, 100);
+  const anchorX = xPosition >= 66 ? "-100%" : xPosition <= 34 ? "0" : "-50%";
+  const style = [
+    `left: ${xPosition}%`,
+    `top: ${clamp(Number(field.y), 0, 100)}%`,
+    `--text-anchor-x: ${anchorX}`,
+    `font-family: ${field.font}`,
+    `font-size: clamp(12px, ${clamp(Number(field.size), 10, 72) / 8}vw, ${clamp(Number(field.size), 10, 72)}px)`,
+    `font-weight: ${field.bold ? "900" : "500"}`,
+    `font-style: ${field.italic ? "italic" : "normal"}`,
+    `text-decoration: ${field.underline ? "underline" : "none"}`,
+    `color: ${field.color}`,
+    `opacity: ${clamp(Number(field.opacity), 0, 1)}`,
+    `text-align: ${field.align}`,
+    `-webkit-text-stroke: ${field.stroke ? `${clamp(Number(field.strokeWidth), 0, 8)}px ${field.strokeColor}` : "0 transparent"}`,
+    `text-shadow: ${field.shadow ? `${clamp(Number(field.shadowX), -24, 24)}px ${clamp(Number(field.shadowY), -24, 24)}px ${clamp(Number(field.shadowBlur), 0, 24)}px ${field.shadowColor}` : "none"}`,
+  ].join("; ");
+  return `<div class="text-overlay-field" style="${escapeHtml(style)}">${escapeHtml(text).replaceAll("\n", "<br>")}</div>`;
 }
 
 function getTrackMediaStatus(track, renderSource = null) {
@@ -4340,6 +4801,127 @@ function renderTrackControlRow(track) {
           ${levelControls}
         </div>
         ${advancedControls}
+      </div>
+    </article>
+  `;
+}
+
+function renderTextControlPanel() {
+  const stepIndex = selectedTextClipStep !== null ? selectedTextClipStep : getArrangementStepIndex(arrangement?.step);
+  const textClip = stepIndex === null ? null : getArrangementTextClip(stepIndex);
+  const selectedField = stepIndex === null ? null : getSelectedTextField(stepIndex);
+  const fieldOptions = textClip?.fields?.length
+    ? textClip.fields
+        .map((field, index) => `<option value="${escapeHtml(field.id)}" ${field.id === textClip.selectedFieldId ? "selected" : ""}>Field ${index + 1}</option>`)
+        .join("")
+    : `<option value="">No fields</option>`;
+  const disabled = selectedField ? "" : "disabled";
+  const fontOptions = TEXT_FONT_OPTIONS.map(
+    (option) => `<option value="${escapeHtml(option.value)}" ${selectedField?.font === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
+  ).join("");
+  return `
+    <article class="track-row text-editor-row${selectedTextClipStep !== null ? " selected" : ""}" data-text-editor="true">
+      <div class="track-row-label">
+        <div class="track-row-title">
+          <span class="track-row-name text-row-name">TEXT</span>
+        </div>
+        <div class="track-state-chips" aria-label="Text layer states">
+          <span class="track-state-chip${textClip ? " is-on" : ""}">Overlay</span>
+          <span class="track-state-chip">Top Layer</span>
+        </div>
+      </div>
+      <div class="track-row-body text-editor-body">
+        <label class="control-field text-body-field">
+          <span>Words</span>
+          <textarea
+            data-text-control="text"
+            rows="3"
+            maxlength="240"
+            ${disabled}
+            placeholder="Click a TEXT cell, then write here"
+          >${escapeHtml(selectedField?.text || "")}</textarea>
+        </label>
+        <div class="text-tool-row">
+          <label class="control-field">
+            <span>Field</span>
+            <select data-text-control="selectedFieldId" ${textClip ? "" : "disabled"}>
+              ${fieldOptions}
+            </select>
+          </label>
+          <button class="text-tool-button" type="button" data-text-action="add-field">Add Field</button>
+          <button class="text-tool-button" type="button" data-text-action="delete-field" ${disabled}>Delete Field</button>
+        </div>
+        <div class="text-tool-row text-tool-row--format">
+          <label class="control-field">
+            <span>Font</span>
+            <select data-text-control="font" ${disabled}>
+              ${fontOptions}
+            </select>
+          </label>
+          <button class="text-style-toggle${selectedField?.bold ? " active" : ""}" type="button" data-text-control="bold" ${disabled}>B</button>
+          <button class="text-style-toggle${selectedField?.italic ? " active" : ""}" type="button" data-text-control="italic" ${disabled}>I</button>
+          <button class="text-style-toggle${selectedField?.underline ? " active" : ""}" type="button" data-text-control="underline" ${disabled}>U</button>
+        </div>
+        <div class="text-tool-row text-tool-row--sliders">
+          <label class="control-field">
+            <span>Size</span>
+            <input type="range" min="10" max="72" step="1" value="${selectedField?.size ?? 28}" data-text-control="size" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>X</span>
+            <input type="range" min="0" max="100" step="1" value="${selectedField?.x ?? 50}" data-text-control="x" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Y</span>
+            <input type="range" min="0" max="100" step="1" value="${selectedField?.y ?? 50}" data-text-control="y" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Opacity</span>
+            <input type="range" min="0" max="1" step="0.01" value="${selectedField?.opacity ?? 1}" data-text-control="opacity" ${disabled}>
+          </label>
+        </div>
+        <div class="text-tool-row text-tool-row--color">
+          <label class="control-field">
+            <span>Fill</span>
+            <input type="color" value="${escapeHtml(selectedField?.color || TEXT_DEFAULT_COLOR)}" data-text-control="color" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Align</span>
+            <select data-text-control="align" ${disabled}>
+              ${TEXT_ALIGN_OPTIONS.map((align) => `<option value="${align}" ${selectedField?.align === align ? "selected" : ""}>${align}</option>`).join("")}
+            </select>
+          </label>
+          <button class="text-style-toggle${selectedField?.stroke ? " active" : ""}" type="button" data-text-control="stroke" ${disabled}>Stroke</button>
+          <button class="text-style-toggle${selectedField?.shadow ? " active" : ""}" type="button" data-text-control="shadow" ${disabled}>Shadow</button>
+        </div>
+        <div class="text-tool-row text-tool-row--color">
+          <label class="control-field">
+            <span>Stroke</span>
+            <input type="color" value="${escapeHtml(selectedField?.strokeColor || TEXT_DEFAULT_STROKE_COLOR)}" data-text-control="strokeColor" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Stroke Size</span>
+            <input type="range" min="0" max="8" step="0.5" value="${selectedField?.strokeWidth ?? 2}" data-text-control="strokeWidth" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Drop</span>
+            <input type="color" value="${escapeHtml(selectedField?.shadowColor || TEXT_DEFAULT_SHADOW_COLOR)}" data-text-control="shadowColor" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Blur</span>
+            <input type="range" min="0" max="24" step="1" value="${selectedField?.shadowBlur ?? 8}" data-text-control="shadowBlur" ${disabled}>
+          </label>
+        </div>
+        <div class="text-tool-row text-tool-row--shadow">
+          <label class="control-field">
+            <span>Shadow X</span>
+            <input type="range" min="-24" max="24" step="1" value="${selectedField?.shadowX ?? 3}" data-text-control="shadowX" ${disabled}>
+          </label>
+          <label class="control-field">
+            <span>Shadow Y</span>
+            <input type="range" min="-24" max="24" step="1" value="${selectedField?.shadowY ?? 3}" data-text-control="shadowY" ${disabled}>
+          </label>
+        </div>
       </div>
     </article>
   `;
@@ -4826,6 +5408,108 @@ function handleTrackControl(event) {
   }
 
   commitControlEdit();
+}
+
+function handleTextControl(event) {
+  const control = event.currentTarget || event.target;
+  const controlName = control?.dataset?.textControl;
+  if (!controlName) {
+    return;
+  }
+
+  const stepIndex = selectedTextClipStep !== null ? selectedTextClipStep : getArrangementStepIndex(arrangement?.step);
+  if (stepIndex === null) {
+    return;
+  }
+
+  const textClip = ensureArrangementTextClip(stepIndex);
+  if (!textClip) {
+    return;
+  }
+
+  if (controlName === "selectedFieldId") {
+    if (textClip.fields.some((field) => field.id === control.value)) {
+      textClip.selectedFieldId = control.value;
+      setArrangementTextClip(stepIndex, textClip);
+      window.freemixRender?.updateTextEditor?.();
+      markAppStateDirty(true);
+    }
+    return;
+  }
+
+  const field = textClip.fields.find((item) => item.id === textClip.selectedFieldId) || textClip.fields[0];
+  if (!field) {
+    return;
+  }
+
+  if (event?.type !== "input") {
+    captureArrangementEdit(`Changed TEXT ${controlName} in scene ${stepIndex + 1}`);
+  }
+
+  if (controlName === "text") {
+    field.text = String(control.value || "").slice(0, 240);
+  } else if (["bold", "italic", "underline", "stroke", "shadow"].includes(controlName)) {
+    field[controlName] = !field[controlName];
+  } else if (["size", "x", "y", "opacity", "strokeWidth", "shadowBlur", "shadowX", "shadowY"].includes(controlName)) {
+    field[controlName] = Number(control.value);
+  } else if (["font", "color", "strokeColor", "shadowColor", "align"].includes(controlName)) {
+    field[controlName] = control.value;
+  }
+
+  setArrangementTextClip(stepIndex, textClip);
+  refreshArrangementHasClipsState();
+  window.freemixRender?.updateArrangementTextCell?.(stepIndex);
+  window.freemixRender?.updateTextOverlay?.();
+  if (event?.type !== "input" || control.tagName === "BUTTON" || controlName === "font" || controlName === "align") {
+    window.freemixRender?.updateTextEditor?.();
+  }
+
+  if (event?.type === "input") {
+    queueControlStatePersist();
+  } else {
+    markAppStateDirty(true);
+  }
+}
+
+function handleTextAction(action) {
+  const stepIndex = selectedTextClipStep !== null ? selectedTextClipStep : getArrangementStepIndex(arrangement?.step);
+  if (stepIndex === null) {
+    return false;
+  }
+
+  const textClip = ensureArrangementTextClip(stepIndex);
+  if (!textClip) {
+    return false;
+  }
+
+  if (action === "add-field") {
+    captureArrangementEdit(`Added TEXT field in scene ${stepIndex + 1}`);
+    const field = createTextField({
+      text: "NEW TEXT",
+      y: clamp(50 + textClip.fields.length * 8, 0, 100),
+    });
+    textClip.fields.push(field);
+    textClip.selectedFieldId = field.id;
+  } else if (action === "delete-field") {
+    if (!textClip.fields.length) {
+      return false;
+    }
+
+    captureArrangementEdit(`Deleted TEXT field in scene ${stepIndex + 1}`);
+    const fieldIndex = Math.max(0, textClip.fields.findIndex((field) => field.id === textClip.selectedFieldId));
+    textClip.fields.splice(fieldIndex, 1);
+    textClip.selectedFieldId = textClip.fields[Math.max(0, fieldIndex - 1)]?.id || textClip.fields[0]?.id || null;
+  } else {
+    return false;
+  }
+
+  setArrangementTextClip(stepIndex, textClip.fields.length ? textClip : null);
+  refreshArrangementHasClipsState();
+  window.freemixRender?.updateArrangementGrid?.();
+  window.freemixRender?.updateTextOverlay?.();
+  window.freemixRender?.updateTextEditor?.();
+  markAppStateDirty(true);
+  return true;
 }
 
 async function startTransport() {
@@ -5469,6 +6153,7 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
 
   if (arrangement.enabled && hasArrangementClips()) {
     updateArrangementStep(arrangement.step, startAt, true);
+    prepareInitialFutureArrangementEntrances(sessionToken, startAt, timing.barMs);
     tracks.forEach((track) => {
       if (track.__prerollRevealFor !== sessionToken) {
         return;
@@ -5678,11 +6363,11 @@ function getExportPreflightIssue(mode = "clip") {
     const hasPlayableArrangementClip = arrangement?.clips?.some((step) =>
       Object.values(step || {}).some((clip) => !!clip?.source?.mediaUrl),
     );
-    return hasPlayableArrangementClip ? "" : "Arrangement has no playable media";
+    return hasPlayableArrangementClip || arrangement?.textClips?.some((clip) => !!normalizeTextClip(clip)) ? "" : "Arrangement has no playable media";
   }
 
   const hasPlayableTrack = tracks.some((track) => !!getTrackPlaybackSourceUrl(track, getTrackPlaybackState(track) || track));
-  return hasPlayableTrack ? "" : "Load a source before exporting";
+  return hasPlayableTrack || !!getArrangementTextClip(arrangement?.step) ? "" : "Load a source before exporting";
 }
 
 function getExportBlendMode(track) {
@@ -5749,6 +6434,60 @@ function drawTrackFrame(context, track, width, height) {
   context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
 }
 
+function drawTextClipFrame(context, clip, width, height) {
+  const textClip = normalizeTextClip(clip);
+  if (!textClip?.fields?.length) {
+    return;
+  }
+
+  textClip.fields.forEach((field) => {
+    const text = String(field.text || "").trim();
+    if (!text) {
+      return;
+    }
+
+    context.save();
+    const fontSize = Math.max(8, (clamp(Number(field.size), 10, 72) / 100) * height);
+    context.globalAlpha = clamp(Number(field.opacity), 0, 1);
+    context.font = `${field.italic ? "italic " : ""}${field.bold ? "900" : "500"} ${fontSize}px ${field.font}`;
+    context.textAlign = field.align;
+    context.textBaseline = "middle";
+    context.fillStyle = field.color || TEXT_DEFAULT_COLOR;
+    context.lineJoin = "round";
+    context.lineWidth = field.stroke ? clamp(Number(field.strokeWidth), 0, 8) * Math.max(1, width / 640) : 0;
+    context.strokeStyle = field.strokeColor || TEXT_DEFAULT_STROKE_COLOR;
+    context.shadowColor = field.shadow ? field.shadowColor || TEXT_DEFAULT_SHADOW_COLOR : "transparent";
+    context.shadowBlur = field.shadow ? clamp(Number(field.shadowBlur), 0, 24) : 0;
+    context.shadowOffsetX = field.shadow ? clamp(Number(field.shadowX), -24, 24) : 0;
+    context.shadowOffsetY = field.shadow ? clamp(Number(field.shadowY), -24, 24) : 0;
+
+    const x = (clamp(Number(field.x), 0, 100) / 100) * width;
+    const y = (clamp(Number(field.y), 0, 100) / 100) * height;
+    const lines = text.split(/\r?\n/).slice(0, 6);
+    const lineHeight = fontSize * 1.12;
+    const startY = y - ((lines.length - 1) * lineHeight) / 2;
+    lines.forEach((line, index) => {
+      const lineY = startY + index * lineHeight;
+      if (field.stroke && context.lineWidth > 0) {
+        context.strokeText(line, x, lineY);
+      }
+      context.fillText(line, x, lineY);
+      if (field.underline) {
+        const metrics = context.measureText(line);
+        const underlineY = lineY + fontSize * 0.42;
+        const startX = field.align === "center" ? x - metrics.width / 2 : field.align === "right" ? x - metrics.width : x;
+        context.beginPath();
+        context.moveTo(startX, underlineY);
+        context.lineTo(startX + metrics.width, underlineY);
+        context.lineWidth = Math.max(1, fontSize * 0.055);
+        context.strokeStyle = field.color || TEXT_DEFAULT_COLOR;
+        context.stroke();
+      }
+    });
+    context.restore();
+  });
+}
+
 function createExportCanvasSession() {
   const matrix = playerPanel?.querySelector(".video-matrix");
   const bounds = matrix?.getBoundingClientRect();
@@ -5781,6 +6520,7 @@ function createExportCanvasSession() {
     tracks.forEach((track) => {
       drawTrackFrame(context, track, width, height);
     });
+    drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height);
 
     context.globalAlpha = 1;
     context.globalCompositeOperation = "source-over";
@@ -5918,7 +6658,10 @@ async function exportComposition(mode = "clip") {
     const renderState = getTrackRenderState(track);
     return track.source || renderState?.source;
   });
-  if (renderTracks.length === 0) {
+  const hasExportText = requestedExportMode === "arrangement"
+    ? arrangement?.textClips?.some((clip) => !!normalizeTextClip(clip))
+    : !!getArrangementTextClip(arrangement?.step);
+  if (renderTracks.length === 0 && !hasExportText) {
     setStatus("Load at least one source before exporting", true);
     return;
   }
@@ -7217,6 +7960,54 @@ function handleArrangementCell(event) {
   renderWorkstation();
 }
 
+function handleArrangementTextCell(event) {
+  const cell = event.currentTarget;
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
+  const stepIndex = Number(cell.dataset.arrStep);
+  if (!Number.isInteger(stepIndex) || getArrangementStepIndex(stepIndex) === null) {
+    return;
+  }
+
+  const hasTextClip = !!getArrangementTextClip(stepIndex);
+  if (arrangementDeleteMode) {
+    if (!hasTextClip) {
+      setStatus(`No text in scene ${stepIndex + 1}`);
+      selectArrangementStep(stepIndex);
+      selectArrangementTextClip(stepIndex);
+      return;
+    }
+
+    captureArrangementEdit(`Deleted TEXT from scene ${stepIndex + 1}`);
+    setArrangementTextClip(stepIndex, null);
+    selectedTextClipStep = null;
+    refreshArrangementHasClipsState();
+    selectArrangementStep(stepIndex);
+    window.freemixRender?.updateArrangementGrid?.();
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
+    setStatus(`Deleted TEXT from scene ${stepIndex + 1}`);
+    markAppStateDirty(true);
+    return;
+  }
+
+  if (!hasTextClip) {
+    captureArrangementEdit(`Created TEXT in scene ${stepIndex + 1}`);
+    ensureArrangementTextClip(stepIndex);
+    refreshArrangementHasClipsState();
+    markAppStateDirty(true);
+  }
+
+  selectArrangementStep(stepIndex);
+  selectArrangementTextClip(stepIndex);
+  window.freemixRender?.updateArrangementGrid?.();
+  window.freemixRender?.updateTextOverlay?.();
+  window.freemixRender?.updateTextEditor?.();
+  setStatus(`Editing TEXT / scene ${stepIndex + 1}`);
+}
+
 function handleArrangementStepLabel(event) {
   if (typeof clearGuidanceHint === "function") {
     clearGuidanceHint();
@@ -7228,13 +8019,16 @@ function handleArrangementStepLabel(event) {
   }
 
   if (arrangementDeleteMode) {
-    if (!arrangement?.clips?.[stepIndex] || !Object.keys(arrangement.clips[stepIndex]).length) {
+    if (!arrangementStepHasClips(stepIndex)) {
       setStatus(`Scene ${stepIndex + 1} is already empty`);
       return;
     }
 
     captureArrangementEdit(`Deleted scene ${stepIndex + 1}`);
     arrangement.clips[stepIndex] = {};
+    if (Array.isArray(arrangement.textClips)) {
+      arrangement.textClips[stepIndex] = null;
+    }
     refreshArrangementHasClipsState();
 
     if (transport?.active && arrangement.enabled && hasArrangementClips()) {
@@ -7246,6 +8040,9 @@ function handleArrangementStepLabel(event) {
         window.freemixRender.updateArrangementCell(stepTrack, stepIndex);
       }
     });
+    window.freemixRender?.updateArrangementTextCell?.(stepIndex);
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
     setStatus(`Deleted scene ${stepIndex + 1}`);
     selectArrangementStep(stepIndex);
     if (window.freemixRender?.updateArrangementGrid) {
@@ -7314,6 +8111,9 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
   const sourceClips = arrangement.clips[sourceStep];
   captureArrangementEdit(`Pasted scene ${sourceStep + 1} to ${targetStep + 1}`);
   arrangement.clips[targetStep] = cloneArrangementStep(sourceClips);
+  if (Array.isArray(arrangement.textClips)) {
+    arrangement.textClips[targetStep] = normalizeTextClip(cloneArrangementHistoryPayload(arrangement.textClips[sourceStep]));
+  }
   if (Array.isArray(arrangement.sceneColors)) {
     arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(sourceStep);
   }
@@ -7329,6 +8129,9 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
       window.freemixRender.updateArrangementCell(track, targetStep);
     }
   });
+  window.freemixRender?.updateArrangementTextCell?.(targetStep);
+  window.freemixRender?.updateTextOverlay?.();
+  window.freemixRender?.updateTextEditor?.();
   setStatus(`Section ${sourceStep + 1} pasted to ${targetStep + 1}`);
 
   if (window.freemixRender?.updateArrangementGrid) {
@@ -7344,6 +8147,20 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
 }
 
 function copySelectedArrangementScene() {
+  if (selectedTextClipStep !== null) {
+    const textClip = getArrangementTextClip(selectedTextClipStep);
+    if (!textClip) {
+      setStatus("No selected text clip to copy", true);
+      return false;
+    }
+
+    arrangementClipboardTextClip = cloneTextClip(textClip);
+    arrangementClipboardClips = [];
+    arrangementClipboardStep = null;
+    setStatus("TEXT clip copied");
+    return true;
+  }
+
   const selectedClips = getSelectedArrangementClipTargets()
     .map(({ track, stepIndex }) => ({
       trackId: track.id,
@@ -7364,12 +8181,36 @@ function copySelectedArrangementScene() {
     stepIndex: entry.stepIndex,
     clip: cloneArrangementClip(entry.clip),
   }));
+  arrangementClipboardTextClip = null;
   arrangementClipboardStep = null;
   setStatus(`${arrangementClipboardClips.length} clip${arrangementClipboardClips.length === 1 ? "" : "s"} copied`);
   return true;
 }
 
 function pasteArrangementClipboardToSelectedScene() {
+  if (selectedTextClipStep !== null) {
+    if (!arrangementClipboardTextClip) {
+      setStatus("No copied TEXT clip", true);
+      return false;
+    }
+
+    captureArrangementEdit("Pasted TEXT clip");
+    setArrangementTextClip(selectedTextClipStep, cloneTextClip(arrangementClipboardTextClip));
+    refreshArrangementHasClipsState();
+    selectArrangementStep(selectedTextClipStep);
+    selectArrangementTextClip(selectedTextClipStep);
+    if (window.freemixRender?.updateArrangementGrid) {
+      window.freemixRender.updateArrangementGrid();
+    } else {
+      renderWorkstation();
+    }
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
+    markAppStateDirty(true);
+    setStatus(`TEXT pasted to scene ${selectedTextClipStep + 1}`);
+    return true;
+  }
+
   const targets = getSelectedArrangementClipTargets();
   if (!targets.length) {
     setStatus("Choose a clip slot first", true);
@@ -7414,6 +8255,26 @@ function pasteArrangementClipboardToSelectedScene() {
 }
 
 function deleteSelectedArrangementScene() {
+  if (selectedTextClipStep !== null) {
+    const stepIndex = selectedTextClipStep;
+    if (!getArrangementTextClip(stepIndex)) {
+      setStatus("Selected text slot is already empty");
+      return false;
+    }
+
+    captureArrangementEdit("Deleted selected text");
+    setArrangementTextClip(stepIndex, null);
+    selectedTextClipStep = null;
+    refreshArrangementHasClipsState();
+    selectArrangementStep(stepIndex);
+    window.freemixRender?.updateArrangementGrid?.();
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
+    markAppStateDirty(true);
+    setStatus("TEXT deleted");
+    return true;
+  }
+
   const targets = getSelectedArrangementClipTargets();
   if (!targets.length) {
     setStatus("Choose a clip first", true);
@@ -7609,11 +8470,14 @@ function copyCurrentArrangementSectionToAll() {
     }
 
     const step = arrangement.clips[index];
-    if (!step || Object.keys(step).length > 0) {
+    if (!step || arrangementStepHasClips(index)) {
       continue;
     }
 
     arrangement.clips[index] = cloneArrangementStep(sourceStep);
+    if (Array.isArray(arrangement.textClips)) {
+      arrangement.textClips[index] = normalizeTextClip(cloneArrangementHistoryPayload(arrangement.textClips[sourceStepIndex]));
+    }
     if (Array.isArray(arrangement.sceneColors)) {
       arrangement.sceneColors[index] = getArrangementSceneColorIndex(sourceStepIndex);
     }
@@ -7634,10 +8498,11 @@ function copyCurrentArrangementSectionToAll() {
   if (window.freemixRender?.updateArrangementGrid) {
     if (typeof window.freemixRender.updateArrangementCell === "function") {
       destinationSteps.forEach((stepIndex) => {
-        tracks.forEach((track) => {
-          window.freemixRender.updateArrangementCell(track, stepIndex);
+          tracks.forEach((track) => {
+            window.freemixRender.updateArrangementCell(track, stepIndex);
+          });
+          window.freemixRender.updateArrangementTextCell?.(stepIndex);
         });
-      });
     } else {
       window.freemixRender.updateArrangementGrid();
     }
@@ -7777,7 +8642,11 @@ window.renderArrangementGrid = renderArrangementGrid;
 window.renderArrangementGridRows = renderArrangementGridRows;
 window.renderArrangementStepLabels = renderArrangementStepLabels;
 window.renderArrangementSceneColorSelector = renderArrangementSceneColorSelector;
+window.renderTextOverlay = renderTextOverlay;
+window.renderTextControlPanel = renderTextControlPanel;
 window.setArrangementSceneColor = setArrangementSceneColor;
+window.freemixGetArrangementTextClip = getArrangementTextClip;
+window.isArrangementTextClipSelected = isArrangementTextClipSelected;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 window.freemixGetSelectedEditTargetLabel = getSelectedEditTargetLabel;
@@ -7833,6 +8702,11 @@ function updateArrangementStepCount(event) {
       arrangement.sceneColors[index] = normalizeSceneColorIndex(previousArrangement.sceneColors[index]);
     }
   }
+  if (Array.isArray(previousArrangement?.textClips)) {
+    for (let index = 0; index < Math.min(previousArrangement.textClips.length, arrangement.textClips.length); index += 1) {
+      arrangement.textClips[index] = normalizeTextClip(previousArrangement.textClips[index]);
+    }
+  }
   refreshArrangementHasClipsState();
 
   const previousStep = Number(previousArrangement?.step) || 0;
@@ -7876,7 +8750,7 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   }
   arrangement.step = resolvedStep;
   bindTracksToArrangementStep(resolvedStep);
-  let activeClipCount = 0;
+  let activeClipCount = arrangementStepHasText(resolvedStep) ? 1 : 0;
   tracks.forEach((track) => {
     const clip = getArrangementStepClip(track, resolvedStep);
     if (!clip || !clip.source) {
@@ -8036,6 +8910,8 @@ function selectArrangementStep(stepIndex) {
     updateArrangementStep(resolvedStep, now, true);
     window.freemixRender?.updateTransportRow?.();
     window.freemixRender?.updateArrangementSceneColorSelector?.();
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
     return;
   }
 
@@ -8048,12 +8924,16 @@ function selectArrangementStep(stepIndex) {
     updateArrangementStep(resolvedStep, now, true);
     window.freemixRender?.updateTransportRow?.();
     window.freemixRender?.updateArrangementSceneColorSelector?.();
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
     return;
   }
 
   renderArrangementPlayhead();
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateArrangementSceneColorSelector?.();
+  window.freemixRender?.updateTextOverlay?.();
+  window.freemixRender?.updateTextEditor?.();
   setStatus(`Editing scene ${resolvedStep + 1}`);
 }
 
@@ -8078,6 +8958,7 @@ function renderArrangementPlayhead() {
   }
   arrangementPlayheadStep = currentStep;
   renderArrangementClipSelection();
+  window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateArrangementSceneColorSelector?.();
 }
 
@@ -8096,7 +8977,10 @@ function refreshArrangementHasClipsState(targetArrangement = arrangement) {
       return false;
     }
     return Object.keys(step).length > 0;
-  });
+  }) || (Array.isArray(targetArrangement.textClips) && targetArrangement.textClips.some((clip) => {
+    const textClip = normalizeTextClip(clip);
+    return !!textClip?.fields?.some((field) => String(field.text || "").trim());
+  }));
 
   return arrangementHasClips;
 }
@@ -8114,6 +8998,7 @@ function refreshArrangementStepCells(stepIndex) {
   tracks.forEach((stepTrack) => {
     window.freemixRender.updateArrangementCell(stepTrack, resolvedStep);
   });
+  window.freemixRender.updateArrangementTextCell?.(resolvedStep);
 }
 
 function createSessionId() {
@@ -8540,6 +9425,10 @@ function cloneArrangementStep(step) {
   );
 }
 
+function cloneTextClip(clip) {
+  return normalizeTextClip(cloneArrangementHistoryPayload(clip));
+}
+
 function queueTrackSearch(track, query) {
   window.clearTimeout(track.searchTimer);
   const normalizedQuery = normalizeSearchInput(query);
@@ -8962,6 +9851,7 @@ function createInitialArrangement(steps = arrangementStepCount) {
     steps,
     sceneColors: Array.from({ length: steps }, () => DEFAULT_SCENE_COLOR_INDEX),
     clips: Array.from({ length: steps }, () => ({})),
+    textClips: Array.from({ length: steps }, () => null),
   };
 }
 

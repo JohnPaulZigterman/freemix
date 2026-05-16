@@ -131,6 +131,72 @@
     window.freemixSyncArrangementTrackHeights?.();
   }
 
+  function updateTextOverlay() {
+    const player = document.querySelector("#playerPanel");
+    const overlay = player?.querySelector("#textOverlayLayer");
+    if (!overlay || typeof window.renderTextOverlay !== "function") {
+      return;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = window.renderTextOverlay().trim();
+    const nextOverlay = wrapper.firstElementChild;
+    if (nextOverlay) {
+      overlay.replaceWith(nextOverlay);
+    }
+  }
+
+  function updateTextEditor() {
+    const player = document.querySelector("#playerPanel");
+    const editor = player?.querySelector("[data-text-editor='true']");
+    if (!editor || typeof window.renderTextControlPanel !== "function") {
+      return;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = window.renderTextControlPanel().trim();
+    const nextEditor = wrapper.firstElementChild;
+    if (nextEditor) {
+      editor.replaceWith(nextEditor);
+      if (typeof window.freemixBindWorkstationControls === "function") {
+        window.freemixBindWorkstationControls();
+      }
+      window.freemixSyncArrangementTrackHeights?.();
+    }
+  }
+
+  function updateArrangementTextCell(stepIndex) {
+    if (!Number.isInteger(stepIndex)) {
+      return;
+    }
+
+    const player = document.querySelector("#playerPanel");
+    const cell = player?.querySelector(`.arrangement-text-cell[data-arr-step="${stepIndex}"]`);
+    if (!cell) {
+      return;
+    }
+
+    const clip = typeof window.freemixGetArrangementTextClip === "function"
+      ? window.freemixGetArrangementTextClip(stepIndex)
+      : arrangement.textClips?.[stepIndex] || null;
+    const isFilled = !!clip?.fields?.some((field) => String(field.text || "").trim());
+    cell.classList.toggle("filled", isFilled);
+    cell.classList.toggle(
+      "selected",
+      typeof window.isArrangementTextClipSelected === "function" && window.isArrangementTextClipSelected(stepIndex),
+    );
+    cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
+    cell.textContent = isFilled ? "T" : "";
+    cell.draggable = false;
+    cell.title = arrangementDeleteMode
+      ? isFilled
+        ? `Delete text from scene ${stepIndex + 1}`
+        : `Scene ${stepIndex + 1} has no text`
+      : isFilled
+        ? `TEXT scene ${stepIndex + 1}; click to edit`
+        : `Create text in scene ${stepIndex + 1}`;
+  }
+
   function updateArrangementCell(track, stepIndex) {
     if (!track?.id || !Number.isInteger(stepIndex)) {
       return;
@@ -207,6 +273,8 @@
       if (rows !== null) {
         arrangementGrid.innerHTML = rows;
         window.freemixSyncArrangementTrackHeights?.();
+        updateTextOverlay();
+        updateTextEditor();
         return;
       }
 
@@ -215,6 +283,8 @@
         if (renderGrid) {
           arrangementGrid.outerHTML = renderGrid;
           window.freemixSyncArrangementTrackHeights?.();
+          updateTextOverlay();
+          updateTextEditor();
           return;
         }
       }
@@ -224,6 +294,8 @@
       renderWorkstation();
       window.freemixSyncArrangementTrackHeights?.();
     }
+    updateTextOverlay();
+    updateTextEditor();
   }
 
   function updateArrangementStepLabels() {
@@ -289,9 +361,12 @@
     updateTrackRow,
     updateArrangementGrid,
     updateArrangementCell,
+    updateArrangementTextCell,
     updateArrangementStepLabels,
     updateArrangementSceneColorSelector,
     updateSourceStrip,
+    updateTextOverlay,
+    updateTextEditor,
     updateArrangementPlayhead: renderArrangementPlayhead,
   };
 })();

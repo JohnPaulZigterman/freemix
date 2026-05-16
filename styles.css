@@ -943,6 +943,26 @@ input[type="number"]:focus {
   mix-blend-mode: hard-light;
 }
 
+.text-overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 999;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.text-overlay-field {
+  position: absolute;
+  width: max-content;
+  max-width: 92%;
+  line-height: 1.05;
+  white-space: pre;
+  overflow-wrap: anywhere;
+  transform: translate(var(--text-anchor-x, -50%), -50%);
+  paint-order: stroke fill;
+  letter-spacing: 0.02em;
+}
+
 .arrangement-panel {
   min-width: 0;
   flex: 1 1 auto;
@@ -1266,6 +1286,16 @@ input[type="number"]:focus {
   color: var(--track-color);
 }
 
+.arrangement-text-row {
+  --arr-track-height: var(--control-h-sm);
+}
+
+.arrangement-track-label.text-track-label {
+  --track-color: color-mix(in srgb, var(--silver) 80%, var(--accent));
+  color: var(--track-color);
+  letter-spacing: 0.12em;
+}
+
 .arrangement-cell {
   display: grid;
   min-width: 0;
@@ -1297,6 +1327,15 @@ input[type="number"]:focus {
 .arrangement-cell.filled {
   border-color: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 64%, var(--line));
   background: color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-alt));
+}
+
+.arrangement-text-cell.filled {
+  border-color: color-mix(in srgb, var(--silver) 68%, var(--line));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 42%),
+    color-mix(in srgb, var(--silver) 20%, var(--panel-alt));
+  color: color-mix(in srgb, var(--silver) 90%, #fff);
+  font-weight: 900;
 }
 
 .arrangement-cell.filled.has-density-bars {
@@ -2056,6 +2095,95 @@ input[type="number"]:focus {
   grid-column: 1 / -1;
   height: 18px;
   margin-bottom: 0;
+}
+
+.text-editor-row {
+  --track-color: color-mix(in srgb, var(--silver) 78%, var(--accent));
+}
+
+.text-editor-row.selected {
+  border-color: color-mix(in srgb, var(--silver) 46%, var(--accent));
+}
+
+.text-row-name {
+  color: color-mix(in srgb, var(--silver) 88%, #fff);
+  letter-spacing: 0.14em;
+}
+
+.text-editor-body {
+  display: grid;
+  gap: 3px;
+}
+
+.text-body-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.text-body-field textarea {
+  width: 100%;
+  min-height: 46px;
+  resize: vertical;
+  box-sizing: border-box;
+  border: 1px solid var(--mech-edge);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-strong) 88%, #020304);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.25;
+  padding: 5px;
+}
+
+.text-tool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 3px;
+  align-items: end;
+}
+
+.text-tool-row--format {
+  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(24px, auto));
+}
+
+.text-tool-row--sliders {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.text-tool-row--color {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.text-tool-row--shadow {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.text-tool-button,
+.text-style-toggle {
+  min-height: 20px;
+  border: 1px solid color-mix(in srgb, var(--silver) 36%, var(--line));
+  border-radius: var(--radius-control);
+  background: linear-gradient(180deg, rgba(230, 235, 238, 0.14), rgba(6, 7, 8, 0.92));
+  color: color-mix(in srgb, var(--silver) 82%, var(--muted));
+  font: inherit;
+  font-size: 0.56rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.text-style-toggle.active {
+  border-color: color-mix(in srgb, var(--silver) 72%, var(--accent));
+  color: #fff;
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--panel-strong));
+}
+
+.text-tool-row input[type="color"] {
+  width: 100%;
+  min-height: 19px;
+  padding: 0;
+  border: 1px solid var(--mech-edge);
+  background: var(--panel-strong);
 }
 
 .track-source-search input[type="search"] {
