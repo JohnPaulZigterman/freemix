@@ -1463,6 +1463,15 @@ function getPlaybackStateSignature(playbackState, sourceUrl = "") {
   });
 }
 
+function isVideoParkedAtAnchor(video, clipState, tolerance = 0.05) {
+  if (!video || !clipState || video.readyState < 1) {
+    return false;
+  }
+
+  const anchorTime = safeStartTime(clipState, video);
+  return Number.isFinite(anchorTime) && almostEqual(video.currentTime, anchorTime, tolerance);
+}
+
 function flashTrackTrigger(track) {
   const cell = getTrackCell(track);
   if (!cell) {
@@ -1471,6 +1480,40 @@ function flashTrackTrigger(track) {
 
   cell.classList.remove("triggered");
   window.requestAnimationFrame(() => cell.classList.add("triggered"));
+}
+
+function launchParkedVideo(video, track, playbackState, playbackToken) {
+  if (!video || !track) {
+    return false;
+  }
+
+  if (!video.paused || video.ended || video.readyState < 2) {
+    return false;
+  }
+
+  const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : track.__playbackToken;
+  void video.play()
+    .then(() => {
+      if (Number.isFinite(tokenAtStart) && track.__playbackToken !== tokenAtStart) {
+        try {
+          video.pause();
+        } catch {
+          // Best effort: a newer trigger superseded this parked launch.
+        }
+        return;
+      }
+
+      applyTrackVolume(track, playbackState);
+    })
+    .catch((error) => {
+      if (error instanceof DOMException) {
+        setStatus(`Playback failed: ${error.name}`, true);
+      } else {
+        setStatus("Playback failed", true);
+      }
+    });
+
+  return true;
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -1829,12 +1872,14 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
   }
 
   const primingState = getTrackPlaybackState(track) || track;
-  track.__transportPrimedFor = sessionToken;
+  const primingSourceUrl = getTrackPlaybackSourceUrl(track, primingState);
   const parkedAtAnchor = await parkVideoAtAnchor(video, primingState, track);
   if (startTransport.bootToken !== sessionToken) {
     return;
   }
+  track.__transportPrimedFor = parkedAtAnchor ? sessionToken : null;
   track.__parkedAtAnchorFor = parkedAtAnchor ? sessionToken : null;
+  track.__parkedPlaybackSignature = parkedAtAnchor ? getPlaybackStateSignature(primingState, primingSourceUrl) : null;
   setupTrackAudio(track, video);
   applyTrackVolume(track, primingState);
   applyTrackPitchAndSpeed(track, primingState);
@@ -4401,6 +4446,8 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
       track.lastStep = -1;
       track.__lastPlaybackSignature = null;
+      track.__parkedAtAnchorFor = null;
+      track.__parkedPlaybackSignature = null;
       delete track.__transportPrimedFor;
       delete track.__transportPrimeAttempt;
       if (track.__pendingPlaybackFrame) {
@@ -5082,6 +5129,8 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   setVideoCorsPolicy(video, sourceUrl);
   const sourceChanged = !!sourceUrl && video.src !== sourceUrl;
   if (sourceChanged) {
+    track.__parkedAtAnchorFor = null;
+    track.__parkedPlaybackSignature = null;
     video.src = sourceUrl;
     video.load();
   }
@@ -5118,6 +5167,20 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   applyTrackBlend(track, playbackState);
   applyTrackOpacity(track, playbackState);
   applyTrackPitchAndSpeed(track, playbackState);
+
+  const canLaunchFromParkedAnchor =
+    !!transport?.active &&
+    !sourceChanged &&
+    track.__parkedAtAnchorFor === transportSessionToken &&
+    track.__parkedPlaybackSignature === playbackSignature &&
+    isVideoParkedAtAnchor(video, playbackState, 0.035);
+  if (canLaunchFromParkedAnchor && launchParkedVideo(video, track, playbackState, playbackToken)) {
+    track.__lastPlaybackSignature = playbackSignature;
+    track.__parkedAtAnchorFor = null;
+    track.__parkedPlaybackSignature = null;
+    flashTrackTrigger(track);
+    return;
+  }
 
   safeSetCurrentTime(video, playbackState, track, { force: true });
   track.__lastPlaybackSignature = playbackSignature;
