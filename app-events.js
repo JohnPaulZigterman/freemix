@@ -627,11 +627,19 @@
       }
 
       boundVideoElements.add(video);
-      video.addEventListener("loadedmetadata", () => updateTrackDuration(video));
+      video.addEventListener("loadedmetadata", () => {
+        updateTrackDuration(video);
+        const trackId = video.id.replace("video-", "");
+        window.freemixSetTrackMediaStatus?.(trackId, "ready", {
+          statusMessage: `${window.freemixGetTrackById?.(trackId)?.name || "Track"}: ready`,
+        });
+      });
       video.addEventListener("error", (event) => {
         const sourceError = event?.target?.error;
         const code = Number(sourceError?.code);
         const message = sourceError?.message || (Number.isFinite(code) ? `code ${code}` : "unknown");
+        const trackId = video.id.replace("video-", "");
+        window.freemixSetTrackMediaStatus?.(trackId, "failed");
         setStatus(`Media error: ${message}`, true);
       });
       video.muted = false;
@@ -691,6 +699,12 @@
       return;
     }
 
+    if (!editableTarget && event.ctrlKey && event.altKey && event.key.toLowerCase() === "d") {
+      event.preventDefault();
+      window.freemixToggleDebugPanel?.();
+      return;
+    }
+
     const activeInput = event.target.closest(TRACK_NAME_INPUT_SELECTOR);
     if (activeInput) {
       if (event.key === "Enter") {
@@ -726,6 +740,18 @@
         renderTrackResults(track, []);
       }
       return;
+    }
+  }
+
+  function onDocumentKeydown(event) {
+    if (event.defaultPrevented) {
+      return;
+    }
+
+    const editableTarget = event.target.closest?.("input, textarea, select, [contenteditable='true']");
+    if (!editableTarget && event.ctrlKey && event.altKey && event.key.toLowerCase() === "d") {
+      event.preventDefault();
+      window.freemixToggleDebugPanel?.();
     }
   }
 
@@ -830,6 +856,7 @@
           clearResults();
         }
       });
+      document.addEventListener("keydown", onDocumentKeydown);
 
       document.querySelector(SESSION_FILE_INPUT_SELECTOR)?.addEventListener("change", onSessionFileChange);
 

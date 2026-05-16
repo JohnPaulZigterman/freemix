@@ -472,6 +472,7 @@ input[type="search"]:focus {
   border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--panel-alt) 72%, var(--panel));
   position: relative;
+  z-index: 4;
 }
 
 .transport-button,
@@ -726,6 +727,8 @@ input[type="number"]:focus {
   overflow: visible;
   min-height: 0;
   flex: 1 1 auto;
+  position: relative;
+  z-index: 12;
 }
 
 .arrangement-track-inline {
@@ -1462,6 +1465,58 @@ input[type="number"]:focus {
   text-transform: uppercase;
 }
 
+.media-status-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 4;
+  padding: 1px 5px;
+  border: 1px solid rgba(220, 226, 230, 0.22);
+  border-radius: 2px;
+  background: rgba(5, 6, 7, 0.72);
+  color: rgba(220, 226, 230, 0.72);
+  font-size: 0.5rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.debug-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 40;
+  width: min(520px, calc(100vw - 24px));
+  max-height: min(68vh, 620px);
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(220, 226, 230, 0.26);
+  border-radius: 4px;
+  background: rgba(3, 4, 5, 0.9);
+  color: rgba(220, 226, 230, 0.82);
+  font-size: 0.62rem;
+  line-height: 1.35;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.62);
+  white-space: pre-wrap;
+}
+
+.video-cell[data-media-status="ready"] .media-status-badge {
+  opacity: 0;
+}
+
+.video-cell[data-media-status="loading"] .media-status-badge {
+  border-color: rgba(85, 168, 255, 0.46);
+  color: #55a8ff;
+}
+
+.video-cell[data-media-status="failed"] .media-status-badge,
+.video-cell[data-media-status="cors-limited"] .media-status-badge {
+  border-color: rgba(255, 98, 98, 0.52);
+  color: #ff6262;
+}
+
 .trigger-flash {
   position: absolute;
   z-index: 3;
@@ -2051,7 +2106,7 @@ input[type="number"]:focus {
 
 .track-results {
   position: absolute;
-  z-index: 30;
+  z-index: 1000;
   right: auto;
   bottom: calc(100% + 6px);
   left: 0;
@@ -3220,6 +3275,22 @@ input[type="number"] {
     0 20px 46px rgba(0, 0, 0, 0.72),
     0 0 0 1px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(10px) saturate(130%);
+}
+
+.control-column:has(.track-results:not([hidden])),
+.control-bank:has(.track-results:not([hidden])),
+.track-row:has(.track-results:not([hidden])),
+.track-source:has(.track-results:not([hidden])) {
+  z-index: 120;
+}
+
+.control-column:has(.track-results:not([hidden])) {
+  overflow: visible;
+  position: relative;
+}
+
+.control-bank:has(.track-results:not([hidden])) {
+  overflow: visible;
 }
 
 .track-results::before {

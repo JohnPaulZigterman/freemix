@@ -124,6 +124,10 @@
       window.applyTrackControlVisibility(track);
     }
 
+    if (typeof window.freemixBindWorkstationControls === "function") {
+      window.freemixBindWorkstationControls();
+    }
+
     window.freemixSyncArrangementTrackHeights?.();
   }
 

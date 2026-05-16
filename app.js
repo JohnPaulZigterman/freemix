@@ -542,6 +542,8 @@ let arrangementClipboardClips = [];
 let selectedArrangementClipKeys = new Set();
 let arrangementUndoStack = [];
 let arrangementRedoStack = [];
+let debugPanelVisible = false;
+let debugPanelFrame = null;
 const ARRANGEMENT_HISTORY_LIMIT = 50;
 
 function cloneArrangementHistoryPayload(payload) {
@@ -1426,9 +1428,49 @@ function getTrackPlaybackState(track, overrideState) {
   return baseTrack;
 }
 
+function isBaseTrackPlaybackState(track, playbackState) {
+  const baseTrack = getTrackById(track?.id) || track;
+  return !playbackState || playbackState === track || playbackState === baseTrack;
+}
+
 function getTrackPlaybackSourceUrl(track, overrideState) {
   const playbackState = getTrackPlaybackState(track, overrideState);
-  return playbackState?.source?.mediaUrl || track?.source?.mediaUrl || null;
+  if (playbackState?.source?.mediaUrl) {
+    return playbackState.source.mediaUrl;
+  }
+
+  return isBaseTrackPlaybackState(track, playbackState) ? track?.source?.mediaUrl || null : null;
+}
+
+function playbackSignatureNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Number(parsed.toFixed(4)) : fallback;
+}
+
+function getPlaybackStateSignature(playbackState, sourceUrl = "") {
+  const fx = playbackState?.fx && typeof playbackState.fx === "object" ? playbackState.fx : {};
+  return JSON.stringify({
+    sourceUrl,
+    startTime: playbackSignatureNumber(playbackState?.startTime),
+    retriggersPerBar: normalizeRetriggersPerBar(playbackState?.retriggersPerBar),
+    muted: !!playbackState?.muted,
+    volume: playbackSignatureNumber(playbackState?.volume, 0.55),
+    blendMode: playbackState?.blendMode || "normal",
+    opacity: playbackSignatureNumber(playbackState?.opacity, 1),
+    speed: playbackSignatureNumber(playbackState?.speed, 1),
+    pitch: playbackSignatureNumber(playbackState?.pitch, 0),
+    fx: FX_CONTROLS.map((control) => [control.key, playbackSignatureNumber(fx[control.key], control.min)]),
+  });
+}
+
+function flashTrackTrigger(track) {
+  const cell = getTrackCell(track);
+  if (!cell) {
+    return;
+  }
+
+  cell.classList.remove("triggered");
+  window.requestAnimationFrame(() => cell.classList.add("triggered"));
 }
 
 function shouldDisableWebAudioForSource(sourceUrl) {
@@ -1788,7 +1830,11 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
 
   const primingState = getTrackPlaybackState(track) || track;
   track.__transportPrimedFor = sessionToken;
-  safeSetCurrentTime(video, primingState);
+  const parkedAtAnchor = await parkVideoAtAnchor(video, primingState, track);
+  if (startTransport.bootToken !== sessionToken) {
+    return;
+  }
+  track.__parkedAtAnchorFor = parkedAtAnchor ? sessionToken : null;
   setupTrackAudio(track, video);
   applyTrackVolume(track, primingState);
   applyTrackPitchAndSpeed(track, primingState);
@@ -2618,6 +2664,90 @@ function renderTransportMeter(beatsPerBar = getTransportBeatsPerBar()) {
   return Array.from({ length: beatsPerBar }, (_, index) => `<span class="beat-light" data-beat="${index}"></span>`).join("");
 }
 
+function getDebugSnapshot() {
+  const selectedClips = getSelectedArrangementClipTargets().map(({ track, stepIndex }) => `${track.id}@${stepIndex + 1}`);
+  return {
+    transport: transport
+      ? {
+          active: !!transport.active,
+          scene: Number.isFinite(Number(transport.arrangementStep)) ? Number(transport.arrangementStep) + 1 : null,
+          bpm: transport.bpm,
+          beatMs: Number(transport.beatMs?.toFixed?.(2) || transport.beatMs),
+          nextBeatInMs: Number.isFinite(Number(transport.nextBeatAt)) ? Math.round(transport.nextBeatAt - performance.now()) : null,
+        }
+      : null,
+    arrangement: {
+      enabled: !!arrangement?.enabled,
+      step: Number.isFinite(Number(arrangement?.step)) ? Number(arrangement.step) + 1 : null,
+      clips: arrangement?.clips?.length || 0,
+      selectedClips,
+    },
+    tracks: tracks.map((track) => {
+      const video = getTrackVideo(track);
+      const state = getTrackPlaybackState(track) || track;
+      return {
+        id: track.id,
+        name: track.name,
+        mediaStatus: getTrackMediaStatus(track, state?.source || track.source),
+        source: getTrackPlaybackSourceUrl(track, state),
+        anchor: Number(state?.startTime || 0),
+        density: normalizeRetriggersPerBar(state?.retriggersPerBar),
+        muted: !!state?.muted,
+        volume: Number(state?.volume ?? track.volume),
+        video: video
+          ? {
+              currentTime: Number(video.currentTime.toFixed(3)),
+              paused: !!video.paused,
+              readyState: video.readyState,
+              muted: !!video.muted,
+              volume: Number(video.volume.toFixed(3)),
+            }
+          : null,
+        timing: {
+          stepMs: Number.isFinite(Number(track.stepMs)) ? Number(track.stepMs.toFixed(2)) : null,
+          nextTriggerInMs: Number.isFinite(Number(track.nextTriggerAt)) ? Math.round(track.nextTriggerAt - performance.now()) : null,
+          primed: track.__transportPrimedFor === transport?.sessionToken,
+        },
+        audio: {
+          graph: hasLiveTrackAudioGraph(track, video),
+          webAudioDisabled: !!webAudioDisabled,
+          context: audioContext?.state || null,
+        },
+      };
+    }),
+  };
+}
+
+function updateDebugPanel() {
+  const panel = playerPanel?.querySelector("#debugPanel");
+  if (!panel) {
+    return;
+  }
+
+  panel.hidden = !debugPanelVisible;
+  if (!debugPanelVisible) {
+    return;
+  }
+
+  panel.textContent = JSON.stringify(getDebugSnapshot(), null, 2);
+  if (debugPanelFrame === null) {
+    debugPanelFrame = window.requestAnimationFrame(() => {
+      debugPanelFrame = null;
+      updateDebugPanel();
+    });
+  }
+}
+
+function toggleDebugPanel(force = null) {
+  debugPanelVisible = typeof force === "boolean" ? force : !debugPanelVisible;
+  updateDebugPanel();
+  setStatus(debugPanelVisible ? "Debug panel on" : "Debug panel off");
+  return debugPanelVisible;
+}
+
+window.freemixToggleDebugPanel = toggleDebugPanel;
+window.freemixGetDebugSnapshot = getDebugSnapshot;
+
 function renderWorkstation() {
   const loadedTracks = tracks.filter((track) => track.source);
   const allSameSource =
@@ -2710,6 +2840,7 @@ function renderWorkstation() {
           </div>
         </div>
       </div>
+      <pre class="debug-panel" id="debugPanel" hidden></pre>
     </section>
   `;
 
@@ -2720,6 +2851,7 @@ function renderWorkstation() {
   syncArrangementTrackHeights();
   window.freemixRender?.updateTransportRow?.();
   window.freemixRender?.updateSourceStrip?.();
+  updateDebugPanel();
   if (appState.userOnboarding?.needsHint) {
     showGuidance("Quick launch: load sample, seed bar, then press Play");
   }
@@ -2932,8 +3064,10 @@ function renderArrangementGrid() {
 function renderVideoCell(track, index) {
   const renderState = getTrackRenderState(track);
   const renderSource = renderState.source || track.source;
+  const mediaStatus = getTrackMediaStatus(track, renderSource);
+  const mediaStatusLabel = getTrackMediaStatusLabel(mediaStatus);
   return `
-    <div class="video-cell ${track.color} blend-${renderState.blendMode || TRACK_BLEND_DEFAULTS[0]} ${renderSource ? "has-source" : "no-source"}" data-track-id="${track.id}" style="--layer-index: ${index + 1}">
+    <div class="video-cell ${track.color} blend-${renderState.blendMode || TRACK_BLEND_DEFAULTS[0]} ${renderSource ? "has-source" : "no-source"}" data-track-id="${track.id}" data-media-status="${escapeHtml(mediaStatus)}" style="--layer-index: ${index + 1}">
       ${
         renderSource
         ? `<video
@@ -2949,10 +3083,57 @@ function renderVideoCell(track, index) {
         <strong>${escapeHtml(track.name)}</strong>
         ${track.role ? `<span>${escapeHtml(track.role)}</span>` : ""}
       </div>
+      <div class="media-status-badge">${escapeHtml(mediaStatusLabel)}</div>
       <div class="trigger-flash" aria-hidden="true"></div>
     </div>
   `;
 }
+
+function getTrackMediaStatus(track, renderSource = null) {
+  const status = typeof track?.mediaStatus === "string" ? track.mediaStatus : "";
+  if (status === "loading" || status === "failed" || status === "cors-limited" || status === "audio-only" || status === "video-only") {
+    return status;
+  }
+
+  return renderSource ? "ready" : "empty";
+}
+
+function getTrackMediaStatusLabel(status) {
+  return {
+    "audio-only": "Audio only",
+    "cors-limited": "CORS limited",
+    empty: "Empty",
+    failed: "Failed",
+    loading: "Loading",
+    ready: "Ready",
+    "video-only": "Video only",
+  }[status] || "Unknown";
+}
+
+function setTrackMediaStatus(trackOrId, status, options = {}) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  if (!track) {
+    return;
+  }
+
+  track.mediaStatus = status;
+  const cell = getTrackCell(track);
+  if (cell) {
+    const renderState = getTrackRenderState(track);
+    const normalizedStatus = getTrackMediaStatus(track, renderState?.source || track.source);
+    cell.dataset.mediaStatus = normalizedStatus;
+    const badge = cell.querySelector(".media-status-badge");
+    if (badge) {
+      badge.textContent = getTrackMediaStatusLabel(normalizedStatus);
+    }
+  }
+
+  if (options.statusMessage) {
+    setStatus(options.statusMessage, !!options.isError);
+  }
+}
+
+window.freemixSetTrackMediaStatus = setTrackMediaStatus;
 
 function renderTrackControlRow(track) {
   const renderState = getTrackRenderState(track);
@@ -3585,11 +3766,12 @@ async function startTransport() {
       await Promise.all(
         tracks
           .filter((track) => {
-            const arrangementClip =
-              arrangement.enabled && hasArrangementClips()
-                ? getArrangementStepClip(track, arrangement.step)
-                : null;
-            return getTrackPlaybackSourceUrl(track, arrangementClip || undefined);
+            if (arrangement.enabled && hasArrangementClips()) {
+              const arrangementClip = getArrangementStepClip(track, arrangement.step);
+              return !!arrangementClip && !!getTrackPlaybackSourceUrl(track, arrangementClip);
+            }
+
+            return !!getTrackPlaybackSourceUrl(track);
           })
           .map((track) =>
             primeTrackForTransport(track, startToken).catch((error) => {
@@ -3763,6 +3945,29 @@ function safeSetCurrentTime(video, track, ownerTrack = null, options = {}) {
   }
 }
 
+async function parkVideoAtAnchor(video, clipState, ownerTrack = null, options = {}) {
+  if (!video || !clipState) {
+    return false;
+  }
+
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : AV_READY_TIMEOUT_MS;
+  await waitForTrackMetadata(video, timeoutMs);
+  const anchorTime = safeStartTime(clipState, video);
+  if (!Number.isFinite(anchorTime)) {
+    return false;
+  }
+
+  safeSetCurrentTime(video, clipState, ownerTrack || clipState, { force: true });
+  await awaitVideoSeek(video, anchorTime, timeoutMs);
+
+  if (!almostEqual(video.currentTime, anchorTime, 0.01)) {
+    safeSetCurrentTime(video, clipState, ownerTrack || clipState, { force: true });
+    await awaitVideoSeek(video, anchorTime, timeoutMs);
+  }
+
+  return almostEqual(video.currentTime, anchorTime, 0.05);
+}
+
 function waitForTrackReady(video, timeoutMs = AV_READY_TIMEOUT_MS) {
   if (video.readyState >= 2) {
     return Promise.resolve();
@@ -3856,7 +4061,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
   const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
   const clip = clipState || track;
   const clipVolume = clamp(targetVolume, 0, 1);
-  const clipSourceUrl = clip.source?.mediaUrl || track?.source?.mediaUrl;
+  const clipSourceUrl = getTrackPlaybackSourceUrl(track, clip);
   const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : 0;
   const shouldSeekToAnchor = options.seekToAnchor !== false;
   const isCurrentPlaybackAttempt = () => track?.__playbackToken === tokenAtStart;
@@ -3918,13 +4123,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     }
 
     if (shouldSeekToAnchor) {
-      await waitForTrackMetadata(video);
-      if (!isCurrentPlaybackAttempt()) {
-        return muted;
-      }
-      const anchorTime = safeStartTime(clip, video);
-      safeSetCurrentTime(video, clip, track, { force: true });
-      await awaitVideoSeek(video, anchorTime);
+      await parkVideoAtAnchor(video, clip, track);
     }
 
     await waitForTrackReady(video);
@@ -3933,9 +4132,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
     }
 
     if (shouldSeekToAnchor) {
-      const anchorTime = safeStartTime(clip, video);
-      safeSetCurrentTime(video, clip, track, { force: true });
-      await awaitVideoSeek(video, anchorTime);
+      await parkVideoAtAnchor(video, clip, track);
     }
 
     if (video.paused) {
@@ -4100,8 +4297,11 @@ function startTransportWithState(sessionToken = startTransport.bootToken) {
 
   tracks.forEach((track) => {
     const video = getTrackVideo(track);
-    const playbackState = getTrackPlaybackState(track) || track;
-    const sourceUrl = playbackState?.source?.mediaUrl || track?.source?.mediaUrl;
+    const playbackState =
+      arrangement.enabled && hasArrangementClips()
+        ? getArrangementStepClip(track, arrangement.step)
+        : getTrackPlaybackState(track) || track;
+    const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
 
     if (!video || !sourceUrl) {
       return;
@@ -4200,6 +4400,9 @@ function stopTransport(resetVideos = true, bumpToken = true) {
       track.__playbackToken = Number.isFinite(track.__playbackToken) ? track.__playbackToken + 1 : 1;
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
       track.lastStep = -1;
+      track.__lastPlaybackSignature = null;
+      delete track.__transportPrimedFor;
+      delete track.__transportPrimeAttempt;
       if (track.__pendingPlaybackFrame) {
         window.cancelAnimationFrame(track.__pendingPlaybackFrame);
         track.__pendingPlaybackFrame = null;
@@ -4263,7 +4466,6 @@ function hardStopPlayback(reason = "stopped") {
     console.info(`audio stop: ${reason}`);
   }
 
-  masterMuted = true;
   window.freemixRender?.updateTransportRow?.();
 
   stopTransport(true);
@@ -4272,7 +4474,6 @@ function hardStopPlayback(reason = "stopped") {
     if (video) {
       video.muted = true;
       video.pause();
-      video.currentTime = 0;
     }
   });
 
@@ -4517,6 +4718,14 @@ function releaseExportAudioTap(tap) {
   }
 }
 
+function trackHasArrangementExportSource(track) {
+  if (!track?.id || !Array.isArray(arrangement?.clips)) {
+    return false;
+  }
+
+  return arrangement.clips.some((step) => !!step?.[track.id]?.source?.mediaUrl);
+}
+
 async function exportComposition(mode = "clip") {
   const preflightIssue = getExportPreflightIssue(mode);
   if (preflightIssue) {
@@ -4539,7 +4748,12 @@ async function exportComposition(mode = "clip") {
     return false;
   }
 
+  const requestedExportMode = mode === "arrangement" ? "arrangement" : "clip";
   const renderTracks = tracks.filter((track) => {
+    if (requestedExportMode === "arrangement") {
+      return trackHasArrangementExportSource(track);
+    }
+
     const renderState = getTrackRenderState(track);
     return track.source || renderState?.source;
   });
@@ -4854,7 +5068,8 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   const playbackState = getTrackPlaybackState(track, clip) || track;
-  if (!playbackState?.source?.mediaUrl && !track?.source?.mediaUrl) {
+  const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+  if (!sourceUrl) {
     return;
   }
 
@@ -4864,12 +5079,29 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   }
 
   setTrackBlackout(track, false);
-  const sourceUrl = playbackState.source?.mediaUrl || track?.source?.mediaUrl;
   setVideoCorsPolicy(video, sourceUrl);
   const sourceChanged = !!sourceUrl && video.src !== sourceUrl;
   if (sourceChanged) {
     video.src = sourceUrl;
     video.load();
+  }
+
+  const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
+  const canFastRetrigger =
+    !!transport?.active &&
+    !sourceChanged &&
+    video.readyState >= 1 &&
+    !video.paused &&
+    !video.ended;
+  const hasStableAudioRoute =
+    webAudioDisabled ||
+    !audioContext ||
+    audioContext.state !== "running" ||
+    hasLiveTrackAudioGraph(track, video);
+  if (canFastRetrigger && hasStableAudioRoute && track.__lastPlaybackSignature === playbackSignature) {
+    safeSetCurrentTime(video, playbackState, track, { force: true });
+    flashTrackTrigger(track);
+    return;
   }
 
   track.__playbackToken = Number.isFinite(track.__playbackToken) ? track.__playbackToken + 1 : 1;
@@ -4888,39 +5120,19 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   applyTrackPitchAndSpeed(track, playbackState);
 
   safeSetCurrentTime(video, playbackState, track, { force: true });
-  const canFastRetrigger =
-    !!transport?.active &&
-    !sourceChanged &&
-    video.readyState >= 1 &&
-    !video.paused &&
-    !video.ended;
+  track.__lastPlaybackSignature = playbackSignature;
 
   if (canFastRetrigger) {
-    const cell = getTrackCell(track);
-    if (cell) {
-      cell.classList.remove("triggered");
-      window.requestAnimationFrame(() => cell.classList.add("triggered"));
-    }
+    flashTrackTrigger(track);
     return;
   }
 
   if (typeof video.pause === "function") {
     video.pause();
   }
-  track.__pendingPlaybackFrame = window.requestAnimationFrame(() => {
-    if (track.__playbackToken !== playbackToken) {
-      return;
-    }
+  void attemptVideoPlay(video, track, playbackState, playbackToken);
 
-    track.__pendingPlaybackFrame = null;
-    void attemptVideoPlay(video, track, playbackState, playbackToken);
-  });
-
-  const cell = getTrackCell(track);
-  if (cell) {
-    cell.classList.remove("triggered");
-    window.requestAnimationFrame(() => cell.classList.add("triggered"));
-  }
+  flashTrackTrigger(track);
 }
 
 function previewTrack(track) {
@@ -6656,47 +6868,15 @@ function restoreCurrentSessionOnStartup() {
     return null;
   }
 
-  const snapshot = current.snapshot?.snapshot || current.snapshot;
-  if (!snapshot || typeof snapshot !== "object") {
+  const hydrated = hydrateSessionSnapshot(current.snapshot, {
+    stopPlayback: false,
+    disposeAudio: false,
+    resetHistory: false,
+  });
+
+  if (!hydrated) {
     return null;
   }
-
-  const nextTracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length
-    ? snapshot.tracks.slice(0, MAX_TRACK_COUNT).map((track, index) => normalizeSessionTrack(track, index))
-    : createInitialTracks(DEFAULT_TRACK_COUNT);
-  tracks.splice(0, tracks.length, ...nextTracks);
-  appState.tracks = tracks;
-  refreshTrackLookup();
-
-  appState.preferredBpm = clamp(Number(snapshot.state?.preferredBpm), 40, 220) || DEFAULT_BPM;
-  appState.preferredTimeSignature = TIME_SIGNATURE_LOOKUP[snapshot.state?.preferredTimeSignature]
-    ? snapshot.state.preferredTimeSignature
-    : DEFAULT_TIME_SIGNATURE;
-  metronomeEnabled = typeof snapshot.state?.metronomeEnabled === "boolean" ? snapshot.state.metronomeEnabled : true;
-  masterMuted = !!snapshot.state?.masterMuted;
-
-  const savedStepCount = Number(snapshot.state?.arrangementStepCount);
-  const clipStepCount = Array.isArray(snapshot.arrangement?.clips) ? snapshot.arrangement.clips.length : null;
-  const nextStepCount = clamp(
-    Number.isInteger(savedStepCount)
-      ? savedStepCount
-      : Number.isInteger(clipStepCount)
-        ? clipStepCount
-        : DEFAULT_ARRANGEMENT_STEPS,
-    MIN_ARRANGEMENT_STEPS,
-    MAX_ARRANGEMENT_STEPS,
-  );
-  arrangementStepCount = nextStepCount;
-  const nextArrangement = {
-    ...createInitialArrangement(nextStepCount),
-    ...(snapshot.arrangement && typeof snapshot.arrangement === "object" && !Array.isArray(snapshot.arrangement) ? snapshot.arrangement : {}),
-  };
-  syncArrangementState(nextArrangement);
-  normalizeArrangementState(arrangement, nextStepCount);
-  refreshArrangementHasClipsState();
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
-  arrangementDeleteMode = false;
 
   return current;
 }
@@ -6763,15 +6943,24 @@ function normalizeSessionTrack(rawTrack, index) {
   return track;
 }
 
-function applySessionSnapshot(rawSnapshot, options = {}) {
+function resolveSessionSnapshotPayload(rawSnapshot) {
   const snapshot = rawSnapshot?.snapshot || rawSnapshot;
-  if (!snapshot || typeof snapshot !== "object") {
-    setStatus("Session file not recognized", true);
-    return false;
+  return snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : null;
+}
+
+function hydrateSessionSnapshot(rawSnapshot, options = {}) {
+  const snapshot = resolveSessionSnapshotPayload(rawSnapshot);
+  if (!snapshot) {
+    return null;
   }
 
-  stopTransport(false);
-  tracks.forEach(disposeTrackAudio);
+  if (options.stopPlayback !== false) {
+    stopTransport(false);
+  }
+
+  if (options.disposeAudio !== false) {
+    tracks.forEach(disposeTrackAudio);
+  }
 
   const nextTracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length
     ? snapshot.tracks.slice(0, MAX_TRACK_COUNT).map((track, index) => normalizeSessionTrack(track, index))
@@ -6809,8 +6998,23 @@ function applySessionSnapshot(rawSnapshot, options = {}) {
   arrangementCopyMode = false;
   arrangementCopySourceStep = null;
   arrangementDeleteMode = false;
-  arrangementUndoStack = [];
-  arrangementRedoStack = [];
+
+  if (options.resetHistory !== false) {
+    arrangementUndoStack = [];
+    arrangementRedoStack = [];
+  }
+
+  return snapshot;
+}
+
+function applySessionSnapshot(rawSnapshot, options = {}) {
+  const snapshot = resolveSessionSnapshotPayload(rawSnapshot);
+  if (!snapshot) {
+    setStatus("Session file not recognized", true);
+    return false;
+  }
+
+  hydrateSessionSnapshot(snapshot);
 
   if (options.sessionId) {
     const library = readSessionLibrary();
@@ -7278,7 +7482,7 @@ async function loadTrackSource(track, result) {
       refreshArrangementHasClipsState();
       refreshArrangementStepCells(arrangement.step);
     }
-    track.mediaStatus = "ready";
+    setTrackMediaStatus(track, "loading");
     if (window.freemixRender?.updateTrackRow) {
       window.freemixRender.updateTrackRow(track);
       window.freemixRender.updateSourceStrip?.();
@@ -7286,9 +7490,9 @@ async function loadTrackSource(track, result) {
       renderWorkstation();
     }
     markAppStateDirty(true);
-    setStatus(`${track.name}: ready`);
+    setStatus(`${track.name}: loading media`);
   } catch (error) {
-    track.mediaStatus = "failed";
+    setTrackMediaStatus(track, "failed");
     renderTrackResultsMessage(track, "No playable file");
     setStatus(`${track.name}: no file`, true);
     console.warn(error);

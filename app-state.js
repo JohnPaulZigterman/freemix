@@ -12,7 +12,7 @@
     arrangementStepCount: 8,
     arrangementCopyMode: false,
     arrangementCopySourceStep: null,
-    trackCount: 2,
+    trackCount: 1,
     tracks: null,
     arrangement: null,
     trackSearchRequestCounter: 0,
@@ -520,7 +520,16 @@
       }
     }
 
-    if (force || !persistTimer) {
+    if (force) {
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+      persist();
+      return;
+    }
+
+    if (!persistTimer) {
       queuePersist();
     }
   }
