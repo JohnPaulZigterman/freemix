@@ -517,7 +517,6 @@ input[type="number"] {
 .track-toggle::before,
 .track-advanced-toggle::before,
 .arrangement-toggle::before,
-.arrangement-copy::before,
 .arrangement-delete::before,
 .arrangement-clear::before,
 .arrangement-clear-action::before,
@@ -1010,7 +1009,6 @@ input[type="number"]:focus {
 
 .arrangement-toggle,
 .arrangement-action,
-.arrangement-copy,
 .arrangement-delete,
 .arrangement-clear {
   min-height: var(--control-h-sm);
@@ -1138,20 +1136,6 @@ input[type="number"]:focus {
   color: var(--accent);
 }
 
-.arrangement-copy.active {
-  border-color: rgba(22, 199, 132, 0.75);
-  background:
-    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
-  color: var(--accent);
-}
-
-.arrangement-copy[aria-pressed="true"] {
-  border-color: rgba(22, 199, 132, 0.75);
-  background:
-    linear-gradient(180deg, var(--active-emerald) 0, var(--accent-dark) 56%, var(--accent-soft) 100%);
-  color: var(--accent);
-}
-
 .arrangement-delete.active,
 .arrangement-delete[aria-pressed="true"] {
   border-color: rgba(255, 86, 86, 0.75);
@@ -1161,7 +1145,6 @@ input[type="number"]:focus {
 }
 
 .arrangement-toggle:focus-visible,
-.arrangement-copy:focus-visible,
 .arrangement-delete:focus-visible,
 .arrangement-clear:focus-visible,
 .arrangement-clear-action:focus-visible,
@@ -1304,12 +1287,6 @@ input[type="number"]:focus {
   height: 100%;
   padding: 0;
   cursor: pointer;
-}
-
-.arrangement-step-label.copy-source {
-  border-color: rgba(22, 199, 132, 0.65);
-  background: color-mix(in srgb, var(--accent-soft) 35%, var(--panel-strong) 65%);
-  color: var(--accent);
 }
 
 .arrangement-step-label.selected {
@@ -3344,7 +3321,6 @@ input[type="range"]::-moz-range-thumb {
 select,
 input[type="number"],
 .arrangement-toggle,
-.arrangement-copy,
 .arrangement-delete,
 .arrangement-clear,
 .arrangement-clear-action {
@@ -3369,7 +3345,6 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   .track-toggle,
   .metronome-button,
   .arrangement-toggle,
-  .arrangement-copy,
   .arrangement-delete,
   .status-pill,
   select,
@@ -3500,7 +3475,6 @@ body::after {
 .track-toggle,
 .track-advanced-toggle,
 .arrangement-toggle,
-.arrangement-copy,
 .arrangement-delete,
 .arrangement-clear,
 .arrangement-add,
@@ -3523,7 +3497,6 @@ input[type="number"] {
 .track-toggle:hover,
 .track-advanced-toggle:hover,
 .arrangement-toggle:hover,
-.arrangement-copy:hover,
 .arrangement-delete:hover,
 .arrangement-clear:hover,
 .arrangement-add:hover,
@@ -4202,7 +4175,6 @@ select {
 .track-toggle,
 .track-advanced-toggle,
 .arrangement-toggle,
-.arrangement-copy,
 .arrangement-delete,
 .arrangement-clear,
 .arrangement-clear-action,
@@ -4231,7 +4203,6 @@ select {
 .track-toggle:hover,
 .track-advanced-toggle:hover,
 .arrangement-toggle:hover,
-.arrangement-copy:hover,
 .arrangement-delete:hover,
 .arrangement-clear:hover,
 .arrangement-clear-action:hover,
@@ -4944,7 +4915,6 @@ html[data-theme="minimal"] .transport-button,
 html[data-theme="minimal"] .track-toggle,
 html[data-theme="minimal"] .track-advanced-toggle,
 html[data-theme="minimal"] .arrangement-toggle,
-html[data-theme="minimal"] .arrangement-copy,
 html[data-theme="minimal"] .arrangement-delete,
 html[data-theme="minimal"] .arrangement-clear,
 html[data-theme="minimal"] .arrangement-action,
@@ -5176,7 +5146,6 @@ html[data-theme="aero"] .transport-button,
 html[data-theme="aero"] .track-toggle,
 html[data-theme="aero"] .track-advanced-toggle,
 html[data-theme="aero"] .arrangement-toggle,
-html[data-theme="aero"] .arrangement-copy,
 html[data-theme="aero"] .arrangement-delete,
 html[data-theme="aero"] .arrangement-clear,
 html[data-theme="aero"] .arrangement-action,
@@ -5237,7 +5206,6 @@ html[data-theme="hardware"] .transport-button,
 html[data-theme="hardware"] .track-toggle,
 html[data-theme="hardware"] .track-advanced-toggle,
 html[data-theme="hardware"] .arrangement-toggle,
-html[data-theme="hardware"] .arrangement-copy,
 html[data-theme="hardware"] .arrangement-delete,
 html[data-theme="hardware"] .arrangement-clear,
 html[data-theme="hardware"] .arrangement-action,
@@ -5321,7 +5289,6 @@ html[data-theme="standard"] .transport-button,
 html[data-theme="standard"] .track-toggle,
 html[data-theme="standard"] .track-advanced-toggle,
 html[data-theme="standard"] .arrangement-toggle,
-html[data-theme="standard"] .arrangement-copy,
 html[data-theme="standard"] .arrangement-delete,
 html[data-theme="standard"] .arrangement-clear,
 html[data-theme="standard"] .arrangement-action,
@@ -5402,7 +5369,6 @@ html[data-theme="minimal"] .transport-button,
 html[data-theme="minimal"] .track-toggle,
 html[data-theme="minimal"] .track-advanced-toggle,
 html[data-theme="minimal"] .arrangement-toggle,
-html[data-theme="minimal"] .arrangement-copy,
 html[data-theme="minimal"] .arrangement-delete,
 html[data-theme="minimal"] .arrangement-clear,
 html[data-theme="minimal"] .arrangement-action,
@@ -5490,7 +5456,6 @@ html[data-theme="scifi"] .transport-button,
 html[data-theme="scifi"] .track-toggle,
 html[data-theme="scifi"] .track-advanced-toggle,
 html[data-theme="scifi"] .arrangement-toggle,
-html[data-theme="scifi"] .arrangement-copy,
 html[data-theme="scifi"] .arrangement-delete,
 html[data-theme="scifi"] .arrangement-clear,
 html[data-theme="scifi"] .arrangement-action,
@@ -5592,7 +5557,6 @@ html[data-theme="aero"] .transport-button,
 html[data-theme="aero"] .track-toggle,
 html[data-theme="aero"] .track-advanced-toggle,
 html[data-theme="aero"] .arrangement-toggle,
-html[data-theme="aero"] .arrangement-copy,
 html[data-theme="aero"] .arrangement-delete,
 html[data-theme="aero"] .arrangement-clear,
 html[data-theme="aero"] .arrangement-action,

@@ -311,6 +311,29 @@ async function runBrowserSmoke() {
       hasPlaybackEngine: !!window.freemixPlaybackEngine,
       trackCells: document.querySelectorAll(".video-cell").length,
       arrangementCells: document.querySelectorAll(".arrangement-cell").length,
+      arrangementActions: {
+        capture: !!document.querySelector("#arrangementCaptureButton"),
+        copy: !!document.querySelector("#arrangementCopyButton"),
+        paste: !!document.querySelector("#arrangementPasteButton"),
+        delete: !!document.querySelector("#arrangementDeleteButton"),
+        fill: !!document.querySelector("#arrangementCopyAllButton"),
+      },
+      specialTracks: {
+        text: !!document.querySelector(".arrangement-text-row"),
+        drum: !!document.querySelector(".arrangement-drum-row"),
+      },
+      textEditor: {
+        panel: !!document.querySelector(".text-editor-row"),
+        field: !!(
+          document.querySelector('[data-text-control="text"]') ||
+          document.querySelector(".text-editor-row textarea") ||
+          document.querySelector('.text-editor-row input[type="text"]')
+        ),
+      },
+      drumEditor: {
+        panel: !!document.querySelector(".drum-editor-row"),
+        pads: document.querySelectorAll(".drum-step-button").length,
+      },
       exportButtons: {
         clip: !!document.querySelector("#exportClipButton"),
         arrangement: !!document.querySelector("#exportArrangementButton"),
@@ -331,6 +354,21 @@ async function runBrowserSmoke() {
     }
     if (initialState.arrangementCells < 1) {
       fail("No arrangement cells rendered.");
+    }
+    const missingArrangementActions = Object.entries(initialState.arrangementActions)
+      .filter(([, present]) => !present)
+      .map(([name]) => name);
+    if (missingArrangementActions.length) {
+      fail(`Arrangement actions missing: ${missingArrangementActions.join(", ")}`);
+    }
+    if (!initialState.specialTracks.text || !initialState.specialTracks.drum) {
+      fail("Special arrangement tracks did not render.");
+    }
+    if (!initialState.textEditor.panel || !initialState.textEditor.field) {
+      fail("Text editor controls did not render.");
+    }
+    if (!initialState.drumEditor.panel || initialState.drumEditor.pads < 1) {
+      fail("Drum editor controls did not render.");
     }
     if (!initialState.exportButtons.clip || !initialState.exportButtons.arrangement) {
       fail("Export buttons did not render.");
@@ -354,6 +392,58 @@ async function runBrowserSmoke() {
       });
       window.freemixToggleDebugPanel?.(true);
       window.freemixToggleDebugPanel?.(false);
+      const firstAvCell = document.querySelector('.arrangement-cell[data-arr-track]:not(.arrangement-text-cell):not(.arrangement-drum-cell)[data-arr-step="0"]');
+      if (!firstAvCell) {
+        throw new Error("First A/V arrangement cell missing.");
+      }
+      firstAvCell.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      results.push({
+        action: "select av clip",
+        selected: firstAvCell.classList.contains("selected"),
+        targetLabel: document.querySelector("#selectedTargetLabel")?.textContent?.trim() || "",
+      });
+      const textCell = document.querySelector('.arrangement-text-cell[data-arr-step="0"]');
+      if (!textCell) {
+        throw new Error("First TEXT arrangement cell missing.");
+      }
+      textCell.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const textInput =
+        document.querySelector('[data-text-control="text"]') ||
+        document.querySelector(".text-editor-row textarea") ||
+        document.querySelector('.text-editor-row input[type="text"]');
+      if (textInput) {
+        textInput.value = "SMOKE TEXT";
+        textInput.dispatchEvent(new Event("input", { bubbles: true }));
+        textInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      results.push({
+        action: "edit text clip",
+        selected: textCell.classList.contains("selected"),
+        hasInput: !!textInput,
+        disabled: !!textInput?.disabled,
+        value: textInput?.value || "",
+      });
+      const drumCell = document.querySelector('.arrangement-drum-cell[data-arr-step="0"]');
+      if (!drumCell) {
+        throw new Error("First DRUM arrangement cell missing.");
+      }
+      drumCell.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const drumPad = document.querySelector(".drum-step-button");
+      drumPad?.click();
+      results.push({
+        action: "edit drum clip",
+        selected: drumCell.classList.contains("selected"),
+        pads: document.querySelectorAll(".drum-step-button").length,
+      });
+      results.push({
+        action: "export controls",
+        clipButton: !!document.querySelector("#exportClipButton"),
+        arrangementButton: !!document.querySelector("#exportArrangementButton"),
+        exporting: !!window.freemixIsExportingVideo?.(),
+      });
       const playButton = document.querySelector("#playButton");
       if (!playButton || playButton.disabled) {
         throw new Error("Play button missing or disabled.");
@@ -388,6 +478,26 @@ async function runBrowserSmoke() {
       normalizedClip?.schemaVersion !== 2
     ) {
       fail(`Clip normalization smoke failed: ${JSON.stringify(normalizedClip)}`);
+    }
+
+    const avSelection = interactionState.find((entry) => entry.action === "select av clip");
+    if (!avSelection?.selected) {
+      fail(`A/V arrangement selection smoke failed: ${JSON.stringify(avSelection)}`);
+    }
+
+    const textEdit = interactionState.find((entry) => entry.action === "edit text clip");
+    if (!textEdit?.selected || !textEdit.hasInput || textEdit.disabled || textEdit.value !== "SMOKE TEXT") {
+      fail(`Text clip edit smoke failed: ${JSON.stringify(textEdit)}`);
+    }
+
+    const drumEdit = interactionState.find((entry) => entry.action === "edit drum clip");
+    if (!drumEdit?.selected || drumEdit.pads < 1) {
+      fail(`Drum clip edit smoke failed: ${JSON.stringify(drumEdit)}`);
+    }
+
+    const exportControls = interactionState.find((entry) => entry.action === "export controls");
+    if (!exportControls?.clipButton || !exportControls.arrangementButton || exportControls.exporting) {
+      fail(`Export control smoke failed: ${JSON.stringify(exportControls)}`);
     }
 
     const playResult = interactionState.find((entry) => entry.action === "play");

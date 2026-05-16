@@ -10,8 +10,6 @@
     masterMuted: false,
     metronomeEnabled: true,
     arrangementStepCount: 8,
-    arrangementCopyMode: false,
-    arrangementCopySourceStep: null,
     trackCount: 1,
     tracks: null,
     arrangement: null,
@@ -30,7 +28,6 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
-    "arrangementCopyMode",
     "trackCount",
     "userOnboarding",
   ]);
@@ -66,7 +63,6 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
-    "arrangementCopyMode",
     "trackCount",
     "userOnboarding",
   ]);
@@ -121,8 +117,6 @@
     MIN_ARRANGEMENT_STEPS,
     MAX_ARRANGEMENT_STEPS,
   );
-  state.arrangementCopyMode = state.arrangementCopyMode ?? defaultsFromSaved.arrangementCopyMode;
-  state.arrangementCopySourceStep = state.arrangementCopySourceStep ?? defaultsFromSaved.arrangementCopySourceStep;
   state.trackCount = clamp(
     Number(state.trackCount) ||
       Number(defaultsFromSaved.trackCount) ||
@@ -482,7 +476,6 @@
             MAX_ARRANGEMENT_STEPS,
           ),
           masterMuted: !!state.masterMuted,
-          arrangementCopyMode: !!state.arrangementCopyMode,
           trackCount: getTrackCountSnapshot(state.tracks),
           userOnboarding: state.userOnboarding,
         },
@@ -558,8 +551,6 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
-    "arrangementCopyMode",
-    "arrangementCopySourceStep",
     "trackCount",
     "tracks",
     "arrangement",

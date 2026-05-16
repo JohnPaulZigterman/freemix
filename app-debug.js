@@ -4,15 +4,15 @@
   }
 
   const DEMO_VIDEO_SOURCE = {
-    identifier: "freemix-demo",
-    title: "Debug sample loop",
-    creator: "Sample",
-    year: "2026",
+    identifier: "post_grape-nuts_flakes",
+    title: "Debug IA sample loop",
+    creator: "Internet Archive",
+    year: "2008",
     runtime: "0:16",
-    mediaUrl: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-    mediaName: "demo.mp4",
+    mediaUrl: "https://archive.org/download/post_grape-nuts_flakes/post_grape-nuts_flakes_512kb.mp4",
+    mediaName: "post_grape-nuts_flakes_512kb.mp4",
     mediaFormat: "video/mp4",
-    archiveUrl: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+    archiveUrl: "https://archive.org/details/post_grape-nuts_flakes",
   };
 
   function markOnboardingProgress(nextPhase, hintMessage) {

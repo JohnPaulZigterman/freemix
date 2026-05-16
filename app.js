@@ -131,8 +131,6 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
   "masterMuted",
   "metronomeEnabled",
   "arrangementStepCount",
-  "arrangementCopyMode",
-  "arrangementCopySourceStep",
   "tracks",
   "arrangement",
   "trackSearchRequestCounter",
@@ -5673,11 +5671,10 @@ function renderDebugPanel() {
 }
 
 function renderArrangementStepLabel(stepIndex) {
-  const isCopySource = false;
   const isSelected = isArrangementSceneSelected(stepIndex);
   return `
     <button
-      class="arrangement-step-label ${isCopySource ? "copy-source" : ""} ${isSelected ? "selected" : ""}"
+      class="arrangement-step-label ${isSelected ? "selected" : ""}"
       type="button"
       data-arr-step="${stepIndex}"
       draggable="false"
@@ -10792,14 +10789,6 @@ function handleArrangementStepLabel(event) {
   setStatus(`Scene ${stepIndex + 1} selected`);
 }
 
-function toggleArrangementCopyMode() {
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
-  setStatus("Drag filled clip blocks to copy them");
-  window.freemixRender?.updateArrangementGrid?.();
-  window.freemixRender?.updateTransportRow?.();
-}
-
 function toggleArrangementDeleteMode() {
   arrangementDeleteMode = false;
   deleteSelectedArrangementScene();
@@ -11349,15 +11338,6 @@ function selectArrangementStart() {
   return true;
 }
 
-function pasteArrangementSection(targetStep) {
-  if (arrangementCopySourceStep === null) {
-    setStatus("Pick a source section first");
-    return;
-  }
-
-  copyArrangementSection(arrangementCopySourceStep, targetStep);
-}
-
 function clearArrangementDragState() {
   if (!playerPanel) {
     return;
@@ -11702,8 +11682,6 @@ function toggleArrangement() {
 
 function clearArrangement() {
   captureArrangementEdit("Cleared arrangement");
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
   arrangementClipboardDrumClip = null;
@@ -11829,7 +11807,6 @@ window.isArrangementSceneSelected = isArrangementSceneSelected;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 window.freemixGetSelectedEditTargetLabel = getSelectedEditTargetLabel;
-window.freemixIsArrangementCopyMode = () => false;
 window.freemixArrangementStepHasClips = arrangementStepHasClips;
 window.freemixCanDragCopyArrangementStep = canDragCopyArrangementStep;
 window.freemixBeginArrangementClipDragCopy = beginArrangementClipDragCopy;
@@ -11867,8 +11844,6 @@ function updateArrangementStepCount(event) {
     stopTransport(false);
   }
   captureArrangementEdit(`Changed arrangement length to ${nextLength} bars`);
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
   arrangementClipboardDrumClip = null;
@@ -12527,8 +12502,6 @@ function hydrateSessionSnapshot(rawSnapshot, options = {}) {
   syncArrangementState(nextArrangement);
   normalizeArrangementState(arrangement, nextStepCount);
   refreshArrangementHasClipsState();
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
   arrangementClipboardDrumClip = null;
@@ -12614,8 +12587,6 @@ function newBlankSession() {
   metronomeEnabled = true;
   masterMuted = false;
   arrangementStepCount = DEFAULT_ARRANGEMENT_STEPS;
-  arrangementCopyMode = false;
-  arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
   arrangementClipboardDrumClip = null;
