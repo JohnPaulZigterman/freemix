@@ -375,6 +375,7 @@ const TEXT_DEFAULT_STROKE_COLOR = "#050607";
 const TEXT_DEFAULT_SHADOW_COLOR = "#000000";
 const DRUM_KITS = Object.freeze(["808", "909", "707"]);
 const DRUM_DEFAULT_KIT = "808";
+const DRUM_DEFAULT_VELOCITY = 0.85;
 const DRUM_VOICES = Object.freeze([
   { id: "cowbell", label: "Cowbell" },
   { id: "crashRide", label: "Crash Ride" },
@@ -695,19 +696,31 @@ function getDrumStepCount(targetTransport = null) {
 
 function createDefaultDrumPattern(stepCount = getDrumStepCount()) {
   const steps = Math.max(1, Math.floor(Number(stepCount) || 16));
-  const pattern = Object.fromEntries(DRUM_VOICES.map((voice) => [voice.id, Array.from({ length: steps }, () => false)]));
-  pattern.kick[0] = true;
+  const pattern = Object.fromEntries(DRUM_VOICES.map((voice) => [voice.id, Array.from({ length: steps }, () => 0)]));
+  pattern.kick[0] = DRUM_DEFAULT_VELOCITY;
   if (steps > 8) {
-    pattern.kick[Math.floor(steps / 2)] = true;
+    pattern.kick[Math.floor(steps / 2)] = DRUM_DEFAULT_VELOCITY;
   }
   if (steps > 4) {
-    pattern.snare[Math.floor(steps / 4)] = true;
+    pattern.snare[Math.floor(steps / 4)] = DRUM_DEFAULT_VELOCITY;
   }
   if (steps > 2) {
-    pattern.snare[Math.floor((steps * 3) / 4)] = true;
+    pattern.snare[Math.floor((steps * 3) / 4)] = DRUM_DEFAULT_VELOCITY;
   }
-  pattern.closedHat = pattern.closedHat.map((_, index) => index % 2 === 0);
+  pattern.closedHat = pattern.closedHat.map((_, index) => (index % 2 === 0 ? 0.72 : 0));
   return pattern;
+}
+
+function normalizeDrumVelocity(value) {
+  if (value === true) {
+    return 1;
+  }
+  if (value === false || value === null || typeof value === "undefined") {
+    return 0;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? clamp(numericValue, 0, 1) : 0;
 }
 
 function normalizeDrumPattern(pattern, stepCount = getDrumStepCount()) {
@@ -720,7 +733,7 @@ function normalizeDrumPattern(pattern, stepCount = getDrumStepCount()) {
         .map((alias) => source[alias])
         .find((steps) => Array.isArray(steps));
       const rawSteps = Array.isArray(source[voice.id]) ? source[voice.id] : aliasSteps || defaults[voice.id];
-      const normalizedSteps = Array.from({ length: steps }, (_, index) => !!rawSteps[index]);
+      const normalizedSteps = Array.from({ length: steps }, (_, index) => normalizeDrumVelocity(rawSteps[index]));
       return [voice.id, normalizedSteps];
     }),
   );
@@ -788,7 +801,7 @@ function ensureArrangementDrumClip(stepIndex = arrangement?.step) {
 
 function drumClipHasNotes(clip) {
   const drumClip = normalizeDrumClip(clip);
-  return !!drumClip?.pattern && Object.values(drumClip.pattern).some((steps) => steps.some(Boolean));
+  return !!drumClip?.pattern && Object.values(drumClip.pattern).some((steps) => steps.some((velocity) => normalizeDrumVelocity(velocity) > 0));
 }
 
 function syncArrangementState(nextArrangement) {
@@ -919,6 +932,7 @@ let selectedArrangementSceneStep = null;
 let textToolbarCollapsed = false;
 let drumToolbarCollapsed = false;
 let drumMasterGain = null;
+let drumLimiter = null;
 let drumNoiseBuffer = null;
 let activeExportAudioDestination = null;
 let drumTransportState = {
@@ -6438,7 +6452,9 @@ function renderDrumControlPanel() {
     <div class="drum-grid-row" role="row">
       <div class="drum-row-name">${escapeHtml(voice.label)}</div>
       ${Array.from({ length: stepCount }, (_, index) => {
-        const isActive = !!pattern[voice.id]?.[index];
+        const velocity = normalizeDrumVelocity(pattern[voice.id]?.[index]);
+        const velocityPercent = Math.round(velocity * 100);
+        const isActive = velocity > 0;
         const beatClass = index % 4 === 0 ? " is-beat" : "";
         return `
           <button
@@ -6447,9 +6463,12 @@ function renderDrumControlPanel() {
             data-drum-control="step"
             data-drum-voice="${voice.id}"
             data-drum-step="${index}"
+            data-drum-velocity="${velocity.toFixed(2)}"
             aria-pressed="${isActive}"
+            aria-label="${escapeHtml(`${voice.label} step ${index + 1} velocity ${velocityPercent}%`)}"
+            style="--drum-velocity-percent: ${velocityPercent}%"
             ${disabled}
-            title="${escapeHtml(`${voice.label} step ${index + 1}`)}"
+            title="${escapeHtml(`${voice.label} step ${index + 1}: ${velocityPercent}% velocity`)}"
           ></button>
         `;
       }).join("")}
@@ -7139,13 +7158,21 @@ function handleDrumControl(event) {
       return;
     }
     drumClip.pattern = normalizeDrumPattern(drumClip.pattern, getDrumStepCount());
-    drumClip.pattern[voiceId][drumStep] = !drumClip.pattern[voiceId][drumStep];
+    const currentVelocity = normalizeDrumVelocity(drumClip.pattern[voiceId][drumStep]);
+    const requestedVelocity = normalizeDrumVelocity(event?.drumVelocity);
+    const hasVelocityGesture = Number.isFinite(Number(event?.drumVelocity));
+    drumClip.pattern[voiceId][drumStep] = hasVelocityGesture
+      ? requestedVelocity
+      : currentVelocity > 0
+        ? 0
+        : DRUM_DEFAULT_VELOCITY;
+    syncDrumStepButtonVelocity(control, drumClip.pattern[voiceId][drumStep]);
   }
 
   setArrangementDrumClip(stepIndex, drumClip);
   refreshArrangementHasClipsState();
   window.freemixRender?.updateArrangementDrumCell?.(stepIndex);
-  if (event?.type !== "input" || controlName === "kit" || controlName === "step") {
+  if ((event?.type !== "input" && controlName !== "step") || controlName === "kit") {
     window.freemixRender?.updateDrumEditor?.();
   }
 
@@ -7153,6 +7180,26 @@ function handleDrumControl(event) {
     queueControlStatePersist();
   } else {
     markAppStateDirty(true);
+  }
+}
+
+function syncDrumStepButtonVelocity(button, velocity) {
+  if (!button || button.dataset?.drumControl !== "step") {
+    return;
+  }
+
+  const safeVelocity = normalizeDrumVelocity(velocity);
+  const velocityPercent = Math.round(safeVelocity * 100);
+  const isActive = safeVelocity > 0;
+  button.classList.toggle("active", isActive);
+  button.style.setProperty("--drum-velocity-percent", `${velocityPercent}%`);
+  button.dataset.drumVelocity = safeVelocity.toFixed(2);
+  button.setAttribute("aria-pressed", String(isActive));
+  const voice = DRUM_VOICES.find((item) => item.id === button.dataset.drumVoice);
+  const stepNumber = Number(button.dataset.drumStep) + 1;
+  if (voice && Number.isFinite(stepNumber)) {
+    button.setAttribute("aria-label", `${voice.label} step ${stepNumber} velocity ${velocityPercent}%`);
+    button.title = `${voice.label} step ${stepNumber}: ${velocityPercent}% velocity`;
   }
 }
 
@@ -8391,8 +8438,8 @@ function createExportAudioTap() {
       }
     });
 
-    activeExportAudioDestination = destination;
-    const drumOutput = ensureDrumAudioOutput();
+    ensureDrumAudioOutput();
+    const drumOutput = drumLimiter || drumMasterGain;
     if (drumOutput) {
       try {
         drumOutput.connect(destination);
@@ -8411,6 +8458,7 @@ function createExportAudioTap() {
     }
 
     if (connectedAny) {
+      activeExportAudioDestination = destination;
       return { destination, disconnects, fallbackAudioTracks };
     }
     activeExportAudioDestination = null;
@@ -8474,7 +8522,7 @@ function ensureDrumAudioOutput() {
     return null;
   }
 
-  if (!drumMasterGain || drumMasterGain.context !== audioContext) {
+  if (!drumMasterGain || drumMasterGain.context !== audioContext || !drumLimiter || drumLimiter.context !== audioContext) {
     if (drumMasterGain) {
       try {
         drumMasterGain.disconnect();
@@ -8482,14 +8530,29 @@ function ensureDrumAudioOutput() {
         // Already disconnected.
       }
     }
+
+    if (drumLimiter) {
+      try {
+        drumLimiter.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+
     drumMasterGain = audioContext.createGain();
-    drumMasterGain.gain.value = 0.85;
-    drumMasterGain.connect(audioContext.destination);
+    drumMasterGain.gain.value = 0.48;
+    drumLimiter = audioContext.createDynamicsCompressor();
+    drumLimiter.threshold.setValueAtTime(-9, audioContext.currentTime);
+    drumLimiter.knee.setValueAtTime(6, audioContext.currentTime);
+    drumLimiter.ratio.setValueAtTime(18, audioContext.currentTime);
+    drumLimiter.attack.setValueAtTime(0.002, audioContext.currentTime);
+    drumLimiter.release.setValueAtTime(0.12, audioContext.currentTime);
+    drumMasterGain.connect(drumLimiter).connect(audioContext.destination);
   }
 
   if (activeExportAudioDestination) {
     try {
-      drumMasterGain.connect(activeExportAudioDestination);
+      (drumLimiter || drumMasterGain).connect(activeExportAudioDestination);
     } catch {
       // Already connected or export destination unavailable.
     }
@@ -8525,12 +8588,124 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
   const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
   const safeVolume = clamp(Number(volume), 0, 1);
   const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
+  const kitProfile = {
+    "808": {
+      drive: 1.55,
+      air: 0.8,
+      kickStart: 92,
+      kickEnd: 31,
+      kickDecay: 0.58,
+      kickPeak: 0.88,
+      snareNoise: 1850,
+      hatFreq: 7600,
+      tomLow: 138,
+      tomHigh: 205,
+      machineColor: "warm",
+    },
+    "909": {
+      drive: 1.85,
+      air: 1.25,
+      kickStart: 146,
+      kickEnd: 44,
+      kickDecay: 0.24,
+      kickPeak: 0.84,
+      snareNoise: 2450,
+      hatFreq: 9200,
+      tomLow: 154,
+      tomHigh: 236,
+      machineColor: "punch",
+    },
+    "707": {
+      drive: 2.1,
+      air: 1.5,
+      kickStart: 112,
+      kickEnd: 52,
+      kickDecay: 0.18,
+      kickPeak: 0.78,
+      snareNoise: 1750,
+      hatFreq: 10500,
+      tomLow: 178,
+      tomHigh: 258,
+      machineColor: "crunch",
+    },
+  }[kitName];
+  const makeSaturationCurve = (drive = 2) => {
+    const samples = 256;
+    const curve = new Float32Array(samples);
+    for (let index = 0; index < samples; index += 1) {
+      const x = (index * 2) / samples - 1;
+      curve[index] = ((1 + drive) * x) / (1 + drive * Math.abs(x));
+    }
+    return curve;
+  };
+  const makeVoiceBus = (voiceType = voiceId) => {
+    const input = audioContext.createGain();
+    const preTone = audioContext.createBiquadFilter();
+    const drive = audioContext.createWaveShaper();
+    const polish = audioContext.createBiquadFilter();
+    const compressor = audioContext.createDynamicsCompressor();
+
+    preTone.type = voiceType === "kick" || voiceType === "loTom" || voiceType === "hiTom" ? "lowshelf" : "highshelf";
+    preTone.frequency.setValueAtTime(voiceType === "kick" ? 78 : voiceType.includes("Hat") || voiceType === "crashRide" ? 6200 : 1800, safeWhen);
+    preTone.gain.setValueAtTime(
+      voiceType === "kick"
+        ? kitProfile.machineColor === "warm" ? 4.5 : 2.4
+        : voiceType.includes("Hat") || voiceType === "crashRide"
+          ? kitProfile.air * 3.2
+          : kitProfile.machineColor === "crunch"
+            ? 2.8
+            : 1.6,
+      safeWhen,
+    );
+
+    drive.curve = makeSaturationCurve(
+      voiceType === "kick"
+        ? kitProfile.drive * 0.72
+        : voiceType.includes("Hat") || voiceType === "crashRide"
+          ? kitProfile.drive * 0.42
+          : kitProfile.drive,
+    );
+    drive.oversample = "2x";
+
+    polish.type = "peaking";
+    polish.frequency.setValueAtTime(
+      voiceType === "kick"
+        ? 62
+        : voiceType === "snare" || voiceType === "clap" || voiceType === "sidestick"
+          ? 2900
+          : voiceType.includes("Tom")
+            ? 220
+            : 9800,
+      safeWhen,
+    );
+    polish.Q.setValueAtTime(voiceType === "kick" ? 0.8 : 1.2, safeWhen);
+    polish.gain.setValueAtTime(
+      voiceType === "kick"
+        ? kitProfile.machineColor === "warm" ? 2.8 : 1.2
+        : voiceType.includes("Hat") || voiceType === "crashRide"
+          ? 1.8
+          : kitProfile.machineColor === "punch"
+            ? 2.2
+            : 1.4,
+      safeWhen,
+    );
+
+    compressor.threshold.setValueAtTime(-18, safeWhen);
+    compressor.knee.setValueAtTime(18, safeWhen);
+    compressor.ratio.setValueAtTime(voiceType === "kick" ? 3.2 : 2.4, safeWhen);
+    compressor.attack.setValueAtTime(0.003, safeWhen);
+    compressor.release.setValueAtTime(0.09, safeWhen);
+
+    input.connect(preTone).connect(drive).connect(polish).connect(compressor).connect(output);
+    return input;
+  };
+  const drumHitTrim = voiceId === "kick" ? 0.68 : voiceId === "crashRide" || voiceId === "openHat" ? 0.52 : 0.6;
   const makeEnvelope = (peak = 0.7, duration = 0.18) => {
     const envelope = audioContext.createGain();
     envelope.gain.setValueAtTime(0.0001, safeWhen);
-    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * safeVolume), safeWhen + 0.004);
+    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * safeVolume * drumHitTrim), safeWhen + 0.004);
     envelope.gain.exponentialRampToValueAtTime(0.0001, safeWhen + duration);
-    envelope.connect(output);
+    envelope.connect(makeVoiceBus());
     return envelope;
   };
   const makeNoise = (filterType, frequency, peak, duration) => {
@@ -8547,13 +8722,16 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
   if (voiceId === "kick") {
     const oscillator = audioContext.createOscillator();
     oscillator.type = kitName === "909" ? "triangle" : "sine";
-    const startFreq = kitName === "707" ? 105 : kitName === "909" ? 135 : 92;
-    const endFreq = kitName === "707" ? 48 : 36;
+    const startFreq = kitProfile.kickStart;
+    const endFreq = kitProfile.kickEnd;
     oscillator.frequency.setValueAtTime(startFreq, safeWhen);
-    oscillator.frequency.exponentialRampToValueAtTime(endFreq, safeWhen + (kitName === "808" ? 0.24 : 0.16));
-    oscillator.connect(makeEnvelope(0.95, kitName === "808" ? 0.42 : 0.22));
+    oscillator.frequency.exponentialRampToValueAtTime(endFreq, safeWhen + (kitName === "808" ? 0.3 : 0.12));
+    oscillator.connect(makeEnvelope(kitProfile.kickPeak, kitProfile.kickDecay));
     oscillator.start(safeWhen);
-    oscillator.stop(safeWhen + 0.5);
+    oscillator.stop(safeWhen + kitProfile.kickDecay + 0.08);
+    if (kitName !== "808") {
+      makeNoise("highpass", kitName === "909" ? 3400 : 2600, kitName === "909" ? 0.16 : 0.12, 0.018);
+    }
     return;
   }
 
@@ -8561,7 +8739,7 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
     const oscillator = audioContext.createOscillator();
     oscillator.type = "sine";
     const isHigh = voiceId === "hiTom";
-    oscillator.frequency.setValueAtTime(isHigh ? (kitName === "707" ? 245 : 215) : (kitName === "707" ? 170 : 145), safeWhen);
+    oscillator.frequency.setValueAtTime(isHigh ? kitProfile.tomHigh : kitProfile.tomLow, safeWhen);
     oscillator.frequency.exponentialRampToValueAtTime(isHigh ? (kitName === "909" ? 118 : 104) : (kitName === "909" ? 84 : 72), safeWhen + 0.18);
     oscillator.connect(makeEnvelope(isHigh ? 0.46 : 0.55, isHigh ? 0.22 : 0.26));
     oscillator.start(safeWhen);
@@ -8581,7 +8759,7 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
   }
 
   if (voiceId === "snare") {
-    makeNoise("bandpass", kitName === "707" ? 1700 : 2100, 0.58, kitName === "909" ? 0.22 : 0.15);
+    makeNoise("bandpass", kitProfile.snareNoise, kitName === "909" ? 0.68 : kitName === "707" ? 0.62 : 0.55, kitName === "909" ? 0.22 : 0.15);
     const tone = audioContext.createOscillator();
     tone.type = "triangle";
     tone.frequency.setValueAtTime(kitName === "808" ? 190 : 235, safeWhen);
@@ -8603,10 +8781,11 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
       envelope.gain.setValueAtTime(0.0001, shiftedWhen);
       envelope.gain.exponentialRampToValueAtTime(0.28 * safeVolume, shiftedWhen + 0.003);
       envelope.gain.exponentialRampToValueAtTime(0.0001, shiftedWhen + 0.055);
-      noise.connect(filter).connect(envelope).connect(output);
+      noise.connect(filter).connect(envelope).connect(makeVoiceBus("clap"));
       noise.start(shiftedWhen);
       noise.stop(shiftedWhen + 0.08);
     });
+    makeNoise("bandpass", kitName === "909" ? 1250 : 980, kitName === "808" ? 0.16 : 0.12, kitName === "808" ? 0.24 : 0.16);
     return;
   }
 
@@ -8614,7 +8793,7 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
     const isOpen = voiceId === "openHat";
     makeNoise(
       "highpass",
-      kitName === "808" ? 7200 : 8400,
+      kitProfile.hatFreq,
       isOpen ? 0.28 : 0.22,
       isOpen ? (kitName === "909" ? 0.34 : 0.24) : (kitName === "909" ? 0.075 : 0.055),
     );
@@ -8681,8 +8860,9 @@ function playArrangementDrums(now, currentStep, currentStepStartAt, barMs) {
     const pulseAt = currentStepStartAt + pulse * stepMs;
     const audioWhen = audioContext.currentTime + Math.max(0, (pulseAt - performance.now()) / 1000);
     DRUM_VOICES.forEach((voice) => {
-      if (pattern[voice.id]?.[pulse]) {
-        playDrumVoice(voice.id, clip.kit, audioWhen, clip.volume);
+      const stepVelocity = normalizeDrumVelocity(pattern[voice.id]?.[pulse]);
+      if (stepVelocity > 0) {
+        playDrumVoice(voice.id, clip.kit, audioWhen, clip.volume * stepVelocity);
       }
     });
   }

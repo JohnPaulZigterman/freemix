@@ -2446,6 +2446,7 @@ input[type="number"]:focus {
 }
 
 .drum-step-button {
+  --drum-velocity-percent: 0%;
   width: 100%;
   min-width: 15px;
   height: 18px;
@@ -2453,6 +2454,31 @@ input[type="number"]:focus {
   border-radius: 2px;
   background: color-mix(in srgb, var(--panel-alt) 78%, #020304);
   cursor: pointer;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+}
+
+.drum-step-button::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: var(--drum-velocity-percent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--amber) 82%, #fff 8%), color-mix(in srgb, var(--amber) 62%, var(--panel-strong)));
+  opacity: 0.88;
+  pointer-events: none;
+  transition: height 70ms linear;
+}
+
+.drum-step-button::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 45%);
+  pointer-events: none;
 }
 
 .drum-step-button.is-beat {
@@ -2461,9 +2487,7 @@ input[type="number"]:focus {
 
 .drum-step-button.active {
   border-color: color-mix(in srgb, var(--amber) 84%, #fff 8%);
-  background:
-    radial-gradient(circle at 36% 30%, rgba(255, 255, 255, 0.28), transparent 35%),
-    color-mix(in srgb, var(--amber) 72%, var(--panel-strong));
+  background: color-mix(in srgb, var(--amber) 16%, var(--panel-strong));
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.18),
     0 0 8px color-mix(in srgb, var(--amber) 30%, transparent);

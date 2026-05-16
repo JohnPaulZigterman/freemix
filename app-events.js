@@ -368,6 +368,70 @@
     event.target.value = "";
   }
 
+  let drumVelocityDragTarget = null;
+  let suppressNextDrumStepClick = false;
+
+  function getDrumPadVelocityFromPointer(pad, event) {
+    const rect = pad?.getBoundingClientRect?.();
+    if (!rect || !Number.isFinite(rect.height) || rect.height <= 0) {
+      return 0;
+    }
+
+    const rawVelocity = 1 - ((Number(event.clientY) - rect.top) / rect.height);
+    const clampedVelocity = Math.max(0, Math.min(1, rawVelocity));
+    return Math.round(clampedVelocity * 100) / 100;
+  }
+
+  function applyDrumPadVelocityFromPointer(pad, event, type = "input") {
+    if (!pad || pad.disabled || pad.dataset?.drumControl !== "step") {
+      return false;
+    }
+
+    handleDrumControl({
+      type,
+      currentTarget: pad,
+      target: pad,
+      drumVelocity: getDrumPadVelocityFromPointer(pad, event),
+    });
+    return true;
+  }
+
+  function onDrumVelocityPointerDown(event) {
+    const pad = event.target?.closest?.(".drum-step-button[data-drum-control='step']");
+    if (!pad || pad.disabled) {
+      return;
+    }
+
+    drumVelocityDragTarget = pad;
+    suppressNextDrumStepClick = true;
+    pad.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    applyDrumPadVelocityFromPointer(pad, event, "input");
+  }
+
+  function onDrumVelocityPointerMove(event) {
+    if (!drumVelocityDragTarget) {
+      return;
+    }
+
+    event.preventDefault();
+    applyDrumPadVelocityFromPointer(drumVelocityDragTarget, event, "input");
+  }
+
+  function onDrumVelocityPointerEnd(event) {
+    if (!drumVelocityDragTarget) {
+      return;
+    }
+
+    event.preventDefault();
+    applyDrumPadVelocityFromPointer(drumVelocityDragTarget, event, "change");
+    drumVelocityDragTarget.releasePointerCapture?.(event.pointerId);
+    drumVelocityDragTarget = null;
+    window.setTimeout(() => {
+      suppressNextDrumStepClick = false;
+    }, 0);
+  }
+
   function handleArrangementCellClick(target, event = null) {
     const sceneColorButton = target.closest("[data-arrangement-scene-color]");
     if (sceneColorButton) {
@@ -571,6 +635,9 @@
 
     const drumButton = target.closest("[data-drum-control]");
     if (drumButton && drumButton.matches("button")) {
+      if (drumButton.matches(".drum-step-button") && suppressNextDrumStepClick) {
+        return;
+      }
       handleDrumControl({ type: "change", currentTarget: drumButton, target: drumButton });
       return;
     }
@@ -1002,6 +1069,10 @@
       playerPanel.addEventListener("input", onInput);
       playerPanel.addEventListener("change", onChange);
       playerPanel.addEventListener("keydown", onKeydown);
+      playerPanel.addEventListener("pointerdown", onDrumVelocityPointerDown);
+      playerPanel.addEventListener("pointermove", onDrumVelocityPointerMove);
+      playerPanel.addEventListener("pointerup", onDrumVelocityPointerEnd);
+      playerPanel.addEventListener("pointercancel", onDrumVelocityPointerEnd);
       playerPanel.addEventListener("focusout", onFocusOut);
       playerPanel.addEventListener("dragstart", onArrangementDragStart);
       playerPanel.addEventListener("dragover", onArrangementDragOver);

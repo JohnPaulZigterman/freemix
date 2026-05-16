@@ -269,7 +269,7 @@
     const clip = typeof window.freemixGetArrangementDrumClip === "function"
       ? window.freemixGetArrangementDrumClip(stepIndex)
       : arrangement.drumClips?.[stepIndex] || null;
-    const isFilled = !!clip?.pattern && Object.values(clip.pattern).some((steps) => steps.some(Boolean));
+    const isFilled = !!clip?.pattern && Object.values(clip.pattern).some((steps) => steps.some((velocity) => Number(velocity) > 0));
     cell.classList.toggle("filled", isFilled);
     cell.classList.toggle(
       "selected",
