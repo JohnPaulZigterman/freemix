@@ -6314,6 +6314,8 @@ function renderTextControlPanel() {
         .map((field, index) => `<option value="${escapeHtml(field.id)}" ${field.id === textClip.selectedFieldId ? "selected" : ""}>Field ${index + 1}</option>`)
         .join("")
     : `<option value="">No fields</option>`;
+  const canCreateTextHere = stepIndex !== null;
+  const textDisabled = canCreateTextHere ? "" : "disabled";
   const disabled = selectedField ? "" : "disabled";
   const fontOptions = TEXT_FONT_OPTIONS.map(
     (option) => `<option value="${escapeHtml(option.value)}" ${selectedField?.font === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`,
@@ -6347,8 +6349,8 @@ function renderTextControlPanel() {
             data-text-control="text"
             rows="3"
             maxlength="240"
-            ${disabled}
-            placeholder="Click a TEXT cell, then write here"
+            ${textDisabled}
+            placeholder="${canCreateTextHere ? "Type to create/edit text for this scene" : "Click a TEXT cell, then write here"}"
           >${escapeHtml(selectedField?.text || "")}</textarea>
         </label>
         <div class="text-tool-row">
@@ -6358,7 +6360,7 @@ function renderTextControlPanel() {
               ${fieldOptions}
             </select>
           </label>
-          <button class="text-tool-button" type="button" data-text-action="add-field">Add Field</button>
+          <button class="text-tool-button" type="button" data-text-action="add-field" ${canCreateTextHere ? "" : "disabled"}>Add Field</button>
           <button class="text-tool-button" type="button" data-text-action="delete-field" ${disabled}>Delete Field</button>
         </div>
         <div class="text-tool-row text-tool-row--format">
