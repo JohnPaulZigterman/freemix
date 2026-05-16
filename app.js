@@ -5414,8 +5414,9 @@ function renderArrangementTextRow() {
       .map((clip, index) => {
         const textClip = normalizeTextClip(clip);
         const isFilled = !!textClip?.fields?.some((field) => String(field.text || "").trim());
+        const canDragCopy = isFilled;
         const title = isFilled
-          ? `TEXT scene ${index + 1}; click to edit, copy, paste, or delete`
+          ? `TEXT scene ${index + 1}; click to edit, drag to copy`
           : `Blank TEXT slot in scene ${index + 1}; click to select, then Capture to create`;
         return `
           <button
@@ -5423,7 +5424,7 @@ function renderArrangementTextRow() {
             type="button"
             data-arr-text="true"
             data-arr-step="${index}"
-            draggable="false"
+            draggable="${canDragCopy ? "true" : "false"}"
             title="${escapeHtml(title)}"
           >
             ${isFilled ? "T" : ""}
@@ -7639,6 +7640,23 @@ function hardStopPlayback(reason = "stopped") {
   setStatus("Audio stopped");
 }
 
+function stopVideosAfterExport() {
+  tracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    if (!video) {
+      return;
+    }
+
+    try {
+      video.pause();
+    } catch {
+      // Ignore pause failures during export teardown.
+    }
+    video.muted = true;
+    video.removeAttribute("data-export-playing");
+  });
+}
+
 function isWebmTypeSupported(candidateTypes = EXPORT_MEDIA_TYPES) {
   if (typeof MediaRecorder === "undefined") {
     return null;
@@ -8005,6 +8023,10 @@ async function exportComposition(mode = "clip") {
   let renderTimerId = null;
   let canvasVideoTrack = null;
   let mediaStream = null;
+  let renderExportFrame = null;
+  let requestRecorderData = () => {};
+  let stopRecorderForExport = () => {};
+  let waitForFinalExportData = () => Promise.resolve();
   const chunks = [];
   const exportMode = mode === "arrangement" ? "arrangement" : "clip";
   const restoreArrangementEnabled = exportMode === "arrangement" && hasArrangementClips() && !arrangement.enabled;
@@ -8059,10 +8081,59 @@ async function exportComposition(mode = "clip") {
       }
     };
 
+    requestRecorderData = () => {
+      try {
+        renderExportFrame?.();
+      } catch (error) {
+        console.warn("Failed to render final export frame", error);
+      }
+
+      if (!recorder || recorder.state !== "recording" || typeof recorder.requestData !== "function") {
+        return;
+      }
+
+      try {
+        recorder.requestData();
+      } catch (error) {
+        console.warn("Failed to request final export data", error);
+      }
+    };
+    stopRecorderForExport = () => {
+      requestRecorderData();
+      if (recorder && recorder.state === "recording") {
+        recorder.stop();
+      }
+    };
+    waitForFinalExportData = () => {
+      if (chunks.length > 0 || !recorder || typeof recorder.addEventListener !== "function") {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        let timeoutId = null;
+        const finish = () => {
+          if (timeoutId !== null) {
+            window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          recorder.removeEventListener("dataavailable", handleData);
+          resolve();
+        };
+        const handleData = (event) => {
+          if (event?.data && event.data.size > 0) {
+            finish();
+          }
+        };
+
+        recorder.addEventListener("dataavailable", handleData);
+        timeoutId = window.setTimeout(finish, 900);
+      });
+    };
+
     const durationMs = computeExportDurationMs(exportMode);
     recorder.start(200);
 
-    const renderFrame = () => {
+    renderExportFrame = () => {
       if (!canvasSession) {
         return;
       }
@@ -8072,9 +8143,9 @@ async function exportComposition(mode = "clip") {
       }
     };
 
-    renderFrame();
+    renderExportFrame();
     renderTimerId = window.setInterval(
-      renderFrame,
+      renderExportFrame,
       Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)),
     );
     const startResult = startTransport();
@@ -8095,9 +8166,7 @@ async function exportComposition(mode = "clip") {
       }
 
       stopTransport(false);
-      if (recorder && recorder.state === "recording") {
-        recorder.stop();
-      }
+      stopRecorderForExport();
       if (renderTimerId !== null) {
         window.clearInterval(renderTimerId);
         renderTimerId = null;
@@ -8112,12 +8181,11 @@ async function exportComposition(mode = "clip") {
         }, durationMs + 12000);
       }),
     ]);
+    await waitForFinalExportData();
   } catch (error) {
     exportError = error;
     console.warn(error);
-    if (recorder && recorder.state === "recording") {
-      recorder.stop();
-    }
+    stopRecorderForExport();
     if (renderTimerId !== null) {
       window.clearInterval(renderTimerId);
       renderTimerId = null;
@@ -8132,9 +8200,7 @@ async function exportComposition(mode = "clip") {
       window.clearTimeout(timeoutId);
       timeoutId = null;
     }
-    if (recorder && recorder.state === "recording") {
-      recorder.stop();
-    }
+    stopRecorderForExport();
 
     if (renderTimerId !== null) {
       window.clearInterval(renderTimerId);
@@ -8186,6 +8252,11 @@ async function exportComposition(mode = "clip") {
       arrangement.enabled = false;
       window.freemixRender?.updateTransportRow?.();
     }
+    if (transport?.active) {
+      stopTransport(true);
+    }
+    stopTransport(false);
+    stopVideosAfterExport();
     window.freemixRender?.updateTransportRow?.();
     if (exportError) {
       setStatus("Export failed", true);
@@ -8193,9 +8264,6 @@ async function exportComposition(mode = "clip") {
       setStatus("Export complete");
     } else {
       setStatus("No export data received", true);
-    }
-    if (transport?.active) {
-      stopTransport(true);
     }
   }
 }
@@ -10010,17 +10078,45 @@ function canDragCopyArrangementStep(stepIndex) {
 }
 
 function getArrangementClipDragTarget(trackId, stepIndex) {
-  const track = getTrackById(trackId);
   const sourceStep = getArrangementStepIndex(stepIndex);
-  if (!track || sourceStep === null) {
+  if (sourceStep === null) {
+    return null;
+  }
+
+  if (trackId === "__text") {
+    return {
+      type: "text",
+      track: null,
+      stepIndex: sourceStep,
+      clip: getArrangementTextClip(sourceStep),
+    };
+  }
+
+  const track = getTrackById(trackId);
+  if (!track) {
     return null;
   }
 
   return {
+    type: "track",
     track,
     stepIndex: sourceStep,
     clip: arrangement?.clips?.[sourceStep]?.[track.id] || null,
   };
+}
+
+function getArrangementDragCell(target) {
+  if (!target) {
+    return null;
+  }
+
+  if (target.type === "text") {
+    return playerPanel?.querySelector(`.arrangement-text-cell[data-arr-step="${target.stepIndex}"]`) || null;
+  }
+
+  return playerPanel?.querySelector(
+    `.arrangement-cell[data-arr-track="${target.track.id}"][data-arr-step="${target.stepIndex}"]`,
+  ) || null;
 }
 
 function beginArrangementClipDragCopy(trackId, stepIndex) {
@@ -10030,12 +10126,10 @@ function beginArrangementClipDragCopy(trackId, stepIndex) {
   }
 
   clearArrangementDragState();
-  const sourceCell = playerPanel?.querySelector(
-    `.arrangement-cell[data-arr-track="${source.track.id}"][data-arr-step="${source.stepIndex}"]`,
-  );
+  const sourceCell = getArrangementDragCell(source);
   sourceCell?.classList.add("copy-drag-source");
   window.freemixRender?.updateArrangementStepLabels?.();
-  setStatus(`Dragging ${source.track.name} clip; drop on a clip slot`);
+  setStatus(`Dragging ${source.type === "text" ? "TEXT" : source.track.name} clip; drop on a clip slot`);
   return true;
 }
 
@@ -10046,18 +10140,19 @@ function hoverArrangementClipDragTarget(trackId, stepIndex, sourceTrackId = null
     return false;
   }
 
+  if (sourceTrackId && (sourceTrackId === "__text") !== (trackId === "__text")) {
+    clearArrangementDragState();
+    return false;
+  }
+
   clearArrangementDragState();
   if (sourceTrackId && Number.isFinite(Number(sourceStepIndex))) {
     const source = getArrangementClipDragTarget(sourceTrackId, Number(sourceStepIndex));
-    const sourceCell = source
-      ? playerPanel?.querySelector(`.arrangement-cell[data-arr-track="${source.track.id}"][data-arr-step="${source.stepIndex}"]`)
-      : null;
+    const sourceCell = getArrangementDragCell(source);
     sourceCell?.classList.add("copy-drag-source");
   }
 
-  const targetCell = playerPanel?.querySelector(
-    `.arrangement-cell[data-arr-track="${target.track.id}"][data-arr-step="${target.stepIndex}"]`,
-  );
+  const targetCell = getArrangementDragCell(target);
   targetCell?.classList.add("copy-drop-target");
   return true;
 }
@@ -10068,6 +10163,38 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
   clearArrangementDragState();
   if (!source?.clip || !target) {
     return false;
+  }
+
+  if (source.type !== target.type) {
+    setStatus("Drop TEXT clips on TEXT slots and A/V clips on A/V slots", true);
+    return false;
+  }
+
+  if (source.type === "text") {
+    if (source.stepIndex === target.stepIndex) {
+      setStatus("Choose a different TEXT slot");
+      return false;
+    }
+
+    captureArrangementEdit(`Copied TEXT clip to scene ${target.stepIndex + 1}`);
+    setArrangementTextClip(target.stepIndex, cloneTextClip(source.clip));
+    refreshArrangementHasClipsState();
+    selectArrangementStep(target.stepIndex);
+    selectArrangementTextClip(target.stepIndex);
+
+    if (window.freemixRender?.updateArrangementTextCell) {
+      window.freemixRender.updateArrangementTextCell(target.stepIndex);
+      window.freemixRender.updateArrangementPlayhead?.();
+      window.freemixRender.updateTextOverlay?.();
+      window.freemixRender.updateTextEditor?.();
+      window.freemixRender.updateArrangementSceneColorSelector?.();
+    } else {
+      renderWorkstation();
+    }
+
+    setStatus(`TEXT clip copied to scene ${target.stepIndex + 1}`);
+    markAppStateDirty();
+    return true;
   }
 
   if (source.track.id === target.track.id && source.stepIndex === target.stepIndex) {

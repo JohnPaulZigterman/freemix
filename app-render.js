@@ -230,9 +230,9 @@
     );
     cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
     cell.textContent = isFilled ? "T" : "";
-    cell.draggable = false;
+    cell.draggable = isFilled;
     cell.title = isFilled
-      ? `TEXT scene ${stepIndex + 1}; click to edit, copy, paste, or delete`
+      ? `TEXT scene ${stepIndex + 1}; click to edit, drag to copy`
       : `Blank TEXT scene ${stepIndex + 1}; click to select, then Capture to create`;
   }
 
