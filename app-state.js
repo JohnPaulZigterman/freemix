@@ -242,6 +242,57 @@
     return VALID_TIME_SIGNATURES.has(value) ? value : "4/4";
   }
 
+  function cloneSerializable(value, fallback = null) {
+    if (value === null || typeof value === "undefined") {
+      return fallback;
+    }
+
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return fallback;
+    }
+  }
+
+  function sanitizeArrangementClip(raw = {}) {
+    const input = sanitizeRecord(raw);
+    const fx = sanitizeRecord(input.fx);
+    return {
+      source: cloneSerializable(input.source, null),
+      durationFilter: TRACK_PREF_VALID_DURATION_FILTERS.has(input.durationFilter) ? input.durationFilter : "quick",
+      startTime: Math.max(0, sanitizeNumber(input.startTime, 0)),
+      retriggersPerBar: Math.max(1, Math.floor(sanitizeNumber(input.retriggersPerBar, 1))),
+      volume: clamp(sanitizeNumber(input.volume, 0.55), 0, 1),
+      muted: !!input.muted,
+      blendMode: TRACK_PREF_VALID_BLEND_MODES.has(input.blendMode) ? input.blendMode : "normal",
+      opacity: clamp(sanitizeNumber(input.opacity, 1), 0, 1),
+      speed: clamp(sanitizeNumber(input.speed, 1), 0.5, 2),
+      pitch: clamp(sanitizeNumber(input.pitch, 0), -12, 12),
+      fx: Object.fromEntries(
+        Object.entries(fx)
+          .filter(([key]) => typeof key === "string" && key.trim())
+          .map(([key, value]) => [key, sanitizeNumber(value, 0)]),
+      ),
+    };
+  }
+
+  function sanitizeArrangementClips(rawClips = []) {
+    const clips = Array.isArray(rawClips) ? rawClips : [];
+    return clips.map((step) => {
+      const inputStep = sanitizeRecord(step);
+      return Object.fromEntries(
+        Object.entries(inputStep)
+          .filter(([trackId, clip]) => typeof trackId === "string" && trackId.trim() && isRecord(clip))
+          .map(([trackId, clip]) => [trackId, sanitizeArrangementClip(clip)]),
+      );
+    });
+  }
+
+  function sanitizeSceneColors(rawSceneColors = []) {
+    const colors = Array.isArray(rawSceneColors) ? rawSceneColors : [];
+    return colors.map((colorIndex) => clamp(Math.floor(sanitizeNumber(colorIndex, 0)), 0, 5));
+  }
+
   function sanitizeArrangementPreferenceState(raw = {}) {
     const input = sanitizeRecord(raw);
     const rawStep = sanitizeNumber(input.step, 0);
@@ -249,6 +300,8 @@
     return {
       step: Number.isFinite(rawStep) ? Math.max(0, Math.floor(rawStep)) : 0,
       enabled: !!input.enabled,
+      clips: sanitizeArrangementClips(input.clips),
+      sceneColors: sanitizeSceneColors(input.sceneColors),
     };
   }
 
@@ -321,6 +374,14 @@
     if (typeof state.arrangementPreferenceState.enabled === "boolean") {
       arrangement.enabled = state.arrangementPreferenceState.enabled;
     }
+
+    if (Array.isArray(state.arrangementPreferenceState.clips) && state.arrangementPreferenceState.clips.length) {
+      arrangement.clips = state.arrangementPreferenceState.clips.map((step) => sanitizeRecord(step));
+    }
+
+    if (Array.isArray(state.arrangementPreferenceState.sceneColors) && state.arrangementPreferenceState.sceneColors.length) {
+      arrangement.sceneColors = state.arrangementPreferenceState.sceneColors.slice();
+    }
   }
 
   function buildTrackSnapshot(trackRows) {
@@ -368,6 +429,8 @@
         arrangementPreferenceState: {
           step: state.arrangement?.step,
           enabled: !!state.arrangement?.enabled,
+          clips: sanitizeArrangementClips(state.arrangement?.clips),
+          sceneColors: sanitizeSceneColors(state.arrangement?.sceneColors),
         },
       });
       localStorage.setItem(STORAGE_KEY, payload);

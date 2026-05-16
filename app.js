@@ -13,12 +13,13 @@ const SEARCH_RESULT_FIELDS = Object.freeze([
   "creator",
   "description",
   "subject",
+  "collection",
   "year",
   "runtime",
   "downloads",
 ]);
 const SEARCHABLE_TEXT_FIELDS = Object.freeze(["title", "creator", "description", "subject", "identifier", "collection"]);
-const SEARCH_QUERY_VARIANT_TARGET = 28;
+const SEARCH_QUERY_VARIANT_TARGET = 90;
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -84,9 +85,9 @@ const TRACK_LOOKUP = new Map();
 const UI_NODE_CACHE = {
   beatLights: null,
 };
-const SEARCH_ROWS_PER_REQUEST = 40;
-const SEARCH_RESULTS_LIMIT = 12;
-const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 3;
+const SEARCH_ROWS_PER_REQUEST = 75;
+const SEARCH_RESULTS_LIMIT = 18;
+const SEARCH_RESULT_MAX_CONTRIBUTIONS_PER_CREATOR = 4;
 const SEARCH_RESULT_CACHE_STORAGE_KEY = "freemix.searchResultCache.v1";
 const SEARCH_RESULT_CACHE_PERSIST_TTL_MS = 6 * 60 * 60 * 1000;
 const SOURCE_METADATA_CACHE_STORAGE_KEY = "freemix.sourceMetadataCache.v1";
@@ -277,10 +278,15 @@ const persistState = appState.__persistState || appStateManager.persist || appSt
 let arrangementHasClips = false;
 let arrangementDeleteMode = false;
 let isExportingVideo = false;
-const arrangementSceneColorCache = new Map();
-const SCENE_COLOR_MIN_LIGHTNESS = 44;
-const SCENE_COLOR_MAX_LIGHTNESS = 58;
-const SCENE_COLOR_SATURATION = 76;
+const ARRANGEMENT_SCENE_COLORS = Object.freeze([
+  { id: "emerald", label: "Emerald", value: "#16c784" },
+  { id: "amber", label: "Amber", value: "#f0b43c" },
+  { id: "blue", label: "Blue", value: "#55a8ff" },
+  { id: "red", label: "Red", value: "#ff625a" },
+  { id: "violet", label: "Violet", value: "#b678ff" },
+  { id: "teal", label: "Teal", value: "#36d6d0" },
+]);
+const DEFAULT_SCENE_COLOR_INDEX = 0;
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -298,6 +304,14 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
     .map((clip) => (clip && typeof clip === "object" && !Array.isArray(clip) ? clip : {}));
   while (arrangementState.clips.length < stepCount) {
     arrangementState.clips.push({});
+  }
+
+  const existingSceneColors = Array.isArray(arrangementState.sceneColors) ? arrangementState.sceneColors : [];
+  arrangementState.sceneColors = existingSceneColors
+    .slice(0, stepCount)
+    .map((colorIndex) => normalizeSceneColorIndex(colorIndex));
+  while (arrangementState.sceneColors.length < stepCount) {
+    arrangementState.sceneColors.push(DEFAULT_SCENE_COLOR_INDEX);
   }
 
   arrangementState.step = Number.isFinite(Number(arrangementState.step))
@@ -319,7 +333,8 @@ if (typeof appStateManager.hydrateTracks === "function") {
 
 if (!appState.arrangement) {
   appState.arrangement = createInitialArrangement(appState.arrangementStepCount || DEFAULT_ARRANGEMENT_STEPS);
-} else if (typeof appStateManager.hydrateArrangement === "function") {
+}
+if (typeof appStateManager.hydrateArrangement === "function") {
   appStateManager.hydrateArrangement(appState.arrangement);
 }
 normalizeArrangementState(appState.arrangement, appState.arrangementStepCount || DEFAULT_ARRANGEMENT_STEPS);
@@ -1025,92 +1040,48 @@ function getArrangementStepClipForTrack(track, options = {}) {
   return nextClip;
 }
 
-function normalizeSceneSignatureValue(value, precision = 6) {
-  if (!Number.isFinite(Number(value))) {
-    return "";
+function normalizeSceneColorIndex(colorIndex) {
+  const parsed = Math.floor(Number(colorIndex));
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_SCENE_COLOR_INDEX;
   }
 
-  return Number(value).toFixed(precision);
+  return clamp(parsed, 0, ARRANGEMENT_SCENE_COLORS.length - 1);
 }
 
-function getTrackClipSignature(clip) {
-  if (!clip || typeof clip !== "object") {
-    return "empty";
+function getArrangementSceneColorIndex(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return DEFAULT_SCENE_COLOR_INDEX;
   }
 
-  const source = clip.source && typeof clip.source === "object" ? clip.source : {};
-  const sourceSignature = `${source.mediaUrl || ""}|${source.identifier || ""}`;
-  const fxState = clip.fx && typeof clip.fx === "object" ? clip.fx : {};
-  const fxSignature = Object.keys(fxState)
-    .sort()
-    .map((key) => `${key}:${normalizeSceneSignatureValue(fxState[key], 4)}`)
-    .join(",");
-
-  return [
-    sourceSignature,
-    clip.durationFilter || "quick",
-    normalizeSceneSignatureValue(clip.startTime, 3),
-    normalizeSceneSignatureValue(clip.retriggersPerBar, 0),
-    normalizeSceneSignatureValue(clip.volume, 3),
-    clip.muted ? 1 : 0,
-    clip.blendMode || TRACK_BLEND_DEFAULTS[0],
-    normalizeSceneSignatureValue(clip.opacity, 3),
-    normalizeSceneSignatureValue(clip.speed, 3),
-    normalizeSceneSignatureValue(clip.pitch, 3),
-    fxSignature || "default",
-  ].join("|");
-}
-
-function getArrangementStepSignature(step) {
-  if (!step || typeof step !== "object" || Array.isArray(step)) {
-    return "";
-  }
-
-  const trackIds = Object.keys(step)
-    .filter((trackId) => step[trackId] && typeof step[trackId] === "object")
-    .sort();
-  if (!trackIds.length) {
-    return "";
-  }
-
-  return trackIds
-    .map((trackId) => `${trackId}:${getTrackClipSignature(step[trackId])}`)
-    .join(";");
-}
-
-function hashSceneSignatureToHue(signature) {
-  let hash = 2166136261;
-  for (let index = 0; index < signature.length; index += 1) {
-    hash ^= signature.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return hash >>> 0;
+  return normalizeSceneColorIndex(arrangement?.sceneColors?.[resolvedStep]);
 }
 
 function getArrangementSceneColor(stepIndex = arrangement?.step) {
+  return ARRANGEMENT_SCENE_COLORS[getArrangementSceneColorIndex(stepIndex)]?.value || "";
+}
+
+function setArrangementSceneColor(stepIndex, colorIndex) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
   if (resolvedStep === null) {
-    return "";
+    return false;
   }
 
-  const step = arrangement?.clips?.[resolvedStep];
-  const signature = getArrangementStepSignature(step);
-  if (!signature) {
-    return "";
+  if (!Array.isArray(arrangement.sceneColors)) {
+    arrangement.sceneColors = Array.from({ length: arrangement.clips?.length || arrangementStepCount }, () => DEFAULT_SCENE_COLOR_INDEX);
   }
 
-  if (arrangementSceneColorCache.has(signature)) {
-    return arrangementSceneColorCache.get(signature);
+  arrangement.sceneColors[resolvedStep] = normalizeSceneColorIndex(colorIndex);
+  if (window.freemixRender?.updateArrangementGrid) {
+    refreshArrangementStepCells(resolvedStep);
+    window.freemixRender.updateArrangementSceneColorSelector?.();
+  } else {
+    renderWorkstation();
   }
-
-  const hue = hashSceneSignatureToHue(signature) % 360;
-  const hashShift = hashSceneSignatureToHue(`${signature}:shift`);
-  const lightness = SCENE_COLOR_MIN_LIGHTNESS
-    + (hashShift % (SCENE_COLOR_MAX_LIGHTNESS - SCENE_COLOR_MIN_LIGHTNESS + 1));
-  const sceneColor = `hsl(${hue} ${SCENE_COLOR_SATURATION}% ${lightness}%)`;
-  arrangementSceneColorCache.set(signature, sceneColor);
-  return sceneColor;
+  setStatus(`Scene ${resolvedStep + 1}: color set`);
+  markAppStateDirty(true);
+  return true;
 }
 
 function bindTracksToArrangementStep(stepIndex, options = {}) {
@@ -1653,6 +1624,7 @@ function normalizeResults(docs) {
       creator: textValue(doc.creator),
       description: textListValue(doc.description),
       subject: textListValue(doc.subject),
+      collection: textListValue(doc.collection),
       year: textValue(doc.year),
       runtime: textValue(doc.runtime),
       downloads: Number(textValue(doc.downloads)) || 0,
@@ -1735,6 +1707,34 @@ function escapeArchiveQueryValue(value) {
     .replace(/[\\]/g, "\\\\");
 }
 
+function getSearchExpansionTerms(rawQuery) {
+  const tokens = tokenizeSearchQuery(rawQuery);
+  const expansionMap = {
+    bass: ["bass guitar", "bass player", "double bass", "music", "performance"],
+    beach: ["surf", "ocean", "shore", "seaside", "vacation"],
+    bongo: ["bongos", "percussion", "drum", "music", "performance"],
+    cheese: ["food", "cooking", "kitchen", "dairy", "recipe"],
+    comedy: ["skit", "sketch", "funny", "humor", "comedian"],
+    drum: ["drums", "drummer", "percussion", "music", "performance"],
+    grape: ["grapes", "vineyard", "wine", "fruit", "food"],
+    guitar: ["guitarist", "electric guitar", "acoustic guitar", "music", "performance"],
+    mario: ["super mario", "nintendo", "gameplay", "animation", "cartoon"],
+    nerd: ["geek", "computer", "science", "technology", "school"],
+    skit: ["sketch", "comedy", "funny", "humor", "performance"],
+    sonic: ["sonic hedgehog", "sega", "gameplay", "animation", "cartoon"],
+    table: ["tables", "furniture", "dining", "kitchen", "workshop"],
+  };
+  const expansions = new Set();
+
+  tokens.forEach((token) => {
+    (expansionMap[token] || []).forEach((term) => expansions.add(term));
+  });
+
+  return Array.from(expansions)
+    .map((term) => escapeArchiveQueryValue(term))
+    .filter(Boolean);
+}
+
 function buildArchiveSearchQuery(rawQuery) {
   const variants = buildArchiveSearchQueryVariants(rawQuery);
   return variants[0] || "";
@@ -1751,6 +1751,7 @@ function buildArchiveSearchQueryVariants(rawQuery) {
     .map((token) => escapeArchiveQueryValue(token))
     .filter(Boolean);
   const uniqueTokens = Array.from(new Set(safeTokens));
+  const expansionTerms = getSearchExpansionTerms(normalized);
 
   if (!safeQuery) {
     return [];
@@ -1797,6 +1798,23 @@ function buildArchiveSearchQueryVariants(rawQuery) {
     }
   }
 
+  if (expansionTerms.length > 0) {
+    const broadExpansionClause = expansionTerms
+      .slice(0, 8)
+      .map((term) => (term.includes(" ") ? toFieldClause(`"${term}"`) : toFieldClause(`${term}*`)))
+      .join(" OR ");
+    const titleSubjectExpansionClause = expansionTerms
+      .slice(0, 6)
+      .map((term) => {
+        const value = term.includes(" ") ? `"${term}"` : `${term}*`;
+        return `(title:(${value}) OR subject:(${value}) OR description:(${value}))`;
+      })
+      .join(" OR ");
+
+    addQuery(mediaScoped(`(${toFieldClause(`"${safeQuery}"`)} OR ${broadExpansionClause})`));
+    addQuery(mediaScoped(`(${titleSubjectExpansionClause})`));
+  }
+
   if (safeQuery !== rawQuery.trim()) {
     addQuery(mediaScoped(toFieldClause(`"${safeQuery}"`)));
   }
@@ -1831,7 +1849,7 @@ function buildArchiveSearchQueryVariants(rawQuery) {
     addQuery(`${toFieldClause(`${safeQuery}*`)}`);
   }
 
-  return Array.from(queries).slice(0, 12);
+  return Array.from(queries).slice(0, 18);
 }
 
 function searchRelevance(result, rawQuery) {
@@ -1842,8 +1860,14 @@ function searchRelevance(result, rawQuery) {
   const identifier = String(result.identifier || "").toLowerCase();
   const description = String(result.description || "").toLowerCase();
   const subject = String(result.subject || "").toLowerCase();
+  const collection = String(result.collection || "").toLowerCase();
+  const haystack = `${title} ${creator} ${identifier} ${description} ${subject} ${collection}`;
+  const isGameQuery = tokens.some((token) => ["mario", "sonic", "game", "gameplay", "nintendo", "sega"].includes(token));
+  const isMusicQuery = tokens.some((token) => ["drum", "drums", "guitar", "bass", "bongo", "bongos"].includes(token));
+  const isComedyQuery = tokens.some((token) => ["skit", "sketch", "comedy", "funny"].includes(token));
 
   let score = 0;
+  let boundaryTokenMatches = 0;
   if (!normalizedQuery) {
     return score;
   }
@@ -1870,22 +1894,34 @@ function searchRelevance(result, rawQuery) {
     score += 32;
   }
 
+  if (collection.includes(normalizedQuery)) {
+    score += 16;
+  }
+
   for (const token of tokens) {
     if (!token) {
       continue;
     }
 
+    const tokenBoundaryPattern = new RegExp(`(^|[^a-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`);
+    const wordMatch = tokenBoundaryPattern.test(haystack);
+    const titleWordMatch = tokenBoundaryPattern.test(title);
+    if (wordMatch) {
+      boundaryTokenMatches += 1;
+      score += 18;
+    }
+
     if (title.startsWith(token)) {
-      score += 22;
+      score += titleWordMatch ? 22 : 5;
     }
     if (title.includes(token)) {
-      score += 12;
+      score += titleWordMatch ? 12 : 3;
     }
     if (creator.includes(token)) {
       score += 9;
     }
     if (identifier.includes(token)) {
-      score += 8;
+      score += wordMatch ? 8 : 2;
     }
     if (description.includes(token)) {
       score += 7;
@@ -1893,10 +1929,39 @@ function searchRelevance(result, rawQuery) {
     if (subject.includes(token)) {
       score += 6;
     }
+    if (collection.includes(token)) {
+      score += 4;
+    }
+  }
+
+  const compactSubstringOnly = tokens.length > 0
+    && boundaryTokenMatches === 0
+    && tokens.some((token) => title.includes(token) || identifier.includes(token));
+  if (compactSubstringOnly) {
+    score -= 36;
+  }
+
+  if (isMusicQuery && /(music|musician|performance|concert|band|instrument|percussion|drummer|guitarist|bass)/.test(haystack)) {
+    score += 28;
+  }
+
+  if (isComedyQuery && /(comedy|comedian|sketch|skit|funny|humor|parody|spoof)/.test(haystack)) {
+    score += 28;
+  }
+
+  if (isGameQuery && /(gameplay|nintendo|sega|mario|sonic|animation|cartoon|speedrun|game)/.test(haystack)) {
+    score += 28;
+  }
+
+  if (!isGameQuery && /(speedrun|longplay|gameplay|walkthrough)/.test(haystack)) {
+    score -= 22;
   }
 
   if (Number.isFinite(result.durationSeconds) && result.durationSeconds > 0) {
-    score += Math.min(40, Math.log10(result.durationSeconds));
+    const idealDurationDistance = Math.abs(Math.log10(result.durationSeconds) - Math.log10(240));
+    score += Math.max(0, 24 - idealDurationDistance * 10);
+  } else {
+    score -= 12;
   }
 
   if (Number.isFinite(result.downloads) && result.downloads > 0) {
@@ -1909,6 +1974,7 @@ function searchRelevance(result, rawQuery) {
 function diversifyRankedSearchResults(results, limit) {
   const selected = [];
   const seen = new Set();
+  const seenTitles = new Set();
   const creatorBuckets = new Map();
 
   const remaining = [...results];
@@ -1924,7 +1990,15 @@ function diversifyRankedSearchResults(results, limit) {
       continue;
     }
 
+    const titleKey = normalizeSearchInput(result.title);
+    if (titleKey && seenTitles.has(titleKey)) {
+      continue;
+    }
+
     seen.add(result.identifier);
+    if (titleKey) {
+      seenTitles.add(titleKey);
+    }
     creatorBuckets.set(creatorKey, currentCount + 1);
     selected.push(result);
   }
@@ -1942,6 +2016,14 @@ function diversifyRankedSearchResults(results, limit) {
       continue;
     }
 
+    const titleKey = normalizeSearchInput(result.title);
+    if (titleKey && seenTitles.has(titleKey)) {
+      continue;
+    }
+
+    if (titleKey) {
+      seenTitles.add(titleKey);
+    }
     selected.push(result);
   }
 
@@ -2336,12 +2418,34 @@ function renderArrangementPanel() {
             </button>
           </div>
         </div>
+        ${renderArrangementSceneColorSelector()}
         <div class="arrangement-step-labels" style="--arrangement-steps: ${arrangementStepCount}" aria-label="Arrangement steps">
           ${renderArrangementStepLabels()}
         </div>
         ${renderArrangementGrid()}
         ${renderDebugPanel()}
       </aside>
+  `;
+}
+
+function renderArrangementSceneColorSelector() {
+  const activeColor = getArrangementSceneColorIndex(arrangement?.step);
+  return `
+    <div class="arrangement-scene-colors" aria-label="Scene color">
+      ${ARRANGEMENT_SCENE_COLORS.map(
+        (color, index) => `
+          <button
+            class="arrangement-scene-color ${index === activeColor ? "active" : ""}"
+            type="button"
+            data-arrangement-scene-color="${index}"
+            aria-pressed="${index === activeColor}"
+            aria-label="Set scene color ${escapeHtml(color.label)}"
+            title="${escapeHtml(color.label)}"
+            style="--scene-swatch-color: ${color.value};"
+          ></button>
+        `,
+      ).join("")}
+    </div>
   `;
 }
 
@@ -2772,11 +2876,27 @@ function handleTrackControl(event) {
 
   const controlName = control.dataset.control;
   let editableState = getTrackSceneEditableState(track, controlName);
+  const safeStepIndex = getArrangementStepIndex(arrangement?.step);
   if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState === track) {
-    const safeStepIndex = getArrangementStepIndex(arrangement?.step);
     editableState = getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex === null ? 0 : safeStepIndex, create: true }) || editableState;
   }
   const isInputEvent = event?.type === "input";
+  const commitControlEdit = () => {
+    if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState !== track && arrangement?.clips) {
+      const stepToRefresh = safeStepIndex === null ? 0 : safeStepIndex;
+      refreshArrangementStepCells(stepToRefresh);
+    }
+
+    if (controlName === "sourceSearch") {
+      return;
+    }
+
+    if (isInputEvent) {
+      queueControlStatePersist();
+    } else {
+      markAppStateDirty(true);
+    }
+  };
 
   if (controlName === "sourceSearch") {
     queueTrackSearch(track, control.value.trim());
@@ -2788,6 +2908,7 @@ function handleTrackControl(event) {
     applyArrangementClipControlValue(track, "durationFilter", editableState.durationFilter, editableState);
     const [sourceSearch] = getTrackControls(track, "sourceSearch");
     queueTrackSearch(track, sourceSearch?.value.trim() ?? "");
+    commitControlEdit();
     return;
   }
 
@@ -2796,6 +2917,7 @@ function handleTrackControl(event) {
     applyArrangementClipControlValue(track, "blendMode", editableState.blendMode, editableState);
     applyTrackBlend(track, editableState);
     updateTrackModeChips(track);
+    commitControlEdit();
     return;
   }
 
@@ -2804,6 +2926,7 @@ function handleTrackControl(event) {
     applyArrangementClipControlValue(track, "opacity", editableState.opacity, editableState);
     applyTrackOpacity(track, editableState);
     updateTrackModeChips(track);
+    commitControlEdit();
     return;
   }
 
@@ -2815,6 +2938,7 @@ function handleTrackControl(event) {
       valueEl.textContent = `${Number(editableState.speed).toFixed(2)}x`;
     }
     applyTrackPitchAndSpeed(track, editableState);
+    commitControlEdit();
     return;
   }
 
@@ -2828,6 +2952,7 @@ function handleTrackControl(event) {
     }
     applyTrackPitchAndSpeed(track, editableState);
     updateTrackModeChips(track);
+    commitControlEdit();
     return;
   }
 
@@ -2864,7 +2989,7 @@ function handleTrackControl(event) {
       previewTrack(track);
     }
 
-    markAppStateDirty();
+    commitControlEdit();
     return;
   }
 
@@ -2936,18 +3061,7 @@ function handleTrackControl(event) {
     markAppStateDirty(true);
   }
 
-  if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState !== track && arrangement?.clips) {
-    const stepToRefresh = safeStepIndex === null ? 0 : safeStepIndex;
-    refreshArrangementStepCells(stepToRefresh);
-  }
-
-  if (controlName !== "sourceSearch") {
-    if (event?.type === "input") {
-      queueControlStatePersist();
-    } else {
-      markAppStateDirty();
-    }
-  }
+  commitControlEdit();
 }
 
 async function startTransport() {
@@ -4853,6 +4967,7 @@ function handleArrangementCell(event) {
     step[track.id] = captureTrackClip(track);
     refreshArrangementHasClipsState();
     setStatus(`${track.name}: placed in ${stepIndex + 1}`);
+    markAppStateDirty(true);
   } else {
     setStatus(`Bar ${stepIndex + 1} selected`);
   }
@@ -4865,6 +4980,7 @@ function handleArrangementCell(event) {
       window.freemixRender.updateArrangementGrid();
     }
     window.freemixRender.updateArrangementPlayhead?.();
+    window.freemixRender.updateArrangementSceneColorSelector?.();
     return;
   }
 
@@ -4983,6 +5099,7 @@ function pasteArrangementSection(targetStep) {
 
   const sourceStep = arrangement.clips[arrangementCopySourceStep];
   arrangement.clips[targetStep] = cloneArrangementStep(sourceStep);
+  arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(arrangementCopySourceStep);
   arrangement.step = targetStep;
   refreshArrangementHasClipsState();
 
@@ -5027,6 +5144,7 @@ function copyCurrentArrangementSectionToAll() {
     }
 
     arrangement.clips[index] = cloneArrangementStep(sourceStep);
+    arrangement.sceneColors[index] = getArrangementSceneColorIndex(sourceStepIndex);
     destinationSteps.push(index);
   }
 
@@ -5184,6 +5302,9 @@ window.openArrangementClearMenu = openArrangementClearMenu;
 window.isArrangementClearMenuOpen = isArrangementClearMenuOpen;
 window.renderArrangementGrid = renderArrangementGrid;
 window.renderArrangementGridRows = renderArrangementGridRows;
+window.renderArrangementStepLabels = renderArrangementStepLabels;
+window.renderArrangementSceneColorSelector = renderArrangementSceneColorSelector;
+window.setArrangementSceneColor = setArrangementSceneColor;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 
@@ -5206,6 +5327,11 @@ function updateArrangementStepCount(event) {
   if (previousArrangement?.clips) {
     for (let index = 0; index < Math.min(previousArrangement.clips.length, arrangement.clips.length); index += 1) {
       arrangement.clips[index] = previousArrangement.clips[index] || {};
+    }
+  }
+  if (Array.isArray(previousArrangement?.sceneColors)) {
+    for (let index = 0; index < Math.min(previousArrangement.sceneColors.length, arrangement.sceneColors.length); index += 1) {
+      arrangement.sceneColors[index] = normalizeSceneColorIndex(previousArrangement.sceneColors[index]);
     }
   }
   refreshArrangementHasClipsState();
@@ -5273,6 +5399,7 @@ function selectArrangementStep(stepIndex) {
   }
 
   arrangement.step = resolvedStep;
+  markAppStateDirty(true);
   bindTracksToArrangementStep(resolvedStep);
   tracks.forEach((track) => {
     if (window.freemixRender?.updateTrackRow) {
@@ -5287,10 +5414,12 @@ function selectArrangementStep(stepIndex) {
     transport.beatIndex = 0;
     transport.arrangementStartStep = resolvedStep;
     updateArrangementStep(resolvedStep, now, true);
+    window.freemixRender?.updateArrangementSceneColorSelector?.();
     return;
   }
 
   renderArrangementPlayhead();
+  window.freemixRender?.updateArrangementSceneColorSelector?.();
 }
 
 function renderArrangementPlayhead() {
@@ -5314,6 +5443,7 @@ function renderArrangementPlayhead() {
     cell.classList.add("playing");
   });
   arrangementPlayheadStep = currentStep;
+  window.freemixRender?.updateArrangementSceneColorSelector?.();
 }
 
 function hasArrangementClips() {
@@ -5582,7 +5712,6 @@ function rankAndFilterResults(results, filterKey = "any", query = "") {
       ...result,
       _searchScore: searchRelevance(result, query),
     }))
-    .filter((result) => Number.isFinite(result.durationSeconds) && result.durationSeconds > 0)
     .sort((a, b) => {
       if (b._searchScore !== a._searchScore) {
         return b._searchScore - a._searchScore;
@@ -5592,12 +5721,14 @@ function rankAndFilterResults(results, filterKey = "any", query = "") {
         return b.downloads - a.downloads;
       }
 
-      return a.durationSeconds - b.durationSeconds || a.title.localeCompare(b.title);
+      const durationA = Number.isFinite(a.durationSeconds) ? a.durationSeconds : Number.MAX_SAFE_INTEGER;
+      const durationB = Number.isFinite(b.durationSeconds) ? b.durationSeconds : Number.MAX_SAFE_INTEGER;
+      return durationA - durationB || a.title.localeCompare(b.title);
     })
     .map(({ _searchScore, ...result }) => result);
 
   const durationFiltered = filterDuration
-    ? sorted.filter((result) => result.durationSeconds >= filter.min && result.durationSeconds < filter.max)
+    ? sorted.filter((result) => !Number.isFinite(result.durationSeconds) || (result.durationSeconds >= filter.min && result.durationSeconds < filter.max))
     : sorted;
 
   if (!filterDuration || durationFiltered.length >= SEARCH_RESULTS_LIMIT) {
@@ -5671,7 +5802,8 @@ async function loadTrackSource(track, result) {
 
   try {
     const source = await fetchPlayableSource(result);
-    const activeClip = arrangement?.enabled ? getArrangementStepClipForTrack(track, { create: true }) : null;
+    const selectedClip = getArrangementStepClip(track, arrangement?.step);
+    const activeClip = selectedClip || (arrangement?.enabled ? getArrangementStepClipForTrack(track, { create: true }) : null);
     const targetState = activeClip && activeClip !== track ? activeClip : track;
 
     targetState.source = source;
@@ -5682,6 +5814,7 @@ async function loadTrackSource(track, result) {
       track.startTime = 0;
       track.lastStep = -1;
       refreshArrangementHasClipsState();
+      refreshArrangementStepCells(arrangement.step);
     }
     if (window.freemixRender?.updateTrackRow) {
       window.freemixRender.updateTrackRow(track);
@@ -5689,6 +5822,7 @@ async function loadTrackSource(track, result) {
     } else {
       renderWorkstation();
     }
+    markAppStateDirty(true);
     setStatus(`${track.name}: ready`);
   } catch (error) {
     renderTrackResultsMessage(track, "No playable file");
@@ -5792,6 +5926,7 @@ function createInitialArrangement(steps = arrangementStepCount) {
     enabled: false,
     step: 0,
     steps,
+    sceneColors: Array.from({ length: steps }, () => DEFAULT_SCENE_COLOR_INDEX),
     clips: Array.from({ length: steps }, () => ({})),
   };
 }

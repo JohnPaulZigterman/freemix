@@ -177,6 +177,7 @@
         ? window.renderArrangementStepLabels()
         : "";
     }
+    updateArrangementSceneColorSelector();
 
     const arrangementGrid = document.querySelector(".arrangement-grid");
     if (arrangementGrid) {
@@ -218,6 +219,19 @@
     labels.innerHTML = typeof window.renderArrangementStepLabels === "function" ? window.renderArrangementStepLabels() : "";
   }
 
+  function updateArrangementSceneColorSelector() {
+    if (typeof window.renderArrangementSceneColorSelector !== "function") {
+      return;
+    }
+
+    const selector = document.querySelector(".arrangement-scene-colors");
+    if (!selector) {
+      return;
+    }
+
+    selector.outerHTML = window.renderArrangementSceneColorSelector();
+  }
+
   function updateSourceStrip() {
     const sourceStrip = document.querySelector(".source-strip");
     if (!sourceStrip) {
@@ -255,6 +269,7 @@
     updateArrangementGrid,
     updateArrangementCell,
     updateArrangementStepLabels,
+    updateArrangementSceneColorSelector,
     updateSourceStrip,
     updateArrangementPlayhead: renderArrangementPlayhead,
   };

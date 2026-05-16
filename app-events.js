@@ -240,6 +240,15 @@
   }
 
   function handleArrangementCellClick(target) {
+    const sceneColorButton = target.closest("[data-arrangement-scene-color]");
+    if (sceneColorButton) {
+      const colorIndex = Number(sceneColorButton.getAttribute("data-arrangement-scene-color"));
+      if (typeof window.setArrangementSceneColor === "function") {
+        window.setArrangementSceneColor(arrangement.step, colorIndex);
+      }
+      return;
+    }
+
     const arrangementCell = target.closest(".arrangement-cell");
     if (arrangementCell) {
       handleArrangementCell({ currentTarget: arrangementCell });

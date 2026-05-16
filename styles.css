@@ -257,7 +257,7 @@ input[type="search"]:focus {
   margin-top: 0;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--line);
   border-top-color: var(--line-hot);
   border-radius: var(--radius-panel);
@@ -583,7 +583,7 @@ input[type="number"]:focus {
   margin-inline: auto;
   margin-top: 0;
   margin-bottom: 0;
-  overflow: hidden;
+  overflow: visible;
   min-height: 0;
   flex: 1 1 auto;
 }
@@ -931,6 +931,36 @@ input[type="number"]:focus {
   overflow: hidden;
 }
 
+.arrangement-scene-colors {
+  display: inline-grid;
+  grid-template-columns: repeat(6, minmax(0, 18px));
+  gap: 2px;
+  align-items: center;
+  min-height: var(--control-h-sm);
+}
+
+.arrangement-scene-color {
+  width: 18px;
+  height: var(--control-h-sm);
+  min-height: var(--control-h-sm);
+  border: 1px solid color-mix(in srgb, var(--scene-swatch-color) 48%, var(--line));
+  border-radius: 1px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 18%, var(--scene-swatch-color)) 0, var(--scene-swatch-color) 58%, color-mix(in srgb, #000 22%, var(--scene-swatch-color)) 100%);
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.arrangement-scene-color.active {
+  border-color: var(--silver);
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, #fff 42%, var(--scene-swatch-color)),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
+    0 0 0 1px color-mix(in srgb, var(--scene-swatch-color) 70%, transparent);
+}
+
 .arrangement-toggle.active {
   border-color: rgba(22, 199, 132, 0.75);
   background:
@@ -965,6 +995,7 @@ input[type="number"]:focus {
 .arrangement-delete:focus-visible,
 .arrangement-clear:focus-visible,
 .arrangement-clear-action:focus-visible,
+.arrangement-scene-color:focus-visible,
 .arrangement-action:focus-visible,
 .transport-button:focus-visible,
 .track-toggle:focus-visible,
@@ -1094,8 +1125,8 @@ input[type="number"]:focus {
 }
 
 .arrangement-cell.playing {
-  outline: 2px solid var(--amber);
-  outline-offset: 1px;
+  border-color: color-mix(in srgb, var(--amber) 85%, var(--scene-track-color, var(--track-color)));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-strong));
 }
 
 .arrangement-action {
@@ -1236,7 +1267,7 @@ input[type="number"]:focus {
   gap: 1px;
   margin-top: 0;
   max-height: none;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
   padding-top: 0;
   box-shadow:
@@ -1310,7 +1341,7 @@ input[type="number"]:focus {
     inset 0 0 0 1px rgba(255, 255, 255, 0.02),
     inset 0 0 28px rgba(0, 0, 0, 0.55),
     0 1px 0 rgba(0, 0, 0, 0.32);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .track-row-body {
@@ -1692,16 +1723,19 @@ input[type="number"]:focus {
 
 .track-results {
   position: absolute;
-  z-index: 8;
-  top: calc(100% + 4px);
-  right: 0;
+  z-index: 30;
+  right: auto;
+  bottom: calc(100% + 6px);
   left: 0;
-  max-height: min(30vh, 220px);
+  width: min(520px, calc(100vw - 24px));
+  max-height: min(56vh, 430px);
   overflow-y: auto;
   border: 1px solid var(--line-hot);
   border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--panel-strong) 90%, var(--panel) 10%);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    0 -18px 38px rgba(0, 0, 0, 0.52),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .track-result-button {
@@ -2278,7 +2312,7 @@ input[type="range"]::-moz-range-thumb {
     min-height: 0;
     padding-top: 0;
     gap: 1px;
-    overflow: hidden;
+    overflow: visible;
   }
 
   .arrangement-grid {
