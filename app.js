@@ -7852,7 +7852,11 @@ function createExportCanvasSession() {
     context.fillRect(0, 0, width, height);
 
     tracks.forEach((track) => {
-      drawTrackFrame(context, track, width, height);
+      try {
+        drawTrackFrame(context, track, width, height);
+      } catch (error) {
+        console.warn(`Export frame draw skipped for ${track?.name || "track"}`, error);
+      }
     });
     drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height);
 
@@ -7862,6 +7866,62 @@ function createExportCanvasSession() {
   };
 
   return { canvas, context, width, height, drawFrame };
+}
+
+function createExportVideoFramePump(exportTracks, drawFrame) {
+  if (!Array.isArray(exportTracks) || typeof drawFrame !== "function") {
+    return null;
+  }
+
+  let stopped = false;
+  const callbacks = new Map();
+  exportTracks.forEach((track) => {
+    const video = getTrackVideo(track);
+    if (!video || typeof video.requestVideoFrameCallback !== "function") {
+      return;
+    }
+
+    const schedule = () => {
+      if (stopped) {
+        return;
+      }
+
+      try {
+        const callbackId = video.requestVideoFrameCallback(() => {
+          callbacks.delete(video);
+          if (stopped) {
+            return;
+          }
+
+          drawFrame();
+          schedule();
+        });
+        callbacks.set(video, callbackId);
+      } catch (error) {
+        console.warn(`Export video-frame pump skipped for ${track?.name || "track"}`, error);
+      }
+    };
+
+    schedule();
+  });
+
+  if (!callbacks.size) {
+    return null;
+  }
+
+  return {
+    stop() {
+      stopped = true;
+      callbacks.forEach((callbackId, video) => {
+        try {
+          video.cancelVideoFrameCallback?.(callbackId);
+        } catch {
+          // Callback already consumed or unavailable.
+        }
+      });
+      callbacks.clear();
+    },
+  };
 }
 
 function createExportAudioTap() {
@@ -8021,6 +8081,7 @@ async function exportComposition(mode = "clip") {
   let timerId = null;
   let recorder = null;
   let renderTimerId = null;
+  let exportFramePump = null;
   let canvasVideoTrack = null;
   let mediaStream = null;
   let renderExportFrame = null;
@@ -8046,6 +8107,9 @@ async function exportComposition(mode = "clip") {
     canvasSession = createExportCanvasSession();
     mediaStream = canvasSession.canvas.captureStream(EXPORT_FRAME_RATE);
     canvasVideoTrack = mediaStream.getVideoTracks()[0] || null;
+    if (canvasVideoTrack && "contentHint" in canvasVideoTrack) {
+      canvasVideoTrack.contentHint = "motion";
+    }
     audioTap = createExportAudioTap();
     if (audioTap?.destination?.stream) {
       audioTap.destination.stream.getAudioTracks().forEach((audioTrack) => {
@@ -8144,6 +8208,7 @@ async function exportComposition(mode = "clip") {
     };
 
     renderExportFrame();
+    exportFramePump = createExportVideoFramePump(renderTracks, renderExportFrame);
     renderTimerId = window.setInterval(
       renderExportFrame,
       Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)),
@@ -8186,6 +8251,8 @@ async function exportComposition(mode = "clip") {
     exportError = error;
     console.warn(error);
     stopRecorderForExport();
+    exportFramePump?.stop?.();
+    exportFramePump = null;
     if (renderTimerId !== null) {
       window.clearInterval(renderTimerId);
       renderTimerId = null;
@@ -8201,6 +8268,8 @@ async function exportComposition(mode = "clip") {
       timeoutId = null;
     }
     stopRecorderForExport();
+    exportFramePump?.stop?.();
+    exportFramePump = null;
 
     if (renderTimerId !== null) {
       window.clearInterval(renderTimerId);
