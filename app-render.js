@@ -159,6 +159,11 @@
     }
     cell.classList.toggle("filled", isFilled);
     cell.textContent = isFilled ? "x" : "";
+    const canDragCopy =
+      typeof window.freemixIsArrangementCopyMode === "function" &&
+      window.freemixIsArrangementCopyMode() &&
+      isFilled;
+    cell.draggable = canDragCopy;
     cell.title = isFilled
       ? escapeHtml(`${track.name || "Track"} bar ${stepIndex + 1}`)
       : `Capture ${track.name || "track"}`;

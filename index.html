@@ -11,6 +11,25 @@
       <section class="search-panel" aria-label="Freemix status">
         <div class="brand-row">
           <h1 class="brand-title">FREEMIX VM-420</h1>
+          <div class="file-menu" id="fileMenu">
+            <button class="file-menu-button" id="fileMenuButton" type="button" aria-haspopup="true" aria-expanded="false">
+              File
+            </button>
+            <div class="file-menu-panel" id="fileMenuPanel" hidden>
+              <button type="button" data-file-action="new">New Blank Session</button>
+              <button type="button" data-file-action="save">Save Session</button>
+              <button type="button" data-file-action="save-as">Save As New Session</button>
+              <button type="button" data-file-action="load">Load Session...</button>
+              <div class="file-menu-divider" aria-hidden="true"></div>
+              <div class="file-recent-group">
+                <span>Recent Sessions</span>
+                <div class="file-recent-list" id="fileRecentList">
+                  <button type="button" disabled>No recent sessions</button>
+                </div>
+              </div>
+            </div>
+            <input id="sessionFileInput" type="file" accept="application/json,.json" hidden />
+          </div>
           <span class="status-pill" id="statusPill">Ready</span>
         </div>
       </section>

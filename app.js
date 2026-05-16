@@ -22,6 +22,21 @@ const SEARCHABLE_TEXT_FIELDS = Object.freeze(["title", "creator", "description",
 const SEARCH_QUERY_VARIANT_TARGET = 90;
 const SEARCH_RESULT_CACHE_TTL_MS = 180_000;
 const SEARCH_RESULT_CACHE_MAX_SIZE = 32;
+const SESSION_LIBRARY_STORAGE_KEY = "freemix.sessions.v1";
+const SESSION_RECENT_LIMIT = 8;
+const EXPLICIT_SEARCH_RESULT_PATTERNS = Object.freeze([
+  /(^|[^a-z0-9])hentai([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])porn([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])porno([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])pornography([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])pornographic([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])xxx([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])x[- ]rated([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])hardcore[ -]+porn([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])hardcore[ -]+sex([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])sex[ -]+tape([^a-z0-9]|$)/,
+  /(^|[^a-z0-9])(pornhub|xvideos|xnxx|xhamster|redtube|youporn|brazzers|bangbros)([^a-z0-9]|$)/,
+]);
 const SOURCE_METADATA_CACHE_TTL_MS = 20 * 60 * 1000;
 const SOURCE_METADATA_CACHE_MAX_SIZE = 48;
 const SEARCH_REQUEST_IN_FLIGHT_TTL_MS = 8_000;
@@ -1062,6 +1077,16 @@ function getArrangementSceneColor(stepIndex = arrangement?.step) {
   return ARRANGEMENT_SCENE_COLORS[getArrangementSceneColorIndex(stepIndex)]?.value || "";
 }
 
+function arrangementStepHasClips(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  const step = arrangement?.clips?.[resolvedStep];
+  return !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
+}
+
 function setArrangementSceneColor(stepIndex, colorIndex) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
   if (resolvedStep === null) {
@@ -1107,7 +1132,7 @@ function bindTracksToArrangementStep(stepIndex, options = {}) {
       ? barMs / normalizeRetriggersPerBar(clip.retriggersPerBar)
       : 0;
     if (shouldSyncTiming && Number.isFinite(track.stepMs) && track.stepMs > 0) {
-      track.nextTriggerAt = nextTriggerAt;
+      resetTrackPulseCursor(track, nextTriggerAt, { fireAtReference: true });
     }
     track.lastStep = -1;
   });
@@ -1118,18 +1143,15 @@ function getTrackActiveControlState(track) {
     return track;
   }
 
-  if (!arrangement?.enabled) {
-    return track;
-  }
-
   const clip = getArrangementStepClip(track, arrangement.step);
   if (clip) {
     track.arrangementClip = clip;
+    return clip;
   } else {
     track.arrangementClip = null;
   }
 
-  return clip || track;
+  return track;
 }
 
 function getTrackRenderState(track) {
@@ -1153,7 +1175,7 @@ function getTrackSceneEditableState(track, controlName) {
 
   const stepIndex = getArrangementStepIndex(arrangement?.step);
   const safeStepIndex = stepIndex === null ? 0 : stepIndex;
-  return getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex, create: true }) || getTrackActiveControlState(track);
+  return getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex, create: false }) || getTrackActiveControlState(track);
 }
 
 function getTrackPlaybackState(track, overrideState) {
@@ -1479,7 +1501,7 @@ function resyncTrackTiming(track) {
   const barMs = beatMs * getTransportBeatsPerBar(transport);
   track.stepMs = barMs / normalizeRetriggersPerBar(timingState?.retriggersPerBar);
   const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
-  track.nextTriggerAt = getAlignedTrackTriggerTime(track, rearmAt);
+  resetTrackPulseCursor(track, rearmAt, { fireAtReference: false });
   track.lastStep = -1;
 }
 
@@ -1597,6 +1619,12 @@ async function handleLaunchPadAction(action) {
 }
 
 window.freemixHandleLaunchPadAction = handleLaunchPadAction;
+window.freemixNewBlankSession = newBlankSession;
+window.freemixSaveSession = saveCurrentSession;
+window.freemixSaveSessionAs = saveSessionAs;
+window.freemixLoadRecentSession = loadRecentSession;
+window.freemixLoadSessionFile = loadSessionFile;
+window.freemixRenderRecentSessionMenu = renderRecentSessionMenu;
 
 if (!shouldIgnoreLifecycleAutoStop()) {
   window.addEventListener("visibilitychange", () => {
@@ -1613,6 +1641,7 @@ if (!shouldIgnoreLifecycleAutoStop()) {
 }
 
 renderWorkstation();
+renderRecentSessionMenu();
 setStatus("Ready");
 
 function normalizeResults(docs) {
@@ -1631,7 +1660,8 @@ function normalizeResults(docs) {
       durationSeconds: parseRuntime(textValue(doc.runtime)),
       thumbnail: `https://archive.org/services/img/${encodeURIComponent(doc.identifier)}`,
       archiveUrl: `https://archive.org/details/${encodeURIComponent(doc.identifier)}`,
-    }));
+    }))
+    .filter((result) => !isExplicitSearchResult(result));
 }
 
 function textValue(value) {
@@ -1682,6 +1712,30 @@ function normalizeSearchInput(value) {
     .replace(/\s{2,}/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function getSearchModerationText(result) {
+  return normalizeSearchInput(
+    [
+      result?.identifier,
+      result?.title,
+      result?.creator,
+      result?.description,
+      result?.subject,
+      result?.collection,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+function isExplicitSearchResult(result) {
+  const moderationText = getSearchModerationText(result);
+  if (!moderationText) {
+    return false;
+  }
+
+  return EXPLICIT_SEARCH_RESULT_PATTERNS.some((pattern) => pattern.test(moderationText));
 }
 
 function tokenizeSearchQuery(value) {
@@ -2471,6 +2525,7 @@ function renderArrangementStepLabel(stepIndex) {
       class="arrangement-step-label ${isCopySource ? "copy-source" : ""}"
       type="button"
       data-arr-step="${stepIndex}"
+      draggable="false"
       title="${isCopySource ? "Copy source selected" : "Select or paste section here"}"
     >
       ${stepIndex + 1}
@@ -2483,6 +2538,7 @@ function renderArrangementRow(track) {
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
+        const canDragCopy = arrangementCopyMode && !!clip;
         const sceneColor = getArrangementSceneColor(index);
         const sceneStyle = sceneColor ? ` style="--scene-track-color: ${sceneColor};"` : "";
         return `
@@ -2491,6 +2547,7 @@ function renderArrangementRow(track) {
             type="button"
             data-arr-track="${track.id}"
             data-arr-step="${index}"
+            draggable="${canDragCopy ? "true" : "false"}"
             title="${clip ? escapeHtml(`${track.name} bar ${index + 1}`) : `Capture ${track.name}`}"
             ${sceneStyle}
           >
@@ -2877,9 +2934,6 @@ function handleTrackControl(event) {
   const controlName = control.dataset.control;
   let editableState = getTrackSceneEditableState(track, controlName);
   const safeStepIndex = getArrangementStepIndex(arrangement?.step);
-  if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState === track) {
-    editableState = getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex === null ? 0 : safeStepIndex, create: true }) || editableState;
-  }
   const isInputEvent = event?.type === "input";
   const commitControlEdit = () => {
     if (SCENE_EDITABLE_CONTROLS.has(controlName) && editableState !== track && arrangement?.clips) {
@@ -2970,18 +3024,18 @@ function handleTrackControl(event) {
     syncStartControls(track);
     if (video && transport?.active) {
       const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
-      track.nextTriggerAt = getAlignedTrackTriggerTime(track, rearmAt);
+      resetTrackPulseCursor(track, rearmAt, { fireAtReference: false });
     }
 
     if (video) {
-      const activeClipState = getTrackPlaybackState(track) || editableState;
+      const activeClipState = editableState || getTrackPlaybackState(track) || track;
       safeSetCurrentTime(video, activeClipState, track, { force: true });
       applyTrackPitchAndSpeed(track, activeClipState);
       applyTrackVolume(track, activeClipState);
 
       if (!isInputEvent && transport?.active && isTrackAudibleInMix(track, activeClipState) && Number.isFinite(track.stepMs) && track.stepMs > 0) {
         const scheduleFrom = Number.isFinite(track.nextTriggerAt) ? track.nextTriggerAt : performance.now();
-        track.nextTriggerAt = getAlignedTrackTriggerTime(track, scheduleFrom);
+        resetTrackPulseCursor(track, scheduleFrom, { fireAtReference: false });
       }
     }
 
@@ -3254,10 +3308,6 @@ function safeSetCurrentTime(video, track, ownerTrack = null, options = {}) {
   }
 
   try {
-    if (video.readyState >= 1 && !video.paused && typeof video.pause === "function") {
-      video.pause();
-    }
-
     if (!force && almostEqual(video.currentTime, nextTime, 0.001)) {
       return;
     }
@@ -3319,13 +3369,33 @@ function awaitVideoSeek(video, targetTime, timeoutMs = AV_READY_TIMEOUT_MS) {
   });
 }
 
-function attemptVideoPlay(video, track, clipState, playbackToken = track?.__playbackToken) {
+function retriggerVideoAtAnchor(video, clip) {
+  if (!video || !clip) {
+    return;
+  }
+
+  const clipStartTime = safeStartTime(clip, video);
+  if (!Number.isFinite(clipStartTime)) {
+    return;
+  }
+
+  try {
+    if (!almostEqual(video.currentTime, clipStartTime, 0.001)) {
+      video.currentTime = clipStartTime;
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function attemptVideoPlay(video, track, clipState, playbackToken = track?.__playbackToken, options = {}) {
   const shouldBeMuted = !!clipState?.muted || !!track.muted;
   const targetVolume = Number.isFinite(clipState?.volume) ? clipState.volume : Number(track.volume) || 1;
   const clip = clipState || track;
   const clipVolume = clamp(targetVolume, 0, 1);
   const clipSourceUrl = clip.source?.mediaUrl || track?.source?.mediaUrl;
   const tokenAtStart = Number.isFinite(playbackToken) ? playbackToken : 0;
+  const shouldSeekToAnchor = options.seekToAnchor !== false;
   const isCurrentPlaybackAttempt = () => track?.__playbackToken === tokenAtStart;
 
   if (!isCurrentPlaybackAttempt()) {
@@ -3360,12 +3430,7 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       return muted;
     }
 
-    const hasLiveAudioGraph =
-      !!track.audio &&
-      !webAudioDisabled &&
-      audioContext?.state === "running" &&
-      track.audio.mediaElement &&
-      track.audio.source?.context === audioContext;
+    const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
     if (video.muted !== muted) {
       video.muted = muted;
     }
@@ -3394,31 +3459,15 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       return muted;
     }
 
-    const clipStartTime = safeStartTime(clip, video);
-    if (Number.isFinite(clipStartTime)) {
-      if (!video.paused && typeof video.pause === "function") {
-        try {
-          video.pause();
-        } catch (error) {
-          console.warn(error);
-        }
-      }
+    if (shouldSeekToAnchor) {
+      retriggerVideoAtAnchor(video, clip);
+    }
 
-      try {
-        video.currentTime = clipStartTime;
-      } catch (error) {
-        console.warn(error);
-      }
-
-      await awaitVideoSeek(video, clipStartTime);
+    if (video.paused) {
+      await video.play();
       if (!isCurrentPlaybackAttempt()) {
         return muted;
       }
-    }
-
-    await video.play();
-    if (!isCurrentPlaybackAttempt()) {
-      return muted;
     }
 
     return muted;
@@ -3524,11 +3573,14 @@ function attemptVideoPlay(video, track, clipState, playbackToken = track?.__play
       }
 
       const nativeVolume = shouldBeMuted ? 0 : clipVolume;
-      if (video.muted !== shouldBeMuted) {
-        video.muted = shouldBeMuted;
+      const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
+      const finalVideoMuted = hasLiveAudioGraph ? false : shouldBeMuted;
+      const finalVideoVolume = hasLiveAudioGraph ? 1 : nativeVolume;
+      if (video.muted !== finalVideoMuted) {
+        video.muted = finalVideoMuted;
       }
-      if (!shouldBeMuted && !almostEqual(video.volume, nativeVolume)) {
-        video.volume = nativeVolume;
+      if (!almostEqual(video.volume, finalVideoVolume)) {
+        video.volume = finalVideoVolume;
       }
       if (!shouldBeMuted && track.audio?.output?.gain) {
         const targetGain = nativeVolume;
@@ -4202,6 +4254,51 @@ function tickTransport() {
   const beatsPerBar = getTransportBeatsPerBar(transport);
   const barMs = beatMs * beatsPerBar;
 
+  if (arrangement.enabled && hasArrangementClips()) {
+    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
+    const arrangementLength = arrangement.clips.length || 1;
+    const currentStep = (transport.arrangementStartStep + elapsedBars) % arrangementLength;
+    updateArrangementStep(currentStep, transport.startedAt + elapsedBars * barMs);
+  }
+
+  tracks.forEach((track) => {
+    const playbackState = getTrackPlaybackState(track) || track;
+    const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+
+    if (!sourceUrl || !track.stepMs) {
+      return;
+    }
+
+    if (track.__transportPrimedFor !== transport.sessionToken) {
+      ensureTransportTrackPrimed(track, transport.sessionToken);
+      return;
+    }
+
+    const video = getTrackVideo(track);
+    if (!video || video.readyState < 1 || video.networkState === 0) {
+      return;
+    }
+
+    const activePlaybackState = playbackState;
+    const pulseIndex = getTrackPulseIndex(track, now);
+    if (pulseIndex === null) {
+      return;
+    }
+
+    if (!Number.isFinite(track.__lastRetriggerPulse)) {
+      track.__lastRetriggerPulse = pulseIndex - 1;
+    }
+
+    if (pulseIndex > track.__lastRetriggerPulse) {
+      track.__lastRetriggerPulse = pulseIndex;
+      track.nextTriggerAt = transport.startedAt + (pulseIndex + 1) * track.stepMs;
+      if (!isTrackAudibleInMix(track, activePlaybackState)) {
+        return;
+      }
+      triggerTrack(track, activePlaybackState, transport.sessionToken);
+    }
+  });
+
   const beatCatchupLimit = Math.max(
     0,
     Math.floor((now - transport.nextBeatAt) / beatMs) + 1,
@@ -4224,60 +4321,6 @@ function tickTransport() {
       transport.nextBeatAt += missedBeats * beatMs;
     }
   }
-
-  if (arrangement.enabled && hasArrangementClips()) {
-    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
-    const arrangementLength = arrangement.clips.length || 1;
-    const currentStep = (transport.arrangementStartStep + elapsedBars) % arrangementLength;
-    updateArrangementStep(currentStep, transport.startedAt + elapsedBars * barMs);
-  }
-
-  tracks.forEach((track) => {
-    const playbackState = getTrackPlaybackState(track) || track;
-    const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
-
-    if (!sourceUrl || !track.stepMs) {
-      return;
-    }
-
-    if (track.__transportPrimedFor !== transport.sessionToken) {
-      ensureTransportTrackPrimed(track, transport.sessionToken);
-      track.nextTriggerAt = getAlignedTrackTriggerTime(track, now);
-      return;
-    }
-
-    const video = getTrackVideo(track);
-    if (!video || video.readyState < 2 || video.networkState === 0) {
-      track.nextTriggerAt += track.stepMs;
-      return;
-    }
-
-    const activePlaybackState = playbackState;
-    const canPlay = isTrackAudibleInMix(track, activePlaybackState);
-    let triggerBudget = MAX_TRACK_TRIGGER_BURST_PER_FRAME;
-
-    while (now >= track.nextTriggerAt) {
-      if (triggerBudget <= 0) {
-        break;
-      }
-
-      triggerBudget -= 1;
-      if (!canPlay) {
-        track.nextTriggerAt += track.stepMs;
-        continue;
-      }
-
-      triggerTrack(track, activePlaybackState, transport.sessionToken);
-      track.nextTriggerAt += track.stepMs;
-    }
-
-    if (track.nextTriggerAt <= now) {
-      const missedTriggers = Math.floor((now - track.nextTriggerAt) / track.stepMs) + 1;
-      if (missedTriggers > 0) {
-        track.nextTriggerAt += missedTriggers * track.stepMs;
-      }
-    }
-  });
 
   transport.frameId = requestAnimationFrame(tickTransport);
 }
@@ -4314,7 +4357,14 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   applyTrackBlend(track, playbackState);
   applyTrackOpacity(track, playbackState);
   applyTrackPitchAndSpeed(track, playbackState);
-  void attemptVideoPlay(video, track, playbackState, playbackToken);
+  if (transport?.active) {
+    retriggerVideoAtAnchor(video, playbackState);
+    if (video.paused) {
+      void attemptVideoPlay(video, track, playbackState, playbackToken, { seekToAnchor: false });
+    }
+  } else {
+    void attemptVideoPlay(video, track, playbackState, playbackToken);
+  }
 
   const cell = getTrackCell(track);
   if (cell) {
@@ -4324,14 +4374,20 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
 }
 
 function previewTrack(track) {
-  if (!track.source || transport?.active) {
-    return;
-  }
-  if (!isTrackAudibleInMix(track, getTrackPlaybackState(track) || track)) {
+  if (transport?.active) {
     return;
   }
 
-  triggerTrack(track);
+  const playbackState = getTrackPlaybackState(track) || track;
+  if (!getTrackPlaybackSourceUrl(track, playbackState)) {
+    return;
+  }
+
+  if (!isTrackAudibleInMix(track, playbackState)) {
+    return;
+  }
+
+  triggerTrack(track, playbackState);
   window.setTimeout(() => {
     const video = getTrackVideo(track);
     if (video && !transport?.active) {
@@ -4501,10 +4557,10 @@ function applyArrangementClipControlValue(track, controlName, value, clipState =
   const resolvedStep = getArrangementStepIndex(arrangement?.step);
   const effectiveStep = resolvedStep === null ? 0 : resolvedStep;
   const clip =
-    clipState && clipState !== track
+    clipState
       ? clipState
       : isSceneControl
-        ? getArrangementStepClipForTrack(track, { stepIndex: effectiveStep, create: true })
+        ? getArrangementStepClipForTrack(track, { stepIndex: effectiveStep, create: false }) || track
         : arrangement?.enabled
           ? getArrangementStepClipForTrack(track, { stepIndex: effectiveStep, create: true })
           : track;
@@ -4567,6 +4623,17 @@ function applyArrangementClipControlValue(track, controlName, value, clipState =
   }
 }
 
+function hasLiveTrackAudioGraph(track, video = null) {
+  return (
+    !!track?.audio &&
+    !webAudioDisabled &&
+    audioContext?.state === "running" &&
+    track.audio.mediaElement &&
+    (!video || track.audio.mediaElement === video) &&
+    track.audio.source?.context === audioContext
+  );
+}
+
 function applyTrackVolume(track, state = track) {
   const effectiveState = state || track;
   const isMuted = !!(effectiveState?.muted);
@@ -4576,25 +4643,21 @@ function applyTrackVolume(track, state = track) {
       ? Number(track.volume)
       : 0;
   const volume = clamp(stateVolume, 0, 1);
-  const hasLiveAudioGraph =
-    !!track.audio &&
-    !webAudioDisabled &&
-    audioContext?.state === "running" &&
-    track.audio.mediaElement &&
-    track.audio.source?.context === audioContext;
+  const video = getTrackVideo(track);
+  const hasLiveAudioGraph = hasLiveTrackAudioGraph(track, video);
 
   if (!hasLiveAudioGraph && track.audio) {
     disposeTrackAudio(track);
   }
 
-  const video = getTrackVideo(track);
   if (track.audio?.output && hasLiveAudioGraph && !almostEqual(track.audio.output.gain.value, isMuted ? 0 : volume)) {
     track.audio.output.gain.value = isMuted ? 0 : volume;
   }
 
   if (video) {
-    if (video.muted !== isMuted) {
-      video.muted = isMuted;
+    const nextMuted = hasLiveAudioGraph ? false : isMuted;
+    if (video.muted !== nextMuted) {
+      video.muted = nextMuted;
     }
 
     const nextVolume = hasLiveAudioGraph ? 1 : isMuted ? 0 : volume;
@@ -4891,6 +4954,37 @@ function getAlignedTrackTriggerTime(track, referenceTime = performance.now(), op
   return transportStart + alignedStepIndex * stepMs;
 }
 
+function getTrackPulseIndex(track, referenceTime = performance.now()) {
+  if (!track || !transport?.active) {
+    return null;
+  }
+
+  const stepMs = Number(track.stepMs);
+  if (!Number.isFinite(stepMs) || stepMs <= 0) {
+    return null;
+  }
+
+  const transportStart = Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now();
+  const delta = Math.max(0, referenceTime - transportStart);
+  return Math.floor(delta / stepMs + 1e-6);
+}
+
+function resetTrackPulseCursor(track, referenceTime = performance.now(), options = {}) {
+  if (!track || !transport?.active) {
+    return;
+  }
+
+  const pulseIndex = getTrackPulseIndex(track, referenceTime);
+  if (pulseIndex === null) {
+    track.__lastRetriggerPulse = null;
+    track.nextTriggerAt = Number.POSITIVE_INFINITY;
+    return;
+  }
+
+  track.__lastRetriggerPulse = options.fireAtReference ? pulseIndex - 1 : pulseIndex;
+  track.nextTriggerAt = transport.startedAt + (track.__lastRetriggerPulse + 1) * track.stepMs;
+}
+
 function updateTrackTriggerGrid(startAt = performance.now()) {
   if (!transport) {
     return;
@@ -4899,9 +4993,10 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
   tracks.forEach((track) => {
+    const timingState = getTrackActiveControlState(track) || track;
     track.arrangementClip = null;
-    track.stepMs = barMs / normalizeRetriggersPerBar(track.retriggersPerBar);
-    track.nextTriggerAt = startAt;
+    track.stepMs = barMs / normalizeRetriggersPerBar(timingState?.retriggersPerBar);
+    resetTrackPulseCursor(track, startAt, { fireAtReference: true });
   });
 }
 
@@ -5091,15 +5186,27 @@ function toggleArrangementDeleteMode() {
   markAppStateDirty();
 }
 
-function pasteArrangementSection(targetStep) {
-  if (arrangementCopySourceStep === null) {
-    setStatus("Pick a source section first");
-    return;
+function copyArrangementSection(sourceStepIndex, targetStepIndex) {
+  const sourceStep = getArrangementStepIndex(sourceStepIndex);
+  const targetStep = getArrangementStepIndex(targetStepIndex);
+  if (sourceStep === null || targetStep === null) {
+    setStatus("Choose a valid source and destination");
+    return false;
   }
 
-  const sourceStep = arrangement.clips[arrangementCopySourceStep];
-  arrangement.clips[targetStep] = cloneArrangementStep(sourceStep);
-  arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(arrangementCopySourceStep);
+  if (!arrangementStepHasClips(sourceStep)) {
+    setStatus("Pick a source section first");
+    return false;
+  }
+
+  if (sourceStep === targetStep) {
+    setStatus("Choose a different destination section");
+    return false;
+  }
+
+  const sourceClips = arrangement.clips[sourceStep];
+  arrangement.clips[targetStep] = cloneArrangementStep(sourceClips);
+  arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(sourceStep);
   arrangement.step = targetStep;
   refreshArrangementHasClipsState();
 
@@ -5112,16 +5219,144 @@ function pasteArrangementSection(targetStep) {
       window.freemixRender.updateArrangementCell(track, targetStep);
     }
   });
-  setStatus(`Section ${arrangementCopySourceStep + 1} pasted to ${targetStep + 1}`);
+  setStatus(`Section ${sourceStep + 1} pasted to ${targetStep + 1}`);
 
   if (window.freemixRender?.updateArrangementGrid) {
+    window.freemixRender.updateArrangementStepLabels?.();
     window.freemixRender.updateArrangementPlayhead?.();
     markAppStateDirty();
-    return;
+    return true;
   }
 
   renderWorkstation();
   markAppStateDirty();
+  return true;
+}
+
+function pasteArrangementSection(targetStep) {
+  if (arrangementCopySourceStep === null) {
+    setStatus("Pick a source section first");
+    return;
+  }
+
+  copyArrangementSection(arrangementCopySourceStep, targetStep);
+}
+
+function clearArrangementDragState() {
+  if (!playerPanel) {
+    return;
+  }
+
+  playerPanel.querySelectorAll(".copy-drag-source, .copy-drop-target").forEach((element) => {
+    element.classList.remove("copy-drag-source", "copy-drop-target");
+  });
+}
+
+function highlightArrangementDragStep(stepIndex, className) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null || !playerPanel) {
+    return;
+  }
+
+  playerPanel.querySelectorAll(`[data-arr-step="${resolvedStep}"]`).forEach((element) => {
+    element.classList.add(className);
+  });
+}
+
+function canDragCopyArrangementStep(stepIndex) {
+  return !!arrangementCopyMode && arrangementStepHasClips(stepIndex);
+}
+
+function getArrangementClipDragTarget(trackId, stepIndex) {
+  const track = getTrackById(trackId);
+  const sourceStep = getArrangementStepIndex(stepIndex);
+  if (!track || sourceStep === null) {
+    return null;
+  }
+
+  return {
+    track,
+    stepIndex: sourceStep,
+    clip: arrangement?.clips?.[sourceStep]?.[track.id] || null,
+  };
+}
+
+function beginArrangementClipDragCopy(trackId, stepIndex) {
+  const source = getArrangementClipDragTarget(trackId, stepIndex);
+  if (!arrangementCopyMode || !source?.clip) {
+    return false;
+  }
+
+  clearArrangementDragState();
+  const sourceCell = playerPanel?.querySelector(
+    `.arrangement-cell[data-arr-track="${source.track.id}"][data-arr-step="${source.stepIndex}"]`,
+  );
+  sourceCell?.classList.add("copy-drag-source");
+  window.freemixRender?.updateArrangementStepLabels?.();
+  setStatus(`Dragging ${source.track.name} clip; drop on a clip slot`);
+  return true;
+}
+
+function hoverArrangementClipDragTarget(trackId, stepIndex, sourceTrackId = null, sourceStepIndex = null) {
+  const target = getArrangementClipDragTarget(trackId, stepIndex);
+  if (!arrangementCopyMode || !target) {
+    clearArrangementDragState();
+    return false;
+  }
+
+  clearArrangementDragState();
+  if (sourceTrackId && Number.isFinite(Number(sourceStepIndex))) {
+    const source = getArrangementClipDragTarget(sourceTrackId, Number(sourceStepIndex));
+    const sourceCell = source
+      ? playerPanel?.querySelector(`.arrangement-cell[data-arr-track="${source.track.id}"][data-arr-step="${source.stepIndex}"]`)
+      : null;
+    sourceCell?.classList.add("copy-drag-source");
+  }
+
+  const targetCell = playerPanel?.querySelector(
+    `.arrangement-cell[data-arr-track="${target.track.id}"][data-arr-step="${target.stepIndex}"]`,
+  );
+  targetCell?.classList.add("copy-drop-target");
+  return true;
+}
+
+function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrackId, targetStepIndex) {
+  const source = getArrangementClipDragTarget(sourceTrackId, sourceStepIndex);
+  const target = getArrangementClipDragTarget(targetTrackId, targetStepIndex);
+  clearArrangementDragState();
+  if (!source?.clip || !target) {
+    return false;
+  }
+
+  if (source.track.id === target.track.id && source.stepIndex === target.stepIndex) {
+    setStatus("Choose a different clip slot");
+    return false;
+  }
+
+  arrangement.clips[target.stepIndex] = arrangement.clips[target.stepIndex] || {};
+  arrangement.clips[target.stepIndex][target.track.id] = cloneArrangementClip(source.clip);
+  arrangement.step = target.stepIndex;
+  refreshArrangementHasClipsState();
+
+  if (transport?.active && arrangement.enabled && hasArrangementClips()) {
+    rebindArrangementClipsForActiveTransport();
+  }
+
+  if (window.freemixRender?.updateArrangementCell) {
+    window.freemixRender.updateArrangementCell(target.track, target.stepIndex);
+    window.freemixRender.updateArrangementPlayhead?.();
+    window.freemixRender.updateArrangementSceneColorSelector?.();
+  } else {
+    renderWorkstation();
+  }
+
+  if (target.stepIndex === arrangement.step && window.freemixRender?.updateTrackRow) {
+    window.freemixRender.updateTrackRow(target.track);
+  }
+
+  setStatus(`${source.track.name} clip copied to ${target.track.name} scene ${target.stepIndex + 1}`);
+  markAppStateDirty();
+  return true;
 }
 
 function copyCurrentArrangementSectionToAll() {
@@ -5307,6 +5542,13 @@ window.renderArrangementSceneColorSelector = renderArrangementSceneColorSelector
 window.setArrangementSceneColor = setArrangementSceneColor;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
+window.freemixIsArrangementCopyMode = () => !!arrangementCopyMode;
+window.freemixArrangementStepHasClips = arrangementStepHasClips;
+window.freemixCanDragCopyArrangementStep = canDragCopyArrangementStep;
+window.freemixBeginArrangementClipDragCopy = beginArrangementClipDragCopy;
+window.freemixHoverArrangementClipDragTarget = hoverArrangementClipDragTarget;
+window.freemixDropArrangementClipDragCopy = dropArrangementClipDragCopy;
+window.freemixClearArrangementDragState = clearArrangementDragState;
 
 function updateArrangementStepCount(event) {
   const nextLength = Number(event.target.value);
@@ -5375,7 +5617,18 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   arrangement.step = resolvedStep;
   bindTracksToArrangementStep(resolvedStep);
   tracks.forEach((track) => {
-    track.nextTriggerAt = barStartAt;
+    const clip = getArrangementStepClip(track, resolvedStep);
+    if (!clip || !clip.source) {
+      const video = getTrackVideo(track);
+      if (video && typeof video.pause === "function") {
+        video.pause();
+      }
+      track.lastStep = -1;
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      return;
+    }
+
+    resetTrackPulseCursor(track, barStartAt, { fireAtReference: true });
   });
 
   scheduleArrangementPlayheadUpdate();
@@ -5479,6 +5732,343 @@ function refreshArrangementStepCells(stepIndex) {
   tracks.forEach((stepTrack) => {
     window.freemixRender.updateArrangementCell(stepTrack, resolvedStep);
   });
+}
+
+function createSessionId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `session-${crypto.randomUUID()}`;
+  }
+
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeSessionName(name, fallback = "Untitled Session") {
+  const clean = String(name || "").trim().replace(/\s+/g, " ");
+  return clean ? clean.slice(0, 64) : fallback;
+}
+
+function slugifySessionName(name) {
+  const slug = normalizeSessionName(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "freemix-session";
+}
+
+function readSessionLibrary() {
+  const payload = readJsonFromStorage(SESSION_LIBRARY_STORAGE_KEY, null);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { currentSessionId: null, recentIds: [], sessions: {} };
+  }
+
+  const sessions = payload.sessions && typeof payload.sessions === "object" && !Array.isArray(payload.sessions)
+    ? payload.sessions
+    : {};
+  const recentIds = Array.isArray(payload.recentIds)
+    ? payload.recentIds.filter((id) => typeof id === "string" && sessions[id]).slice(0, SESSION_RECENT_LIMIT)
+    : [];
+  const currentSessionId = typeof payload.currentSessionId === "string" && sessions[payload.currentSessionId]
+    ? payload.currentSessionId
+    : recentIds[0] || null;
+
+  return { currentSessionId, recentIds, sessions };
+}
+
+function writeSessionLibrary(library) {
+  writeJsonToStorage(SESSION_LIBRARY_STORAGE_KEY, {
+    version: 1,
+    currentSessionId: library.currentSessionId || null,
+    recentIds: Array.isArray(library.recentIds) ? library.recentIds.slice(0, SESSION_RECENT_LIMIT) : [],
+    sessions: library.sessions || {},
+  });
+}
+
+function touchRecentSession(library, sessionId) {
+  library.recentIds = [
+    sessionId,
+    ...(Array.isArray(library.recentIds) ? library.recentIds.filter((id) => id !== sessionId) : []),
+  ].filter((id) => library.sessions?.[id]).slice(0, SESSION_RECENT_LIMIT);
+  library.currentSessionId = sessionId;
+}
+
+function captureTrackSessionSnapshot(track) {
+  return {
+    name: track.name,
+    role: track.role,
+    color: track.color,
+    id: track.id,
+    showAdvanced: !!track.showAdvanced,
+    collapsed: !!track.collapsed,
+    startTime: Number(track.startTime) || 0,
+    retriggersPerBar: normalizeRetriggersPerBar(track.retriggersPerBar),
+    volume: clamp(Number(track.volume), 0, 1),
+    muted: !!track.muted,
+    solo: !!track.solo,
+    blendMode: track.blendMode,
+    opacity: clamp(Number(track.opacity), 0, 1),
+    speed: clamp(Number(track.speed), 0.5, 2),
+    pitch: clamp(Number(track.pitch), -12, 12),
+    fx: { ...track.fx },
+    source: track.source ? JSON.parse(JSON.stringify(track.source)) : null,
+    durationFilter: track.durationFilter,
+  };
+}
+
+function captureSessionSnapshot(name = "") {
+  return {
+    version: 1,
+    app: "freemix-vm-420",
+    name: normalizeSessionName(name || getCurrentSessionName() || "Untitled Session"),
+    savedAt: new Date().toISOString(),
+    state: {
+      preferredBpm: resolvePreferredBpm(),
+      preferredTimeSignature: resolvePreferredTimeSignature().value,
+      metronomeEnabled: !!metronomeEnabled,
+      masterMuted: !!masterMuted,
+      arrangementStepCount,
+    },
+    tracks: tracks.map(captureTrackSessionSnapshot),
+    arrangement: {
+      ...JSON.parse(JSON.stringify(arrangement || createInitialArrangement(arrangementStepCount))),
+      clips: JSON.parse(JSON.stringify(arrangement?.clips || [])),
+      sceneColors: Array.isArray(arrangement?.sceneColors) ? arrangement.sceneColors.slice() : [],
+    },
+  };
+}
+
+function getCurrentSessionRecord() {
+  const library = readSessionLibrary();
+  return library.currentSessionId ? library.sessions[library.currentSessionId] || null : null;
+}
+
+function getCurrentSessionName() {
+  return getCurrentSessionRecord()?.name || "";
+}
+
+function saveSessionRecord(name, options = {}) {
+  const library = readSessionLibrary();
+  const currentRecord = !options.newSession && library.currentSessionId ? library.sessions[library.currentSessionId] : null;
+  const sessionId = currentRecord?.id || createSessionId();
+  const sessionName = normalizeSessionName(name || currentRecord?.name || window.prompt?.("Session name", "Untitled Session") || "");
+  const snapshot = captureSessionSnapshot(sessionName);
+  const record = {
+    id: sessionId,
+    name: sessionName,
+    savedAt: snapshot.savedAt,
+    snapshot,
+  };
+
+  library.sessions[sessionId] = record;
+  touchRecentSession(library, sessionId);
+  writeSessionLibrary(library);
+  renderRecentSessionMenu();
+
+  if (options.download) {
+    downloadSessionSnapshot(snapshot);
+  }
+
+  setStatus(`${sessionName}: saved`);
+  markAppStateDirty(true);
+  return record;
+}
+
+function downloadSessionSnapshot(snapshot) {
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const download = document.createElement("a");
+  download.href = url;
+  download.download = `${slugifySessionName(snapshot.name)}.freemix-session.json`;
+  download.style.display = "none";
+  document.body.appendChild(download);
+  download.click();
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+    download.remove();
+  }, 0);
+}
+
+function normalizeSessionTrack(rawTrack, index) {
+  const fallback = createTrackTemplate(index);
+  const track = {
+    ...fallback,
+    ...(rawTrack && typeof rawTrack === "object" && !Array.isArray(rawTrack) ? rawTrack : {}),
+    id: typeof rawTrack?.id === "string" && rawTrack.id.trim() ? rawTrack.id : fallback.id,
+    color: TRACK_COLORS.includes(rawTrack?.color) ? rawTrack.color : fallback.color,
+    source: rawTrack?.source && typeof rawTrack.source === "object" ? JSON.parse(JSON.stringify(rawTrack.source)) : null,
+    audio: null,
+    searchTimer: null,
+    searchRequestId: 0,
+    arrangementClip: null,
+    lastStep: -1,
+    nextTriggerAt: 0,
+    stepMs: 0,
+  };
+  normalizeTrackPreferences(track);
+  return track;
+}
+
+function applySessionSnapshot(rawSnapshot, options = {}) {
+  const snapshot = rawSnapshot?.snapshot || rawSnapshot;
+  if (!snapshot || typeof snapshot !== "object") {
+    setStatus("Session file not recognized", true);
+    return false;
+  }
+
+  stopTransport(false);
+  tracks.forEach(disposeTrackAudio);
+
+  const nextTracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length
+    ? snapshot.tracks.slice(0, MAX_TRACK_COUNT).map((track, index) => normalizeSessionTrack(track, index))
+    : createInitialTracks(DEFAULT_TRACK_COUNT);
+  tracks.splice(0, tracks.length, ...nextTracks);
+  appState.tracks = tracks;
+  refreshTrackLookup();
+
+  appState.preferredBpm = clamp(Number(snapshot.state?.preferredBpm), 40, 220) || DEFAULT_BPM;
+  appState.preferredTimeSignature = TIME_SIGNATURE_LOOKUP[snapshot.state?.preferredTimeSignature]
+    ? snapshot.state.preferredTimeSignature
+    : DEFAULT_TIME_SIGNATURE;
+  metronomeEnabled = typeof snapshot.state?.metronomeEnabled === "boolean" ? snapshot.state.metronomeEnabled : true;
+  masterMuted = !!snapshot.state?.masterMuted;
+
+  const nextStepCount = ARRANGEMENT_STEP_OPTIONS.includes(Number(snapshot.state?.arrangementStepCount))
+    ? Number(snapshot.state.arrangementStepCount)
+    : Array.isArray(snapshot.arrangement?.clips) && ARRANGEMENT_STEP_OPTIONS.includes(snapshot.arrangement.clips.length)
+      ? snapshot.arrangement.clips.length
+      : DEFAULT_ARRANGEMENT_STEPS;
+  arrangementStepCount = nextStepCount;
+  const nextArrangement = {
+    ...createInitialArrangement(nextStepCount),
+    ...(snapshot.arrangement && typeof snapshot.arrangement === "object" && !Array.isArray(snapshot.arrangement) ? snapshot.arrangement : {}),
+  };
+  syncArrangementState(nextArrangement);
+  normalizeArrangementState(arrangement, nextStepCount);
+  refreshArrangementHasClipsState();
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
+  arrangementDeleteMode = false;
+
+  if (options.sessionId) {
+    const library = readSessionLibrary();
+    if (library.sessions[options.sessionId]) {
+      touchRecentSession(library, options.sessionId);
+      writeSessionLibrary(library);
+    }
+  }
+
+  renderWorkstation();
+  renderRecentSessionMenu();
+  markAppStateDirty(true);
+  setStatus(`${normalizeSessionName(snapshot.name || "Session")}: loaded`);
+  return true;
+}
+
+function saveCurrentSession() {
+  const current = getCurrentSessionRecord();
+  if (!current) {
+    return saveSessionAs();
+  }
+
+  return saveSessionRecord(current.name);
+}
+
+function saveSessionAs() {
+  const defaultName = getCurrentSessionName() || `Session ${new Date().toLocaleString()}`;
+  const name = window.prompt?.("Save session as", defaultName);
+  if (name === null) {
+    setStatus("Save cancelled");
+    return null;
+  }
+
+  return saveSessionRecord(name, { newSession: true, download: true });
+}
+
+function newBlankSession() {
+  const hasWork = tracks.some((track) => track.source) || hasArrangementClips();
+  if (hasWork && !window.confirm?.("Start a new blank session? Unsaved changes will remain only if saved first.")) {
+    setStatus("New session cancelled");
+    return false;
+  }
+
+  stopTransport(false);
+  tracks.forEach(disposeTrackAudio);
+  tracks.splice(0, tracks.length, ...createInitialTracks(DEFAULT_TRACK_COUNT));
+  appState.tracks = tracks;
+  refreshTrackLookup();
+  appState.preferredBpm = DEFAULT_BPM;
+  appState.preferredTimeSignature = DEFAULT_TIME_SIGNATURE;
+  metronomeEnabled = true;
+  masterMuted = false;
+  arrangementStepCount = DEFAULT_ARRANGEMENT_STEPS;
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
+  arrangementDeleteMode = false;
+  syncArrangementState(createInitialArrangement(DEFAULT_ARRANGEMENT_STEPS));
+  refreshArrangementHasClipsState();
+
+  const library = readSessionLibrary();
+  library.currentSessionId = null;
+  writeSessionLibrary(library);
+
+  renderWorkstation();
+  renderRecentSessionMenu();
+  markAppStateDirty(true);
+  setStatus("New blank session");
+  return true;
+}
+
+function loadRecentSession(sessionId) {
+  const library = readSessionLibrary();
+  const record = library.sessions?.[sessionId];
+  if (!record?.snapshot) {
+    setStatus("Recent session missing", true);
+    renderRecentSessionMenu();
+    return false;
+  }
+
+  return applySessionSnapshot(record.snapshot, { sessionId });
+}
+
+async function loadSessionFile(file) {
+  if (!file) {
+    return false;
+  }
+
+  try {
+    const text = await file.text();
+    const snapshot = JSON.parse(text);
+    const loaded = applySessionSnapshot(snapshot);
+    if (loaded) {
+      saveSessionRecord(snapshot.name || file.name.replace(/\.json$/i, ""), { newSession: true });
+    }
+    return loaded;
+  } catch (error) {
+    console.warn(error);
+    setStatus("Could not load session file", true);
+    return false;
+  }
+}
+
+function renderRecentSessionMenu() {
+  const list = document.querySelector("#fileRecentList");
+  if (!list) {
+    return;
+  }
+
+  const library = readSessionLibrary();
+  const records = library.recentIds.map((id) => library.sessions[id]).filter(Boolean);
+  if (!records.length) {
+    list.innerHTML = `<button type="button" disabled>No recent sessions</button>`;
+    return;
+  }
+
+  list.innerHTML = records
+    .map((record) => {
+      const date = record.savedAt ? new Date(record.savedAt) : null;
+      const dateLabel = date && !Number.isNaN(date.valueOf()) ? date.toLocaleDateString() : "Saved";
+      return `<button type="button" data-file-recent="${escapeHtml(record.id)}"><strong>${escapeHtml(record.name)}</strong><small>${escapeHtml(dateLabel)}</small></button>`;
+    })
+    .join("");
 }
 
 function captureTrackClip(track) {

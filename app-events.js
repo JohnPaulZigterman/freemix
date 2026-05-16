@@ -1,6 +1,7 @@
 (function initFreemixEvents() {
   let isBound = false;
   let playerPanel = null;
+  let arrangementDragSource = null;
   const boundVideoElements = new WeakSet();
 
   const CONTROL_SELECTOR = "[data-track-control]";
@@ -10,6 +11,9 @@
   const LAUNCH_ACTION_SELECTOR = "[data-launch-action]";
   const TRACK_NAME_LABEL_SELECTOR = "[data-track-name-label][data-track-control]";
   const TRACK_NAME_INPUT_SELECTOR = ".track-row-name-input[data-track-control][data-control='name']";
+  const FILE_MENU_SELECTOR = "#fileMenu";
+  const FILE_MENU_PANEL_SELECTOR = "#fileMenuPanel";
+  const SESSION_FILE_INPUT_SELECTOR = "#sessionFileInput";
 
   function getTrackFromControl(control) {
     if (!control) {
@@ -239,6 +243,96 @@
     return false;
   }
 
+  function setFileMenuOpen(isOpen) {
+    const menu = document.querySelector(FILE_MENU_SELECTOR);
+    const panel = document.querySelector(FILE_MENU_PANEL_SELECTOR);
+    const button = document.querySelector("#fileMenuButton");
+    if (!menu || !panel || !button) {
+      return;
+    }
+
+    panel.hidden = !isOpen;
+    menu.setAttribute("data-open", String(isOpen));
+    button.setAttribute("aria-expanded", String(isOpen));
+    if (isOpen) {
+      window.freemixRenderRecentSessionMenu?.();
+    }
+  }
+
+  function handleFileMenuAction(action) {
+    setFileMenuOpen(false);
+    if (action === "new") {
+      window.freemixNewBlankSession?.();
+      return true;
+    }
+
+    if (action === "save") {
+      window.freemixSaveSession?.();
+      return true;
+    }
+
+    if (action === "save-as") {
+      window.freemixSaveSessionAs?.();
+      return true;
+    }
+
+    if (action === "load") {
+      const input = document.querySelector(SESSION_FILE_INPUT_SELECTOR);
+      if (input) {
+        input.value = "";
+        input.click();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleDocumentFileClick(event) {
+    const target = event.target;
+    if (!target) {
+      return false;
+    }
+
+    const menuButton = target.closest("#fileMenuButton");
+    if (menuButton) {
+      const menu = document.querySelector(FILE_MENU_SELECTOR);
+      const isOpen = menu?.getAttribute("data-open") === "true";
+      setFileMenuOpen(!isOpen);
+      event.preventDefault();
+      return true;
+    }
+
+    const fileAction = target.closest("[data-file-action]");
+    if (fileAction) {
+      event.preventDefault();
+      return handleFileMenuAction(fileAction.getAttribute("data-file-action"));
+    }
+
+    const recentAction = target.closest("[data-file-recent]");
+    if (recentAction) {
+      event.preventDefault();
+      setFileMenuOpen(false);
+      window.freemixLoadRecentSession?.(recentAction.getAttribute("data-file-recent"));
+      return true;
+    }
+
+    const menu = document.querySelector(FILE_MENU_SELECTOR);
+    if (menu && !menu.contains(target)) {
+      setFileMenuOpen(false);
+    }
+
+    return false;
+  }
+
+  function onSessionFileChange(event) {
+    const file = event.target?.files?.[0];
+    if (file) {
+      window.freemixLoadSessionFile?.(file);
+    }
+    event.target.value = "";
+  }
+
   function handleArrangementCellClick(target) {
     const sceneColorButton = target.closest("[data-arrangement-scene-color]");
     if (sceneColorButton) {
@@ -259,6 +353,88 @@
     if (stepButton) {
       handleArrangementStepLabel({ currentTarget: stepButton });
     }
+  }
+
+  function getArrangementCellDragTarget(target) {
+    const element = target?.closest?.(".arrangement-cell");
+    if (!element) {
+      return null;
+    }
+
+    const trackId = element.getAttribute("data-arr-track");
+    const step = Number(element.getAttribute("data-arr-step"));
+    return trackId && Number.isInteger(step) ? { trackId, step } : null;
+  }
+
+  function onArrangementDragStart(event) {
+    const source = getArrangementCellDragTarget(event.target);
+    if (!source || typeof window.freemixBeginArrangementClipDragCopy !== "function") {
+      event.preventDefault();
+      return;
+    }
+
+    if (!window.freemixBeginArrangementClipDragCopy(source.trackId, source.step)) {
+      event.preventDefault();
+      return;
+    }
+
+    arrangementDragSource = source;
+    const payload = JSON.stringify(source);
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", payload);
+    event.dataTransfer.setData("application/x-freemix-arrangement-clip", payload);
+  }
+
+  function onArrangementDragOver(event) {
+    const target = getArrangementCellDragTarget(event.target);
+    if (!target || typeof window.freemixHoverArrangementClipDragTarget !== "function") {
+      return;
+    }
+
+    const rawSource =
+      event.dataTransfer.getData("application/x-freemix-arrangement-clip") ||
+      event.dataTransfer.getData("text/plain");
+    let source = arrangementDragSource;
+    try {
+      source = rawSource ? JSON.parse(rawSource) : source;
+    } catch {
+      source = arrangementDragSource;
+    }
+
+    if (!window.freemixHoverArrangementClipDragTarget(target.trackId, target.step, source?.trackId, source?.step)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function onArrangementDrop(event) {
+    const target = getArrangementCellDragTarget(event.target);
+    const rawSourceStep =
+      event.dataTransfer.getData("application/x-freemix-arrangement-clip") ||
+      event.dataTransfer.getData("text/plain");
+    let source = null;
+    try {
+      source = rawSourceStep ? JSON.parse(rawSourceStep) : null;
+    } catch {
+      source = null;
+    }
+
+    if (!source?.trackId || !Number.isInteger(Number(source.step)) || !target) {
+      arrangementDragSource = null;
+      window.freemixClearArrangementDragState?.();
+      return;
+    }
+
+    event.preventDefault();
+    window.freemixDropArrangementClipDragCopy?.(source.trackId, Number(source.step), target.trackId, target.step);
+    arrangementDragSource = null;
+  }
+
+  function onArrangementDragEnd() {
+    arrangementDragSource = null;
+    window.freemixClearArrangementDragState?.();
   }
 
   function handleSearchResultClick(target) {
@@ -570,12 +746,22 @@
       playerPanel.addEventListener("change", onChange);
       playerPanel.addEventListener("keydown", onKeydown);
       playerPanel.addEventListener("focusout", onFocusOut);
+      playerPanel.addEventListener("dragstart", onArrangementDragStart);
+      playerPanel.addEventListener("dragover", onArrangementDragOver);
+      playerPanel.addEventListener("drop", onArrangementDrop);
+      playerPanel.addEventListener("dragend", onArrangementDragEnd);
 
       document.addEventListener("click", (event) => {
+        if (handleDocumentFileClick(event)) {
+          return;
+        }
+
         if (!event.target.closest(".track-source")) {
           clearResults();
         }
       });
+
+      document.querySelector(SESSION_FILE_INPUT_SELECTOR)?.addEventListener("change", onSessionFileChange);
 
       isBound = true;
     }
