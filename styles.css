@@ -1378,8 +1378,18 @@ input[type="number"]:focus {
   --arr-track-height: var(--control-h-sm);
 }
 
+.arrangement-drum-row {
+  --arr-track-height: var(--control-h-sm);
+}
+
 .arrangement-track-label.text-track-label {
   --track-color: color-mix(in srgb, var(--silver) 80%, var(--accent));
+  color: var(--track-color);
+  letter-spacing: 0.12em;
+}
+
+.arrangement-track-label.drum-track-label {
+  --track-color: color-mix(in srgb, var(--amber) 72%, var(--clip-selected));
   color: var(--track-color);
   letter-spacing: 0.12em;
 }
@@ -1423,6 +1433,15 @@ input[type="number"]:focus {
     linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 42%),
     color-mix(in srgb, var(--silver) 20%, var(--panel-alt));
   color: color-mix(in srgb, var(--silver) 90%, #fff);
+  font-weight: 900;
+}
+
+.arrangement-drum-cell.filled {
+  border-color: color-mix(in srgb, var(--amber) 68%, var(--line));
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.34) 0 3px, rgba(255, 255, 255, 0.12) 3px 6px),
+    color-mix(in srgb, var(--amber) 24%, var(--panel-alt));
+  color: color-mix(in srgb, var(--amber) 88%, #fff);
   font-weight: 900;
 }
 
@@ -2360,6 +2379,94 @@ input[type="number"]:focus {
   padding: 0;
   border: 1px solid var(--mech-edge);
   background: var(--panel-strong);
+}
+
+.drum-editor-row {
+  --track-color: color-mix(in srgb, var(--amber) 74%, var(--clip-selected));
+}
+
+.drum-editor-row.selected {
+  border-color: color-mix(in srgb, var(--amber) 56%, var(--clip-selected));
+}
+
+.drum-row-title {
+  color: color-mix(in srgb, var(--amber) 82%, #fff);
+  letter-spacing: 0.14em;
+}
+
+.drum-editor-body {
+  display: grid;
+  gap: 5px;
+}
+
+.drum-tool-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1fr) auto auto;
+  gap: 3px;
+  align-items: end;
+}
+
+.drum-tool-button {
+  min-height: 20px;
+  border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--line));
+  border-radius: var(--radius-control);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 14%, transparent), rgba(6, 7, 8, 0.92));
+  color: color-mix(in srgb, var(--amber) 82%, var(--muted));
+  font: inherit;
+  font-size: 0.56rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.drum-grid {
+  display: grid;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--amber) 28%, var(--line));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    color-mix(in srgb, var(--panel-strong) 88%, #020304);
+  overflow-x: auto;
+}
+
+.drum-grid-row {
+  display: grid;
+  grid-template-columns: 68px repeat(var(--drum-steps), minmax(15px, 1fr));
+  gap: 2px;
+  align-items: center;
+  min-width: max-content;
+}
+
+.drum-row-name {
+  color: color-mix(in srgb, var(--amber) 70%, var(--muted));
+  font-size: 0.56rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.drum-step-button {
+  width: 100%;
+  min-width: 15px;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--amber) 18%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--panel-alt) 78%, #020304);
+  cursor: pointer;
+}
+
+.drum-step-button.is-beat {
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--line));
+}
+
+.drum-step-button.active {
+  border-color: color-mix(in srgb, var(--amber) 84%, #fff 8%);
+  background:
+    radial-gradient(circle at 36% 30%, rgba(255, 255, 255, 0.28), transparent 35%),
+    color-mix(in srgb, var(--amber) 72%, var(--panel-strong));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 0 8px color-mix(in srgb, var(--amber) 30%, transparent);
 }
 
 .track-source-search input[type="search"] {

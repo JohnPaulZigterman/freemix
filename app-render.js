@@ -208,6 +208,25 @@
     }
   }
 
+  function updateDrumEditor() {
+    const player = document.querySelector("#playerPanel");
+    const editor = player?.querySelector("[data-drum-editor='true']");
+    if (!editor || typeof window.renderDrumControlPanel !== "function") {
+      return;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = window.renderDrumControlPanel().trim();
+    const nextEditor = wrapper.firstElementChild;
+    if (nextEditor) {
+      editor.replaceWith(nextEditor);
+      if (typeof window.freemixBindWorkstationControls === "function") {
+        window.freemixBindWorkstationControls();
+      }
+      window.freemixSyncArrangementTrackHeights?.();
+    }
+  }
+
   function updateArrangementTextCell(stepIndex) {
     if (!Number.isInteger(stepIndex)) {
       return;
@@ -234,6 +253,34 @@
     cell.title = isFilled
       ? `TEXT scene ${stepIndex + 1}; click to edit, drag to copy`
       : `Blank TEXT scene ${stepIndex + 1}; click to select, then Capture to create`;
+  }
+
+  function updateArrangementDrumCell(stepIndex) {
+    if (!Number.isInteger(stepIndex)) {
+      return;
+    }
+
+    const player = document.querySelector("#playerPanel");
+    const cell = player?.querySelector(`.arrangement-drum-cell[data-arr-step="${stepIndex}"]`);
+    if (!cell) {
+      return;
+    }
+
+    const clip = typeof window.freemixGetArrangementDrumClip === "function"
+      ? window.freemixGetArrangementDrumClip(stepIndex)
+      : arrangement.drumClips?.[stepIndex] || null;
+    const isFilled = !!clip?.pattern && Object.values(clip.pattern).some((steps) => steps.some(Boolean));
+    cell.classList.toggle("filled", isFilled);
+    cell.classList.toggle(
+      "selected",
+      typeof window.isArrangementDrumClipSelected === "function" && window.isArrangementDrumClipSelected(stepIndex),
+    );
+    cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
+    cell.textContent = isFilled ? "D" : "";
+    cell.draggable = isFilled;
+    cell.title = isFilled
+      ? `DRUM scene ${stepIndex + 1}; click to edit, drag to copy`
+      : `Blank DRUM scene ${stepIndex + 1}; click to select, then Capture to create`;
   }
 
   function updateArrangementCell(track, stepIndex) {
@@ -311,6 +358,7 @@
         window.freemixSyncArrangementTrackHeights?.();
         updateTextOverlay();
         updateTextEditor();
+        updateDrumEditor();
         return;
       }
 
@@ -321,6 +369,7 @@
           window.freemixSyncArrangementTrackHeights?.();
           updateTextOverlay();
           updateTextEditor();
+          updateDrumEditor();
           return;
         }
       }
@@ -332,6 +381,7 @@
     }
     updateTextOverlay();
     updateTextEditor();
+    updateDrumEditor();
   }
 
   function updateArrangementStepLabels() {
@@ -398,11 +448,13 @@
     updateArrangementGrid,
     updateArrangementCell,
     updateArrangementTextCell,
+    updateArrangementDrumCell,
     updateArrangementStepLabels,
     updateArrangementSceneColorSelector,
     updateSourceStrip,
     updateTextOverlay,
     updateTextEditor,
+    updateDrumEditor,
     updateArrangementPlayhead: renderArrangementPlayhead,
   };
 })();

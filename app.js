@@ -359,6 +359,8 @@ const ARRANGEMENT_SCENE_COLORS = Object.freeze([
 const DEFAULT_SCENE_COLOR_INDEX = 0;
 const TEXT_TRACK_ID = "__text";
 const TEXT_TRACK_LABEL = "TEXT";
+const DRUM_TRACK_ID = "__drums";
+const DRUM_TRACK_LABEL = "DRUM";
 const TEXT_FONT_OPTIONS = Object.freeze([
   { value: "Impact, Haettenschweiler, 'Arial Black', sans-serif", label: "Impact" },
   { value: "Georgia, 'Times New Roman', serif", label: "Serif" },
@@ -371,6 +373,24 @@ const TEXT_ALIGN_OPTIONS = Object.freeze(["left", "center", "right"]);
 const TEXT_DEFAULT_COLOR = "#f4f1df";
 const TEXT_DEFAULT_STROKE_COLOR = "#050607";
 const TEXT_DEFAULT_SHADOW_COLOR = "#000000";
+const DRUM_KITS = Object.freeze(["808", "909", "707"]);
+const DRUM_DEFAULT_KIT = "808";
+const DRUM_VOICES = Object.freeze([
+  { id: "cowbell", label: "Cowbell" },
+  { id: "crashRide", label: "Crash Ride" },
+  { id: "openHat", label: "Open Hat" },
+  { id: "closedHat", label: "Closed Hat" },
+  { id: "hiTom", label: "Hi Tom" },
+  { id: "loTom", label: "Lo Tom" },
+  { id: "clap", label: "Clap" },
+  { id: "snare", label: "Snare" },
+  { id: "sidestick", label: "Sidestick" },
+  { id: "kick", label: "Kick" },
+]);
+const DRUM_VOICE_ALIASES = Object.freeze({
+  closedHat: ["hat"],
+  loTom: ["tom"],
+});
 
 function normalizeArrangementState(targetArrangement, targetStepCount) {
   const arrangementState = targetArrangement;
@@ -409,6 +429,15 @@ function normalizeArrangementState(targetArrangement, targetStepCount) {
   arrangementState.textClips = existingTextClips.slice(0, stepCount).map(normalizeTextClip);
   while (arrangementState.textClips.length < stepCount) {
     arrangementState.textClips.push(null);
+  }
+
+  const existingDrumClips = Array.isArray(arrangementState.drumClips) ? arrangementState.drumClips : [];
+  const drumPatternStepCount = Math.max(1, Math.floor(Number(resolvePreferredTimeSignature().beatsPerBar) || 4) * 4);
+  arrangementState.drumClips = existingDrumClips
+    .slice(0, stepCount)
+    .map((clip) => normalizeDrumClip(clip, drumPatternStepCount));
+  while (arrangementState.drumClips.length < stepCount) {
+    arrangementState.drumClips.push(null);
   }
 
   arrangementState.sceneColors = existingSceneColors
@@ -657,6 +686,111 @@ function getSelectedTextField(stepIndex = arrangement?.step) {
   return clip.fields.find((field) => field.id === clip.selectedFieldId) || clip.fields[0];
 }
 
+function getDrumStepCount(targetTransport = null) {
+  const beatsPerBar = targetTransport
+    ? getTransportBeatsPerBar(targetTransport)
+    : Number(resolvePreferredTimeSignature().beatsPerBar);
+  return Math.max(1, Math.floor(Number(beatsPerBar) || 4) * 4);
+}
+
+function createDefaultDrumPattern(stepCount = getDrumStepCount()) {
+  const steps = Math.max(1, Math.floor(Number(stepCount) || 16));
+  const pattern = Object.fromEntries(DRUM_VOICES.map((voice) => [voice.id, Array.from({ length: steps }, () => false)]));
+  pattern.kick[0] = true;
+  if (steps > 8) {
+    pattern.kick[Math.floor(steps / 2)] = true;
+  }
+  if (steps > 4) {
+    pattern.snare[Math.floor(steps / 4)] = true;
+  }
+  if (steps > 2) {
+    pattern.snare[Math.floor((steps * 3) / 4)] = true;
+  }
+  pattern.closedHat = pattern.closedHat.map((_, index) => index % 2 === 0);
+  return pattern;
+}
+
+function normalizeDrumPattern(pattern, stepCount = getDrumStepCount()) {
+  const steps = Math.max(1, Math.floor(Number(stepCount) || 16));
+  const defaults = createDefaultDrumPattern(steps);
+  const source = pattern && typeof pattern === "object" && !Array.isArray(pattern) ? pattern : {};
+  return Object.fromEntries(
+    DRUM_VOICES.map((voice) => {
+      const aliasSteps = (DRUM_VOICE_ALIASES[voice.id] || [])
+        .map((alias) => source[alias])
+        .find((steps) => Array.isArray(steps));
+      const rawSteps = Array.isArray(source[voice.id]) ? source[voice.id] : aliasSteps || defaults[voice.id];
+      const normalizedSteps = Array.from({ length: steps }, (_, index) => !!rawSteps[index]);
+      return [voice.id, normalizedSteps];
+    }),
+  );
+}
+
+function normalizeDrumClip(clip, stepCount = getDrumStepCount()) {
+  if (!clip || typeof clip !== "object" || Array.isArray(clip)) {
+    return null;
+  }
+
+  const volume = Number.isFinite(Number(clip.volume)) ? clamp(Number(clip.volume), 0, 1) : 0.8;
+  return {
+    kit: DRUM_KITS.includes(clip.kit) ? clip.kit : DRUM_DEFAULT_KIT,
+    volume,
+    pattern: normalizeDrumPattern(clip.pattern, stepCount),
+  };
+}
+
+function createDrumClip(overrides = {}) {
+  return normalizeDrumClip({
+    kit: DRUM_DEFAULT_KIT,
+    volume: 0.8,
+    pattern: createDefaultDrumPattern(),
+    ...overrides,
+  });
+}
+
+function getArrangementDrumClip(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null || !arrangement?.drumClips) {
+    return null;
+  }
+
+  return normalizeDrumClip(arrangement.drumClips[resolvedStep]);
+}
+
+function setArrangementDrumClip(stepIndex, drumClip) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  if (!Array.isArray(arrangement.drumClips)) {
+    arrangement.drumClips = Array.from({ length: arrangement.clips?.length || arrangementStepCount }, () => null);
+  }
+
+  arrangement.drumClips[resolvedStep] = normalizeDrumClip(drumClip);
+  return true;
+}
+
+function ensureArrangementDrumClip(stepIndex = arrangement?.step) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  let clip = getArrangementDrumClip(resolvedStep);
+  if (!clip) {
+    clip = createDrumClip();
+    setArrangementDrumClip(resolvedStep, clip);
+  }
+
+  return clip;
+}
+
+function drumClipHasNotes(clip) {
+  const drumClip = normalizeDrumClip(clip);
+  return !!drumClip?.pattern && Object.values(drumClip.pattern).some((steps) => steps.some(Boolean));
+}
+
 function syncArrangementState(nextArrangement) {
   arrangement = nextArrangement;
   appState.arrangement = nextArrangement;
@@ -774,11 +908,24 @@ let arrangementClipboardKind = null;
 let arrangementClipboardClips = [];
 let arrangementClipboardTextClip = null;
 let arrangementClipboardTextClips = [];
+let arrangementClipboardDrumClip = null;
+let arrangementClipboardDrumClips = [];
 let selectedArrangementClipKeys = new Set();
 let selectedTextClipStep = null;
 let selectedTextClipSteps = new Set();
+let selectedDrumClipStep = null;
+let selectedDrumClipSteps = new Set();
 let selectedArrangementSceneStep = null;
 let textToolbarCollapsed = false;
+let drumToolbarCollapsed = false;
+let drumMasterGain = null;
+let drumNoiseBuffer = null;
+let activeExportAudioDestination = null;
+let drumTransportState = {
+  stepIndex: null,
+  lastPulse: -1,
+  barStartAt: 0,
+};
 let arrangementUndoStack = [];
 let arrangementRedoStack = [];
 let debugPanelVisible = false;
@@ -1662,7 +1809,7 @@ function arrangementStepHasClips(stepIndex) {
 
   const step = arrangement?.clips?.[resolvedStep];
   const hasVideoClips = !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
-  return hasVideoClips || arrangementStepHasText(resolvedStep);
+  return hasVideoClips || arrangementStepHasText(resolvedStep) || drumClipHasNotes(getArrangementDrumClip(resolvedStep));
 }
 
 function getActiveEditTarget() {
@@ -1674,6 +1821,7 @@ function getActiveEditTarget() {
         stepIndex: resolvedScene,
         targets: tracks.map((track) => ({ track, stepIndex: resolvedScene })),
         textClip: getArrangementTextClip(resolvedScene),
+        drumClip: getArrangementDrumClip(resolvedScene),
         hasClips: arrangementStepHasClips(resolvedScene),
         labelPrefix: `Editing scene ${resolvedScene + 1}`,
       };
@@ -1686,6 +1834,15 @@ function getActiveEditTarget() {
       stepIndex: selectedTextClipStep,
       clip: getArrangementTextClip(selectedTextClipStep),
       labelPrefix: "Editing TEXT",
+    };
+  }
+
+  if (selectedDrumClipStep !== null) {
+    return {
+      type: "drum",
+      stepIndex: selectedDrumClipStep,
+      clip: getArrangementDrumClip(selectedDrumClipStep),
+      labelPrefix: "Editing DRUM",
     };
   }
 
@@ -3735,6 +3892,15 @@ function isArrangementTextClipSelected(stepIndex) {
   );
 }
 
+function isArrangementDrumClipSelected(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  return resolvedStep !== null && (
+    selectedDrumClipStep === resolvedStep ||
+    selectedDrumClipSteps.has(resolvedStep) ||
+    selectedArrangementSceneStep === resolvedStep
+  );
+}
+
 function isArrangementSceneSelected(stepIndex) {
   const resolvedStep = getArrangementStepIndex(stepIndex);
   return resolvedStep !== null && selectedArrangementSceneStep === resolvedStep;
@@ -3765,9 +3931,19 @@ function renderArrangementClipSelection() {
       ?.querySelector(`.arrangement-text-cell[data-arr-step="${stepIndex}"]`)
       ?.classList.add("selected");
   });
+  selectedDrumClipSteps.forEach((stepIndex) => {
+    playerPanel
+      ?.querySelector(`.arrangement-drum-cell[data-arr-step="${stepIndex}"]`)
+      ?.classList.add("selected");
+  });
   if (selectedTextClipStep !== null) {
     playerPanel
       ?.querySelector(`.arrangement-text-cell[data-arr-step="${selectedTextClipStep}"]`)
+      ?.classList.add("selected");
+  }
+  if (selectedDrumClipStep !== null) {
+    playerPanel
+      ?.querySelector(`.arrangement-drum-cell[data-arr-step="${selectedDrumClipStep}"]`)
       ?.classList.add("selected");
   }
   if (selectedArrangementSceneStep !== null) {
@@ -3793,6 +3969,8 @@ function selectArrangementClip(trackId, stepIndex, options = {}) {
   const key = getArrangementClipSelectionKey(trackId, resolvedStep);
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set();
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set();
   selectedArrangementSceneStep = null;
   if (options.additive) {
     if (selectedArrangementClipKeys.has(key)) {
@@ -3818,6 +3996,10 @@ function selectArrangementTextClip(stepIndex, options = {}) {
   }
 
   selectedArrangementSceneStep = null;
+  if (!options.additive) {
+    selectedDrumClipStep = null;
+    selectedDrumClipSteps = new Set();
+  }
   if (options.additive) {
     if (selectedTextClipSteps.has(resolvedStep)) {
       selectedTextClipSteps.delete(resolvedStep);
@@ -3844,6 +4026,43 @@ function selectArrangementTextClip(stepIndex, options = {}) {
   return true;
 }
 
+function selectArrangementDrumClip(stepIndex, options = {}) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  selectedArrangementSceneStep = null;
+  if (!options.additive) {
+    selectedArrangementClipKeys = new Set();
+    selectedTextClipStep = null;
+    selectedTextClipSteps = new Set();
+  }
+  if (options.additive) {
+    if (selectedDrumClipSteps.has(resolvedStep)) {
+      selectedDrumClipSteps.delete(resolvedStep);
+    } else {
+      selectedDrumClipSteps.add(resolvedStep);
+      selectedDrumClipStep = resolvedStep;
+    }
+  } else {
+    selectedDrumClipSteps = new Set([resolvedStep]);
+    selectedDrumClipStep = resolvedStep;
+  }
+
+  if (!selectedDrumClipSteps.size && !selectedArrangementClipKeys.size && !selectedTextClipSteps.size) {
+    selectedDrumClipSteps.add(resolvedStep);
+    selectedDrumClipStep = resolvedStep;
+  } else if (!selectedDrumClipSteps.size) {
+    selectedDrumClipStep = null;
+  } else if (!selectedDrumClipSteps.has(selectedDrumClipStep)) {
+    selectedDrumClipStep = Array.from(selectedDrumClipSteps).at(-1) ?? null;
+  }
+  selectedArrangementSceneStep = null;
+  renderArrangementClipSelection();
+  return true;
+}
+
 function getSelectedTextClipSteps() {
   const steps = new Set();
   selectedTextClipSteps.forEach((stepIndex) => {
@@ -3856,6 +4075,23 @@ function getSelectedTextClipSteps() {
     const activeTextStep = getArrangementStepIndex(selectedTextClipStep);
     if (activeTextStep !== null) {
       steps.add(activeTextStep);
+    }
+  }
+  return Array.from(steps).sort((a, b) => a - b);
+}
+
+function getSelectedDrumClipSteps() {
+  const steps = new Set();
+  selectedDrumClipSteps.forEach((stepIndex) => {
+    const resolvedStep = getArrangementStepIndex(stepIndex);
+    if (resolvedStep !== null) {
+      steps.add(resolvedStep);
+    }
+  });
+  if (selectedDrumClipStep !== null && typeof selectedDrumClipStep !== "undefined") {
+    const activeDrumStep = getArrangementStepIndex(selectedDrumClipStep);
+    if (activeDrumStep !== null) {
+      steps.add(activeDrumStep);
     }
   }
   return Array.from(steps).sort((a, b) => a - b);
@@ -3891,6 +4127,8 @@ function selectArrangementSceneClips(stepIndex) {
   );
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set([resolvedStep]);
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set([resolvedStep]);
   selectedArrangementSceneStep = resolvedStep;
   renderArrangementClipSelection();
   return true;
@@ -5126,6 +5364,7 @@ function renderWorkstation() {
             </div>
             ${tracks.map((track) => renderTrackControlRow(track)).join("")}
             ${renderTextControlPanel()}
+            ${renderDrumControlPanel()}
           </div>
           </div>
         </div>
@@ -5435,6 +5674,36 @@ function renderArrangementTextRow() {
   `;
 }
 
+function renderArrangementDrumRow() {
+  const drumClips = Array.isArray(arrangement.drumClips)
+    ? arrangement.drumClips
+    : Array.from({ length: arrangementStepCount }, () => null);
+  return `
+    ${drumClips
+      .map((clip, index) => {
+        const drumClip = normalizeDrumClip(clip);
+        const isFilled = drumClipHasNotes(drumClip);
+        const canDragCopy = isFilled;
+        const title = isFilled
+          ? `DRUM scene ${index + 1}; click to edit, drag to copy`
+          : `Blank DRUM slot in scene ${index + 1}; click to select, then Capture to create`;
+        return `
+          <button
+            class="arrangement-cell arrangement-drum-cell ${isFilled ? "filled" : ""} ${isArrangementDrumClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            type="button"
+            data-arr-drums="true"
+            data-arr-step="${index}"
+            draggable="${canDragCopy ? "true" : "false"}"
+            title="${escapeHtml(title)}"
+          >
+            ${isFilled ? "D" : ""}
+          </button>
+        `;
+      })
+      .join("")}
+  `;
+}
+
 function renderArrangementGridRows() {
   const videoRows = tracks
     .map(
@@ -5454,6 +5723,12 @@ function renderArrangementGridRows() {
         ${TEXT_TRACK_LABEL}
       </div>
       ${renderArrangementTextRow()}
+    </div>
+    <div class="arrangement-track-row arrangement-drum-row" data-track-id="${DRUM_TRACK_ID}">
+      <div class="arrangement-track-label drum-track-label" title="Drum machine">
+        ${DRUM_TRACK_LABEL}
+      </div>
+      ${renderArrangementDrumRow()}
     </div>
   `;
 }
@@ -6150,6 +6425,82 @@ function renderTextControlPanel() {
   `;
 }
 
+function renderDrumControlPanel() {
+  const stepIndex = selectedDrumClipStep !== null ? selectedDrumClipStep : getArrangementStepIndex(arrangement?.step);
+  const drumClip = stepIndex === null ? null : getArrangementDrumClip(stepIndex);
+  const stepCount = getDrumStepCount();
+  const pattern = normalizeDrumPattern(drumClip?.pattern, stepCount);
+  const disabled = drumClip ? "" : "disabled";
+  const kitOptions = DRUM_KITS.map(
+    (kit) => `<option value="${kit}" ${drumClip?.kit === kit ? "selected" : ""}>${kit}</option>`,
+  ).join("");
+  const grid = DRUM_VOICES.map((voice) => `
+    <div class="drum-grid-row" role="row">
+      <div class="drum-row-name">${escapeHtml(voice.label)}</div>
+      ${Array.from({ length: stepCount }, (_, index) => {
+        const isActive = !!pattern[voice.id]?.[index];
+        const beatClass = index % 4 === 0 ? " is-beat" : "";
+        return `
+          <button
+            class="drum-step-button${isActive ? " active" : ""}${beatClass}"
+            type="button"
+            data-drum-control="step"
+            data-drum-voice="${voice.id}"
+            data-drum-step="${index}"
+            aria-pressed="${isActive}"
+            ${disabled}
+            title="${escapeHtml(`${voice.label} step ${index + 1}`)}"
+          ></button>
+        `;
+      }).join("")}
+    </div>
+  `).join("");
+
+  return `
+    <article class="track-row drum-editor-row${selectedDrumClipStep !== null ? " selected" : ""}${drumToolbarCollapsed ? " is-collapsed" : ""}" data-drum-editor="true">
+      <div class="track-row-label">
+        <div class="track-row-title">
+          <button
+            class="track-state-chip track-title-action track-collapse-toggle"
+            type="button"
+            data-drum-action="toggle-toolbar"
+            aria-pressed="${!drumToolbarCollapsed}"
+            aria-expanded="${!drumToolbarCollapsed}"
+            aria-label="${drumToolbarCollapsed ? "Expand drum toolbar" : "Collapse drum toolbar"}"
+            title="${drumToolbarCollapsed ? "Expand drum toolbar" : "Collapse drum toolbar"}"
+          >
+            ${drumToolbarCollapsed ? "Show" : "Hide"}
+          </button>
+          <span class="track-row-name drum-row-title">DRUM</span>
+        </div>
+        <div class="track-state-chips" aria-label="Drum machine states">
+          <span class="track-state-chip${drumClip ? " is-on" : ""}">Machine</span>
+          <span class="track-state-chip">${stepCount} steps</span>
+        </div>
+      </div>
+      <div class="track-row-body drum-editor-body">
+        <div class="drum-tool-row">
+          <label class="control-field">
+            <span>Kit</span>
+            <select data-drum-control="kit" ${disabled}>
+              ${kitOptions}
+            </select>
+          </label>
+          <label class="control-field">
+            <span>Volume</span>
+            <input type="range" min="0" max="1" step="0.01" value="${drumClip?.volume ?? 0.8}" data-drum-control="volume" ${disabled}>
+          </label>
+          <button class="drum-tool-button" type="button" data-drum-action="create">${drumClip ? "Refresh" : "Create"}</button>
+          <button class="drum-tool-button" type="button" data-drum-action="clear" ${disabled}>Clear</button>
+        </div>
+        <div class="drum-grid" style="--drum-steps: ${stepCount}" role="grid" aria-label="Drum pattern editor">
+          ${grid}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 function renderTrackControls(track, controls) {
   return controls
     .map((control) => renderTrackControlField(track, control))
@@ -6755,6 +7106,86 @@ function handleTextAction(action) {
   return true;
 }
 
+function handleDrumControl(event) {
+  const control = event.currentTarget || event.target;
+  const controlName = control?.dataset?.drumControl;
+  if (!controlName) {
+    return;
+  }
+
+  const stepIndex = selectedDrumClipStep !== null ? selectedDrumClipStep : getArrangementStepIndex(arrangement?.step);
+  if (stepIndex === null) {
+    return;
+  }
+
+  const drumClip = ensureArrangementDrumClip(stepIndex);
+  if (!drumClip) {
+    return;
+  }
+
+  if (event?.type !== "input") {
+    captureArrangementEdit(`Changed DRUM ${controlName} in scene ${stepIndex + 1}`);
+  }
+
+  if (controlName === "kit") {
+    drumClip.kit = DRUM_KITS.includes(control.value) ? control.value : DRUM_DEFAULT_KIT;
+  } else if (controlName === "volume") {
+    const volume = Number(control.value);
+    drumClip.volume = Number.isFinite(volume) ? clamp(volume, 0, 1) : drumClip.volume;
+  } else if (controlName === "step") {
+    const voiceId = control.dataset.drumVoice;
+    const drumStep = Number(control.dataset.drumStep);
+    if (!DRUM_VOICES.some((voice) => voice.id === voiceId) || !Number.isInteger(drumStep)) {
+      return;
+    }
+    drumClip.pattern = normalizeDrumPattern(drumClip.pattern, getDrumStepCount());
+    drumClip.pattern[voiceId][drumStep] = !drumClip.pattern[voiceId][drumStep];
+  }
+
+  setArrangementDrumClip(stepIndex, drumClip);
+  refreshArrangementHasClipsState();
+  window.freemixRender?.updateArrangementDrumCell?.(stepIndex);
+  if (event?.type !== "input" || controlName === "kit" || controlName === "step") {
+    window.freemixRender?.updateDrumEditor?.();
+  }
+
+  if (event?.type === "input") {
+    queueControlStatePersist();
+  } else {
+    markAppStateDirty(true);
+  }
+}
+
+function handleDrumAction(action) {
+  if (action === "toggle-toolbar") {
+    drumToolbarCollapsed = !drumToolbarCollapsed;
+    window.freemixRender?.updateDrumEditor?.();
+    syncArrangementTrackHeights();
+    return true;
+  }
+
+  const stepIndex = selectedDrumClipStep !== null ? selectedDrumClipStep : getArrangementStepIndex(arrangement?.step);
+  if (stepIndex === null) {
+    return false;
+  }
+
+  if (action === "create") {
+    captureArrangementEdit(`Created DRUM clip in scene ${stepIndex + 1}`);
+    setArrangementDrumClip(stepIndex, getArrangementDrumClip(stepIndex) || createDrumClip());
+  } else if (action === "clear") {
+    captureArrangementEdit(`Cleared DRUM clip in scene ${stepIndex + 1}`);
+    setArrangementDrumClip(stepIndex, null);
+  } else {
+    return false;
+  }
+
+  refreshArrangementHasClipsState();
+  window.freemixRender?.updateArrangementGrid?.();
+  window.freemixRender?.updateDrumEditor?.();
+  markAppStateDirty(true);
+  return true;
+}
+
 async function startTransport() {
   if (typeof clearGuidanceHint === "function") {
     clearGuidanceHint();
@@ -6788,6 +7219,7 @@ async function startTransport() {
       if (typeof ensureAudioContext === "function") {
         try {
           await ensureAudioContext();
+          ensureDrumAudioOutput();
         } catch (error) {
           webAudioDisabled = true;
           console.warn(error);
@@ -7959,9 +8391,29 @@ function createExportAudioTap() {
       }
     });
 
+    activeExportAudioDestination = destination;
+    const drumOutput = ensureDrumAudioOutput();
+    if (drumOutput) {
+      try {
+        drumOutput.connect(destination);
+        connectedAny = true;
+        disconnects.push(() => {
+          try {
+            drumOutput.disconnect(destination);
+          } catch {
+            // Already disconnected.
+          }
+        });
+      } catch {
+        // Drum output may already be connected to this export destination.
+        connectedAny = true;
+      }
+    }
+
     if (connectedAny) {
       return { destination, disconnects, fallbackAudioTracks };
     }
+    activeExportAudioDestination = null;
   }
 
   tracks.forEach((track) => {
@@ -8011,6 +8463,230 @@ function releaseExportAudioTap(tap) {
       }
     });
   }
+
+  if (activeExportAudioDestination === tap.destination) {
+    activeExportAudioDestination = null;
+  }
+}
+
+function ensureDrumAudioOutput() {
+  if (!audioContext || webAudioDisabled) {
+    return null;
+  }
+
+  if (!drumMasterGain || drumMasterGain.context !== audioContext) {
+    if (drumMasterGain) {
+      try {
+        drumMasterGain.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+    drumMasterGain = audioContext.createGain();
+    drumMasterGain.gain.value = 0.85;
+    drumMasterGain.connect(audioContext.destination);
+  }
+
+  if (activeExportAudioDestination) {
+    try {
+      drumMasterGain.connect(activeExportAudioDestination);
+    } catch {
+      // Already connected or export destination unavailable.
+    }
+  }
+
+  return drumMasterGain;
+}
+
+function getDrumNoiseBuffer() {
+  if (!audioContext) {
+    return null;
+  }
+
+  if (drumNoiseBuffer && drumNoiseBuffer.sampleRate === audioContext.sampleRate) {
+    return drumNoiseBuffer;
+  }
+
+  const length = Math.max(1, Math.floor(audioContext.sampleRate * 0.6));
+  drumNoiseBuffer = audioContext.createBuffer(1, length, audioContext.sampleRate);
+  const data = drumNoiseBuffer.getChannelData(0);
+  for (let index = 0; index < length; index += 1) {
+    data[index] = Math.random() * 2 - 1;
+  }
+  return drumNoiseBuffer;
+}
+
+function playDrumVoice(voiceId, kit, when, volume = 0.8) {
+  const output = ensureDrumAudioOutput();
+  if (!output || masterMuted) {
+    return;
+  }
+
+  const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
+  const safeVolume = clamp(Number(volume), 0, 1);
+  const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
+  const makeEnvelope = (peak = 0.7, duration = 0.18) => {
+    const envelope = audioContext.createGain();
+    envelope.gain.setValueAtTime(0.0001, safeWhen);
+    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * safeVolume), safeWhen + 0.004);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, safeWhen + duration);
+    envelope.connect(output);
+    return envelope;
+  };
+  const makeNoise = (filterType, frequency, peak, duration) => {
+    const noise = audioContext.createBufferSource();
+    const filter = audioContext.createBiquadFilter();
+    noise.buffer = getDrumNoiseBuffer();
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(frequency, safeWhen);
+    noise.connect(filter).connect(makeEnvelope(peak, duration));
+    noise.start(safeWhen);
+    noise.stop(safeWhen + duration + 0.04);
+  };
+
+  if (voiceId === "kick") {
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = kitName === "909" ? "triangle" : "sine";
+    const startFreq = kitName === "707" ? 105 : kitName === "909" ? 135 : 92;
+    const endFreq = kitName === "707" ? 48 : 36;
+    oscillator.frequency.setValueAtTime(startFreq, safeWhen);
+    oscillator.frequency.exponentialRampToValueAtTime(endFreq, safeWhen + (kitName === "808" ? 0.24 : 0.16));
+    oscillator.connect(makeEnvelope(0.95, kitName === "808" ? 0.42 : 0.22));
+    oscillator.start(safeWhen);
+    oscillator.stop(safeWhen + 0.5);
+    return;
+  }
+
+  if (voiceId === "loTom" || voiceId === "hiTom") {
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = "sine";
+    const isHigh = voiceId === "hiTom";
+    oscillator.frequency.setValueAtTime(isHigh ? (kitName === "707" ? 245 : 215) : (kitName === "707" ? 170 : 145), safeWhen);
+    oscillator.frequency.exponentialRampToValueAtTime(isHigh ? (kitName === "909" ? 118 : 104) : (kitName === "909" ? 84 : 72), safeWhen + 0.18);
+    oscillator.connect(makeEnvelope(isHigh ? 0.46 : 0.55, isHigh ? 0.22 : 0.26));
+    oscillator.start(safeWhen);
+    oscillator.stop(safeWhen + 0.32);
+    return;
+  }
+
+  if (voiceId === "sidestick") {
+    makeNoise("bandpass", kitName === "707" ? 2100 : 1850, 0.36, 0.045);
+    const click = audioContext.createOscillator();
+    click.type = "square";
+    click.frequency.setValueAtTime(kitName === "808" ? 920 : 1120, safeWhen);
+    click.connect(makeEnvelope(0.16, 0.035));
+    click.start(safeWhen);
+    click.stop(safeWhen + 0.045);
+    return;
+  }
+
+  if (voiceId === "snare") {
+    makeNoise("bandpass", kitName === "707" ? 1700 : 2100, 0.58, kitName === "909" ? 0.22 : 0.15);
+    const tone = audioContext.createOscillator();
+    tone.type = "triangle";
+    tone.frequency.setValueAtTime(kitName === "808" ? 190 : 235, safeWhen);
+    tone.connect(makeEnvelope(0.18, 0.12));
+    tone.start(safeWhen);
+    tone.stop(safeWhen + 0.16);
+    return;
+  }
+
+  if (voiceId === "clap") {
+    [0, 0.012, 0.026].forEach((offset) => {
+      const shiftedWhen = safeWhen + offset;
+      const noise = audioContext.createBufferSource();
+      const filter = audioContext.createBiquadFilter();
+      const envelope = audioContext.createGain();
+      noise.buffer = getDrumNoiseBuffer();
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(kitName === "707" ? 1500 : 1250, shiftedWhen);
+      envelope.gain.setValueAtTime(0.0001, shiftedWhen);
+      envelope.gain.exponentialRampToValueAtTime(0.28 * safeVolume, shiftedWhen + 0.003);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, shiftedWhen + 0.055);
+      noise.connect(filter).connect(envelope).connect(output);
+      noise.start(shiftedWhen);
+      noise.stop(shiftedWhen + 0.08);
+    });
+    return;
+  }
+
+  if (voiceId === "closedHat" || voiceId === "openHat") {
+    const isOpen = voiceId === "openHat";
+    makeNoise(
+      "highpass",
+      kitName === "808" ? 7200 : 8400,
+      isOpen ? 0.28 : 0.22,
+      isOpen ? (kitName === "909" ? 0.34 : 0.24) : (kitName === "909" ? 0.075 : 0.055),
+    );
+    return;
+  }
+
+  if (voiceId === "crashRide") {
+    makeNoise("highpass", kitName === "707" ? 5200 : 6200, 0.34, kitName === "808" ? 0.55 : 0.42);
+    const shimmer = audioContext.createOscillator();
+    shimmer.type = "triangle";
+    shimmer.frequency.setValueAtTime(kitName === "909" ? 760 : 690, safeWhen);
+    shimmer.connect(makeEnvelope(0.08, 0.38));
+    shimmer.start(safeWhen);
+    shimmer.stop(safeWhen + 0.45);
+    return;
+  }
+
+  if (voiceId === "cowbell") {
+    const bellGain = makeEnvelope(0.26, kitName === "808" ? 0.18 : 0.13);
+    [kitName === "707" ? 610 : 540, kitName === "707" ? 930 : 845].forEach((frequency) => {
+      const oscillator = audioContext.createOscillator();
+      oscillator.type = "square";
+      oscillator.frequency.setValueAtTime(frequency, safeWhen);
+      oscillator.connect(bellGain);
+      oscillator.start(safeWhen);
+      oscillator.stop(safeWhen + 0.2);
+    });
+  }
+}
+
+function resetDrumPulseCursor(stepIndex = arrangement?.step, barStartAt = performance.now()) {
+  drumTransportState = {
+    stepIndex: getArrangementStepIndex(stepIndex),
+    lastPulse: -1,
+    barStartAt: Number.isFinite(Number(barStartAt)) ? Number(barStartAt) : performance.now(),
+  };
+}
+
+function playArrangementDrums(now, currentStep, currentStepStartAt, barMs) {
+  if (!transport?.active || !audioContext || webAudioDisabled) {
+    return;
+  }
+
+  const stepIndex = getArrangementStepIndex(currentStep);
+  const clip = stepIndex === null ? null : getArrangementDrumClip(stepIndex);
+  if (!clip || !drumClipHasNotes(clip)) {
+    resetDrumPulseCursor(stepIndex, currentStepStartAt);
+    return;
+  }
+
+  const stepCount = getDrumStepCount(transport);
+  const stepMs = Math.max(1, Number(barMs) / stepCount);
+  if (drumTransportState.stepIndex !== stepIndex || !almostEqual(Number(drumTransportState.barStartAt), currentStepStartAt, 3)) {
+    resetDrumPulseCursor(stepIndex, currentStepStartAt);
+  }
+
+  const elapsed = Math.max(0, Number(now) - Number(currentStepStartAt));
+  const currentPulse = Math.min(stepCount - 1, Math.floor(elapsed / stepMs));
+  const pattern = normalizeDrumPattern(clip.pattern, stepCount);
+  for (let pulse = drumTransportState.lastPulse + 1; pulse <= currentPulse; pulse += 1) {
+    if (pulse < 0 || pulse >= stepCount) {
+      continue;
+    }
+    const pulseAt = currentStepStartAt + pulse * stepMs;
+    const audioWhen = audioContext.currentTime + Math.max(0, (pulseAt - performance.now()) / 1000);
+    DRUM_VOICES.forEach((voice) => {
+      if (pattern[voice.id]?.[pulse]) {
+        playDrumVoice(voice.id, clip.kit, audioWhen, clip.volume);
+      }
+    });
+  }
+  drumTransportState.lastPulse = Math.max(drumTransportState.lastPulse, currentPulse);
 }
 
 function trackHasArrangementExportSource(track) {
@@ -8109,6 +8785,14 @@ async function exportComposition(mode = "clip") {
     canvasVideoTrack = mediaStream.getVideoTracks()[0] || null;
     if (canvasVideoTrack && "contentHint" in canvasVideoTrack) {
       canvasVideoTrack.contentHint = "motion";
+    }
+    if (!webAudioDisabled) {
+      try {
+        await ensureAudioContext();
+        ensureDrumAudioOutput();
+      } catch (error) {
+        console.warn("Export audio context unavailable", error);
+      }
     }
     audioTap = createExportAudioTap();
     if (audioTap?.destination?.stream) {
@@ -8366,6 +9050,7 @@ function tickTransport() {
     const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
     updateArrangementStep(currentStep, currentStepStartAt);
     reconcileArrangementPlaybackConfidence("transport");
+    playArrangementDrums(now, currentStep, currentStepStartAt, barMs);
     const maxLookaheadBars = Math.max(1, Math.min(arrangementLength, Math.ceil(ARRANGEMENT_STEP_LOOKAHEAD_MS / barMs)));
     for (let lookaheadBar = 1; lookaheadBar <= maxLookaheadBars; lookaheadBar += 1) {
       const nextStep = getNextArrangementStepStart(elapsedBars + lookaheadBar - 1, barMs);
@@ -8377,6 +9062,11 @@ function tickTransport() {
       }
       prepareUpcomingArrangementStepPreroll(nextStep.step, nextStep.startAt, transport.sessionToken);
     }
+  } else {
+    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
+    const currentStep = getArrangementStepIndex(arrangement?.step) ?? 0;
+    const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
+    playArrangementDrums(now, currentStep, currentStepStartAt, barMs);
   }
 
   tracks.forEach((track) => {
@@ -9657,6 +10347,25 @@ function handleArrangementTextCell(event) {
   setStatus(getArrangementTextClip(stepIndex) ? `Editing TEXT / scene ${stepIndex + 1}` : `Scene ${stepIndex + 1}: blank TEXT slot selected`);
 }
 
+function handleArrangementDrumCell(event) {
+  const cell = event.currentTarget;
+  if (typeof clearGuidanceHint === "function") {
+    clearGuidanceHint();
+  }
+
+  const stepIndex = Number(cell.dataset.arrStep);
+  if (!Number.isInteger(stepIndex) || getArrangementStepIndex(stepIndex) === null) {
+    return;
+  }
+
+  const isMultiSelect = !!(event.ctrlKey || event.metaKey);
+  selectArrangementStep(stepIndex);
+  selectArrangementDrumClip(stepIndex, { additive: isMultiSelect });
+  window.freemixRender?.updateArrangementGrid?.();
+  window.freemixRender?.updateDrumEditor?.();
+  setStatus(getArrangementDrumClip(stepIndex) ? `Editing DRUM / scene ${stepIndex + 1}` : `Scene ${stepIndex + 1}: blank DRUM slot selected`);
+}
+
 function handleArrangementStepLabel(event) {
   if (typeof clearGuidanceHint === "function") {
     clearGuidanceHint();
@@ -9770,6 +10479,7 @@ function refreshArrangementCommandUi(stepIndex, statusMessage = "", options = {}
   window.freemixRender?.updateArrangementSceneColorSelector?.();
   window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateTextEditor?.();
+  window.freemixRender?.updateDrumEditor?.();
   window.freemixRender?.updateTransportRow?.();
 
   if (options.selectScene && resolvedStep !== null) {
@@ -9788,18 +10498,20 @@ function refreshArrangementCommandUi(stepIndex, statusMessage = "", options = {}
 function captureSelectedArrangementSlots() {
   const sceneStep = getSelectedArrangementSceneStep();
   const textSteps = sceneStep === null ? getSelectedTextClipSteps() : [];
+  const drumSteps = sceneStep === null ? getSelectedDrumClipSteps() : [];
   const targets = sceneStep !== null
     ? tracks.map((track) => ({ track, stepIndex: sceneStep }))
     : getSelectedArrangementClipTargets();
   const hasTextTargets = textSteps.length > 0;
+  const hasDrumTargets = drumSteps.length > 0;
 
-  if (!targets.length && !hasTextTargets) {
+  if (!targets.length && !hasTextTargets && !hasDrumTargets) {
     setStatus("Select a clip slot first", true);
     return false;
   }
 
   const capturableTargets = targets.filter(({ track }) => !!track?.source);
-  if (!capturableTargets.length && !hasTextTargets) {
+  if (!capturableTargets.length && !hasTextTargets && !hasDrumTargets) {
     setStatus("Load a source on the selected track first", true);
     return false;
   }
@@ -9808,13 +10520,16 @@ function captureSelectedArrangementSlots() {
   textSteps.forEach((targetStep) => {
     ensureArrangementTextClip(targetStep);
   });
+  drumSteps.forEach((targetStep) => {
+    ensureArrangementDrumClip(targetStep);
+  });
   capturableTargets.forEach(({ track, stepIndex }) => {
     arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
     arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
   });
 
-  const targetStep = capturableTargets[0]?.stepIndex ?? textSteps[0];
-  const captureCount = capturableTargets.length + textSteps.length;
+  const targetStep = capturableTargets[0]?.stepIndex ?? textSteps[0] ?? drumSteps[0];
+  const captureCount = capturableTargets.length + textSteps.length + drumSteps.length;
   refreshArrangementCommandUi(
     targetStep,
     `${captureCount} clip${captureCount === 1 ? "" : "s"} captured`,
@@ -9822,6 +10537,8 @@ function captureSelectedArrangementSlots() {
   );
   textSteps.forEach((stepIndex) => selectedTextClipSteps.add(stepIndex));
   selectedTextClipStep = textSteps.at(-1) ?? selectedTextClipStep;
+  drumSteps.forEach((stepIndex) => selectedDrumClipSteps.add(stepIndex));
+  selectedDrumClipStep = drumSteps.at(-1) ?? selectedDrumClipStep;
   renderArrangementClipSelection();
   return true;
 }
@@ -9849,6 +10566,10 @@ function copySelectedArrangementScene() {
     arrangementClipboardTextClips = arrangementClipboardTextClip
       ? [{ stepIndex: sceneStep, clip: cloneTextClip(arrangementClipboardTextClip) }]
       : [];
+    arrangementClipboardDrumClip = cloneDrumClip(getArrangementDrumClip(sceneStep));
+    arrangementClipboardDrumClips = arrangementClipboardDrumClip
+      ? [{ stepIndex: sceneStep, clip: cloneDrumClip(arrangementClipboardDrumClip) }]
+      : [];
     setStatus(`Scene ${sceneStep + 1} copied`);
     return true;
   }
@@ -9867,6 +10588,8 @@ function copySelectedArrangementScene() {
     }));
     arrangementClipboardTextClip = cloneTextClip(arrangementClipboardTextClips[0]?.clip);
     arrangementClipboardClips = [];
+    arrangementClipboardDrumClip = null;
+    arrangementClipboardDrumClips = [];
     arrangementClipboardStep = null;
     setStatus(`${selectedTextClips.length} TEXT clip${selectedTextClips.length === 1 ? "" : "s"} copied`);
     return true;
@@ -9875,6 +10598,32 @@ function copySelectedArrangementScene() {
   if (getSelectedTextClipSteps().length) {
       setStatus("No selected text clip to copy", true);
       return false;
+  }
+
+  const selectedDrumClips = getSelectedDrumClipSteps()
+    .map((sourceStep) => ({
+      stepIndex: sourceStep,
+      clip: getArrangementDrumClip(sourceStep),
+    }))
+    .filter((entry) => entry.clip);
+  if (selectedDrumClips.length) {
+    arrangementClipboardKind = "drum";
+    arrangementClipboardDrumClips = selectedDrumClips.map((entry) => ({
+      stepIndex: entry.stepIndex,
+      clip: cloneDrumClip(entry.clip),
+    }));
+    arrangementClipboardDrumClip = cloneDrumClip(arrangementClipboardDrumClips[0]?.clip);
+    arrangementClipboardClips = [];
+    arrangementClipboardTextClip = null;
+    arrangementClipboardTextClips = [];
+    arrangementClipboardStep = null;
+    setStatus(`${selectedDrumClips.length} DRUM clip${selectedDrumClips.length === 1 ? "" : "s"} copied`);
+    return true;
+  }
+
+  if (getSelectedDrumClipSteps().length) {
+    setStatus("No selected drum clip to copy", true);
+    return false;
   }
 
   const selectedClips = getSelectedArrangementClipTargets()
@@ -9900,6 +10649,8 @@ function copySelectedArrangementScene() {
   }));
   arrangementClipboardTextClip = null;
   arrangementClipboardTextClips = [];
+  arrangementClipboardDrumClip = null;
+  arrangementClipboardDrumClips = [];
   arrangementClipboardStep = null;
   setStatus(`${arrangementClipboardClips.length} clip${arrangementClipboardClips.length === 1 ? "" : "s"} copied`);
   return true;
@@ -9914,7 +10665,8 @@ function pasteArrangementClipboardToScene(targetStep) {
 
   const hasClipClipboard = arrangementClipboardClips.length > 0;
   const hasTextClipboard = !!arrangementClipboardTextClip || arrangementClipboardKind === "scene";
-  if (!hasClipClipboard && !hasTextClipboard) {
+  const hasDrumClipboard = !!arrangementClipboardDrumClip || arrangementClipboardKind === "scene";
+  if (!hasClipClipboard && !hasTextClipboard && !hasDrumClipboard) {
     setStatus("No copied clip or scene", true);
     return false;
   }
@@ -9928,6 +10680,9 @@ function pasteArrangementClipboardToScene(targetStep) {
     if (Array.isArray(arrangement.textClips)) {
       arrangement.textClips[resolvedStep] = cloneTextClip(arrangementClipboardTextClip);
     }
+    if (Array.isArray(arrangement.drumClips)) {
+      arrangement.drumClips[resolvedStep] = cloneDrumClip(arrangementClipboardDrumClip);
+    }
   } else {
     arrangement.clips[resolvedStep] = arrangement.clips[resolvedStep] || {};
     arrangementClipboardClips.forEach((source) => {
@@ -9935,6 +10690,9 @@ function pasteArrangementClipboardToScene(targetStep) {
     });
     if (arrangementClipboardKind === "text" && Array.isArray(arrangement.textClips)) {
       arrangement.textClips[resolvedStep] = cloneTextClip(arrangementClipboardTextClip);
+    }
+    if (arrangementClipboardKind === "drum" && Array.isArray(arrangement.drumClips)) {
+      arrangement.drumClips[resolvedStep] = cloneDrumClip(arrangementClipboardDrumClip);
     }
   }
 
@@ -9993,6 +10751,51 @@ function pasteArrangementClipboardToSelectedScene() {
     return true;
   }
 
+  const selectedDrumSteps = getSelectedDrumClipSteps();
+  if (selectedDrumSteps.length) {
+    const copiedDrumClips = arrangementClipboardKind === "scene"
+      ? [{ clip: arrangementClipboardDrumClip }]
+      : arrangementClipboardDrumClips.length
+        ? arrangementClipboardDrumClips
+        : arrangementClipboardDrumClip
+          ? [{ clip: arrangementClipboardDrumClip }]
+          : [];
+    if (!copiedDrumClips.length || !copiedDrumClips.some((entry) => entry.clip)) {
+      setStatus("No copied DRUM clip", true);
+      return false;
+    }
+
+    captureArrangementEdit("Pasted DRUM clip");
+    const pastedSteps = [];
+    if (selectedDrumSteps.length === 1 && copiedDrumClips.length > 1) {
+      const startStep = selectedDrumSteps[0];
+      copiedDrumClips.forEach((entry, index) => {
+        const targetStep = getArrangementStepIndex(startStep + index);
+        if (targetStep === null || !entry.clip) {
+          return;
+        }
+        setArrangementDrumClip(targetStep, cloneDrumClip(entry.clip));
+        pastedSteps.push(targetStep);
+      });
+    } else {
+      selectedDrumSteps.forEach((targetStep, index) => {
+        const entry = copiedDrumClips[index] || copiedDrumClips[0];
+        if (!entry?.clip) {
+          return;
+        }
+        setArrangementDrumClip(targetStep, cloneDrumClip(entry.clip));
+        pastedSteps.push(targetStep);
+      });
+    }
+
+    const firstPastedStep = pastedSteps[0] ?? selectedDrumSteps[0];
+    refreshArrangementCommandUi(firstPastedStep, `${pastedSteps.length} DRUM clip${pastedSteps.length === 1 ? "" : "s"} pasted`);
+    selectedDrumClipSteps = new Set(pastedSteps);
+    selectedDrumClipStep = pastedSteps.at(-1) ?? firstPastedStep;
+    renderArrangementClipSelection();
+    return true;
+  }
+
   const targets = getSelectedArrangementClipTargets();
   if (!targets.length) {
     setStatus("Choose a clip slot first", true);
@@ -10041,6 +10844,9 @@ function deleteSelectedArrangementScene() {
     if (Array.isArray(arrangement.textClips)) {
       arrangement.textClips[sceneStep] = null;
     }
+    if (Array.isArray(arrangement.drumClips)) {
+      arrangement.drumClips[sceneStep] = null;
+    }
     refreshArrangementCommandUi(sceneStep, `Deleted scene ${sceneStep + 1}`, { selectScene: true });
     return true;
   }
@@ -10060,6 +10866,26 @@ function deleteSelectedArrangementScene() {
     refreshArrangementCommandUi(
       filledTextSteps[0],
       `${filledTextSteps.length} TEXT clip${filledTextSteps.length === 1 ? "" : "s"} deleted`,
+    );
+    renderArrangementClipSelection();
+    return true;
+  }
+
+  const selectedDrumSteps = getSelectedDrumClipSteps();
+  if (selectedDrumSteps.length) {
+    const filledDrumSteps = selectedDrumSteps.filter((stepIndex) => getArrangementDrumClip(stepIndex));
+    if (!filledDrumSteps.length) {
+      setStatus("Selected drum slot is already empty");
+      return false;
+    }
+
+    captureArrangementEdit("Deleted selected drums");
+    filledDrumSteps.forEach((stepIndex) => setArrangementDrumClip(stepIndex, null));
+    selectedDrumClipStep = null;
+    selectedDrumClipSteps = new Set(selectedDrumSteps);
+    refreshArrangementCommandUi(
+      filledDrumSteps[0],
+      `${filledDrumSteps.length} DRUM clip${filledDrumSteps.length === 1 ? "" : "s"} deleted`,
     );
     renderArrangementClipSelection();
     return true;
@@ -10161,6 +10987,15 @@ function getArrangementClipDragTarget(trackId, stepIndex) {
     };
   }
 
+  if (trackId === "__drums") {
+    return {
+      type: "drum",
+      track: null,
+      stepIndex: sourceStep,
+      clip: getArrangementDrumClip(sourceStep),
+    };
+  }
+
   const track = getTrackById(trackId);
   if (!track) {
     return null;
@@ -10183,6 +11018,10 @@ function getArrangementDragCell(target) {
     return playerPanel?.querySelector(`.arrangement-text-cell[data-arr-step="${target.stepIndex}"]`) || null;
   }
 
+  if (target.type === "drum") {
+    return playerPanel?.querySelector(`.arrangement-drum-cell[data-arr-step="${target.stepIndex}"]`) || null;
+  }
+
   return playerPanel?.querySelector(
     `.arrangement-cell[data-arr-track="${target.track.id}"][data-arr-step="${target.stepIndex}"]`,
   ) || null;
@@ -10198,7 +11037,8 @@ function beginArrangementClipDragCopy(trackId, stepIndex) {
   const sourceCell = getArrangementDragCell(source);
   sourceCell?.classList.add("copy-drag-source");
   window.freemixRender?.updateArrangementStepLabels?.();
-  setStatus(`Dragging ${source.type === "text" ? "TEXT" : source.track.name} clip; drop on a clip slot`);
+  const sourceName = source.type === "text" ? "TEXT" : source.type === "drum" ? "DRUM" : source.track.name;
+  setStatus(`Dragging ${sourceName} clip; drop on a matching clip slot`);
   return true;
 }
 
@@ -10209,7 +11049,7 @@ function hoverArrangementClipDragTarget(trackId, stepIndex, sourceTrackId = null
     return false;
   }
 
-  if (sourceTrackId && (sourceTrackId === "__text") !== (trackId === "__text")) {
+  if (sourceTrackId && getArrangementClipDragTarget(sourceTrackId, sourceStepIndex)?.type !== target.type) {
     clearArrangementDragState();
     return false;
   }
@@ -10235,7 +11075,7 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
   }
 
   if (source.type !== target.type) {
-    setStatus("Drop TEXT clips on TEXT slots and A/V clips on A/V slots", true);
+    setStatus("Drop special clips on matching special slots and A/V clips on A/V slots", true);
     return false;
   }
 
@@ -10262,6 +11102,32 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
     }
 
     setStatus(`TEXT clip copied to scene ${target.stepIndex + 1}`);
+    markAppStateDirty();
+    return true;
+  }
+
+  if (source.type === "drum") {
+    if (source.stepIndex === target.stepIndex) {
+      setStatus("Choose a different DRUM slot");
+      return false;
+    }
+
+    captureArrangementEdit(`Copied DRUM clip to scene ${target.stepIndex + 1}`);
+    setArrangementDrumClip(target.stepIndex, cloneDrumClip(source.clip));
+    refreshArrangementHasClipsState();
+    selectArrangementStep(target.stepIndex);
+    selectArrangementDrumClip(target.stepIndex);
+
+    if (window.freemixRender?.updateArrangementDrumCell) {
+      window.freemixRender.updateArrangementDrumCell(target.stepIndex);
+      window.freemixRender.updateArrangementPlayhead?.();
+      window.freemixRender.updateDrumEditor?.();
+      window.freemixRender.updateArrangementSceneColorSelector?.();
+    } else {
+      renderWorkstation();
+    }
+
+    setStatus(`DRUM clip copied to scene ${target.stepIndex + 1}`);
     markAppStateDirty();
     return true;
   }
@@ -10429,10 +11295,14 @@ function clearArrangement() {
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
+  arrangementClipboardDrumClip = null;
+  arrangementClipboardDrumClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set();
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set();
   selectedArrangementSceneStep = null;
   syncArrangementState(createInitialArrangement());
   refreshArrangementHasClipsState();
@@ -10532,9 +11402,12 @@ window.renderArrangementStepLabels = renderArrangementStepLabels;
 window.renderArrangementSceneColorSelector = renderArrangementSceneColorSelector;
 window.renderTextOverlay = renderTextOverlay;
 window.renderTextControlPanel = renderTextControlPanel;
+window.renderDrumControlPanel = renderDrumControlPanel;
 window.setArrangementSceneColor = setArrangementSceneColor;
 window.freemixGetArrangementTextClip = getArrangementTextClip;
+window.freemixGetArrangementDrumClip = getArrangementDrumClip;
 window.isArrangementTextClipSelected = isArrangementTextClipSelected;
+window.isArrangementDrumClipSelected = isArrangementDrumClipSelected;
 window.isArrangementSceneSelected = isArrangementSceneSelected;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
@@ -10581,10 +11454,14 @@ function updateArrangementStepCount(event) {
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
+  arrangementClipboardDrumClip = null;
+  arrangementClipboardDrumClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set();
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set();
   selectedArrangementSceneStep = null;
   arrangementStepCount = nextLength;
   syncArrangementState(createInitialArrangement(nextLength));
@@ -10601,6 +11478,11 @@ function updateArrangementStepCount(event) {
   if (Array.isArray(previousArrangement?.textClips)) {
     for (let index = 0; index < Math.min(previousArrangement.textClips.length, arrangement.textClips.length); index += 1) {
       arrangement.textClips[index] = normalizeTextClip(previousArrangement.textClips[index]);
+    }
+  }
+  if (Array.isArray(previousArrangement?.drumClips)) {
+    for (let index = 0; index < Math.min(previousArrangement.drumClips.length, arrangement.drumClips.length); index += 1) {
+      arrangement.drumClips[index] = normalizeDrumClip(previousArrangement.drumClips[index]);
     }
   }
   refreshArrangementHasClipsState();
@@ -10646,7 +11528,11 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   }
   arrangement.step = resolvedStep;
   bindTracksToArrangementStep(resolvedStep);
+  resetDrumPulseCursor(resolvedStep, barStartAt);
   let activeClipCount = arrangementStepHasText(resolvedStep) ? 1 : 0;
+  if (drumClipHasNotes(getArrangementDrumClip(resolvedStep))) {
+    activeClipCount += 1;
+  }
   tracks.forEach((track) => {
     const clip = getArrangementStepClip(track, resolvedStep);
     if (!clip || !clip.source) {
@@ -10808,6 +11694,7 @@ function selectArrangementStep(stepIndex) {
     window.freemixRender?.updateArrangementSceneColorSelector?.();
     window.freemixRender?.updateTextOverlay?.();
     window.freemixRender?.updateTextEditor?.();
+    window.freemixRender?.updateDrumEditor?.();
     return;
   }
 
@@ -10822,6 +11709,7 @@ function selectArrangementStep(stepIndex) {
     window.freemixRender?.updateArrangementSceneColorSelector?.();
     window.freemixRender?.updateTextOverlay?.();
     window.freemixRender?.updateTextEditor?.();
+    window.freemixRender?.updateDrumEditor?.();
     return;
   }
 
@@ -10830,6 +11718,7 @@ function selectArrangementStep(stepIndex) {
   window.freemixRender?.updateArrangementSceneColorSelector?.();
   window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateTextEditor?.();
+  window.freemixRender?.updateDrumEditor?.();
   setStatus(`Editing scene ${resolvedStep + 1}`);
 }
 
@@ -10855,6 +11744,7 @@ function renderArrangementPlayhead() {
   arrangementPlayheadStep = currentStep;
   renderArrangementClipSelection();
   window.freemixRender?.updateTextOverlay?.();
+  window.freemixRender?.updateDrumEditor?.();
   window.freemixRender?.updateArrangementSceneColorSelector?.();
 }
 
@@ -10876,6 +11766,8 @@ function refreshArrangementHasClipsState(targetArrangement = arrangement) {
   }) || (Array.isArray(targetArrangement.textClips) && targetArrangement.textClips.some((clip) => {
     const textClip = normalizeTextClip(clip);
     return !!textClip?.fields?.some((field) => String(field.text || "").trim());
+  })) || (Array.isArray(targetArrangement.drumClips) && targetArrangement.drumClips.some((clip) => {
+    return drumClipHasNotes(clip);
   }));
 
   return arrangementHasClips;
@@ -10895,6 +11787,7 @@ function refreshArrangementStepCells(stepIndex) {
     window.freemixRender.updateArrangementCell(stepTrack, resolvedStep);
   });
   window.freemixRender.updateArrangementTextCell?.(resolvedStep);
+  window.freemixRender.updateArrangementDrumCell?.(resolvedStep);
 }
 
 function createSessionId() {
@@ -10994,6 +11887,8 @@ function captureSessionSnapshot(name = "") {
     arrangement: {
       ...JSON.parse(JSON.stringify(arrangement || createInitialArrangement(arrangementStepCount))),
       clips: JSON.parse(JSON.stringify(arrangement?.clips || [])),
+      textClips: JSON.parse(JSON.stringify(arrangement?.textClips || [])),
+      drumClips: JSON.parse(JSON.stringify(arrangement?.drumClips || [])),
       sceneColors: Array.isArray(arrangement?.sceneColors) ? arrangement.sceneColors.slice() : [],
     },
   };
@@ -11149,10 +12044,14 @@ function hydrateSessionSnapshot(rawSnapshot, options = {}) {
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
+  arrangementClipboardDrumClip = null;
+  arrangementClipboardDrumClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set();
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set();
   selectedArrangementSceneStep = null;
 
   if (options.resetHistory !== false) {
@@ -11232,10 +12131,14 @@ function newBlankSession() {
   arrangementCopySourceStep = null;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
+  arrangementClipboardDrumClip = null;
+  arrangementClipboardDrumClips = [];
   arrangementDeleteMode = false;
   selectedArrangementClipKeys = new Set();
   selectedTextClipStep = null;
   selectedTextClipSteps = new Set();
+  selectedDrumClipStep = null;
+  selectedDrumClipSteps = new Set();
   selectedArrangementSceneStep = null;
   arrangementUndoStack = [];
   arrangementRedoStack = [];
@@ -11336,6 +12239,10 @@ function cloneArrangementStep(step) {
 
 function cloneTextClip(clip) {
   return normalizeTextClip(cloneArrangementHistoryPayload(clip));
+}
+
+function cloneDrumClip(clip) {
+  return normalizeDrumClip(cloneArrangementHistoryPayload(clip));
 }
 
 function queueTrackSearch(track, query) {
@@ -11761,6 +12668,7 @@ function createInitialArrangement(steps = arrangementStepCount) {
     sceneColors: Array.from({ length: steps }, () => DEFAULT_SCENE_COLOR_INDEX),
     clips: Array.from({ length: steps }, () => ({})),
     textClips: Array.from({ length: steps }, () => null),
+    drumClips: Array.from({ length: steps }, () => null),
   };
 }
 

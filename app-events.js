@@ -389,6 +389,15 @@
         return;
       }
 
+      if (arrangementCell.matches("[data-arr-drums='true']")) {
+        handleArrangementDrumCell({
+          currentTarget: arrangementCell,
+          ctrlKey: !!event?.ctrlKey,
+          metaKey: !!event?.metaKey,
+        });
+        return;
+      }
+
       handleArrangementCell({
         currentTarget: arrangementCell,
         ctrlKey: !!event?.ctrlKey,
@@ -411,7 +420,9 @@
 
     const trackId = element.matches("[data-arr-text='true']")
       ? "__text"
-      : element.getAttribute("data-arr-track");
+      : element.matches("[data-arr-drums='true']")
+        ? "__drums"
+        : element.getAttribute("data-arr-track");
     const step = Number(element.getAttribute("data-arr-step"));
     return trackId && Number.isInteger(step) ? { trackId, step } : null;
   }
@@ -552,6 +563,18 @@
       return;
     }
 
+    const drumAction = target.closest("[data-drum-action]");
+    if (drumAction) {
+      handleDrumAction(drumAction.getAttribute("data-drum-action"));
+      return;
+    }
+
+    const drumButton = target.closest("[data-drum-control]");
+    if (drumButton && drumButton.matches("button")) {
+      handleDrumControl({ type: "change", currentTarget: drumButton, target: drumButton });
+      return;
+    }
+
     const clearAction = target.closest(".arrangement-clear-action");
     if (clearAction) {
       const menu = getArrangementClearMenu();
@@ -627,6 +650,12 @@
       return;
     }
 
+    const drumControl = control.closest("[data-drum-control]");
+    if (drumControl) {
+      handleDrumControl({ type: event.type, target: drumControl, currentTarget: drumControl });
+      return;
+    }
+
     if (control.id === "bpmInput") {
       handleBpmInput(event);
       window.freemixRender?.updateTransportRow?.();
@@ -673,6 +702,12 @@
     const textControl = control.closest("[data-text-control]");
     if (textControl) {
       handleTextControl({ type: event.type, target: textControl, currentTarget: textControl });
+      return;
+    }
+
+    const drumControl = control.closest("[data-drum-control]");
+    if (drumControl) {
+      handleDrumControl({ type: event.type, target: drumControl, currentTarget: drumControl });
     }
   }
 
@@ -712,7 +747,7 @@
 
   function onKeydown(event) {
     const editableTarget = event.target.closest("input, textarea, select, [contenteditable='true']");
-    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true'], [data-drum-editor='true']");
     const isClipboardShortcut = (event.ctrlKey || event.metaKey)
       && (event.key.toLowerCase() === "c" || event.key.toLowerCase() === "v");
     const shouldHandleClipClipboard = !editableTarget || (textEditorTarget && isClipboardShortcut);
@@ -821,7 +856,7 @@
     }
 
     const editableTarget = event.target.closest?.("input, textarea, select, [contenteditable='true']");
-    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true'], [data-drum-editor='true']");
     if (textEditorTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
       const handled = window.freemixCopySelectedArrangementScene?.();
       if (handled || !editableTarget) {
@@ -858,7 +893,7 @@
 
   function onDocumentKeydownCapture(event) {
     const editableTarget = event.target.closest?.("input, textarea, select, [contenteditable='true']");
-    const textEditorTarget = event.target.closest?.("[data-text-editor='true']");
+    const textEditorTarget = event.target.closest?.("[data-text-editor='true'], [data-drum-editor='true']");
     if (!textEditorTarget || !(event.ctrlKey || event.metaKey)) {
       return;
     }
