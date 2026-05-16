@@ -934,6 +934,13 @@ let drumToolbarCollapsed = false;
 let drumMasterGain = null;
 let drumLimiter = null;
 let drumNoiseBuffer = null;
+let drumBusDrive = null;
+let drumBusTone = null;
+let drumBusAir = null;
+let drumRenderedBuffers = new Map();
+let drumRenderPromise = null;
+let drumRenderedSampleRate = null;
+let openHatTail = null;
 let activeExportAudioDestination = null;
 let drumTransportState = {
   stepIndex: null,
@@ -7269,6 +7276,7 @@ async function startTransport() {
         try {
           await ensureAudioContext();
           ensureDrumAudioOutput();
+          await renderDrumKitBuffers();
         } catch (error) {
           webAudioDisabled = true;
           console.warn(error);
@@ -8533,6 +8541,30 @@ function ensureDrumAudioOutput() {
       }
     }
 
+    if (drumBusDrive) {
+      try {
+        drumBusDrive.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+
+    if (drumBusTone) {
+      try {
+        drumBusTone.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+
+    if (drumBusAir) {
+      try {
+        drumBusAir.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    }
+
     if (drumLimiter) {
       try {
         drumLimiter.disconnect();
@@ -8542,14 +8574,30 @@ function ensureDrumAudioOutput() {
     }
 
     drumMasterGain = audioContext.createGain();
-    drumMasterGain.gain.value = 0.48;
+    drumMasterGain.gain.value = 0.5;
+    drumBusDrive = audioContext.createWaveShaper();
+    drumBusDrive.curve = createDrumSaturationCurve(1.35);
+    drumBusDrive.oversample = "2x";
+    drumBusTone = audioContext.createBiquadFilter();
+    drumBusTone.type = "lowshelf";
+    drumBusTone.frequency.value = 90;
+    drumBusTone.gain.value = 1.8;
+    drumBusAir = audioContext.createBiquadFilter();
+    drumBusAir.type = "highshelf";
+    drumBusAir.frequency.value = 7200;
+    drumBusAir.gain.value = 1.4;
     drumLimiter = audioContext.createDynamicsCompressor();
     drumLimiter.threshold.setValueAtTime(-9, audioContext.currentTime);
     drumLimiter.knee.setValueAtTime(6, audioContext.currentTime);
     drumLimiter.ratio.setValueAtTime(18, audioContext.currentTime);
     drumLimiter.attack.setValueAtTime(0.002, audioContext.currentTime);
     drumLimiter.release.setValueAtTime(0.12, audioContext.currentTime);
-    drumMasterGain.connect(drumLimiter).connect(audioContext.destination);
+    drumMasterGain
+      .connect(drumBusDrive)
+      .connect(drumBusTone)
+      .connect(drumBusAir)
+      .connect(drumLimiter)
+      .connect(audioContext.destination);
   }
 
   if (activeExportAudioDestination) {
@@ -8581,18 +8629,20 @@ function getDrumNoiseBuffer() {
   return drumNoiseBuffer;
 }
 
-function playDrumVoice(voiceId, kit, when, volume = 0.8) {
-  const output = ensureDrumAudioOutput();
-  if (!output || masterMuted) {
-    return;
+function createDrumSaturationCurve(drive = 2) {
+  const samples = 256;
+  const curve = new Float32Array(samples);
+  for (let index = 0; index < samples; index += 1) {
+    const x = (index * 2) / samples - 1;
+    curve[index] = ((1 + drive) * x) / (1 + drive * Math.abs(x));
   }
+  return curve;
+}
 
-  const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
-  const safeVolume = clamp(Number(volume), 0, 1);
+function getDrumKitProfile(kit) {
   const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
-  const kitProfile = {
+  return {
     "808": {
-      drive: 1.55,
       air: 0.8,
       kickStart: 92,
       kickEnd: 31,
@@ -8605,7 +8655,6 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
       machineColor: "warm",
     },
     "909": {
-      drive: 1.85,
       air: 1.25,
       kickStart: 146,
       kickEnd: 44,
@@ -8618,7 +8667,6 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
       machineColor: "punch",
     },
     "707": {
-      drive: 2.1,
       air: 1.5,
       kickStart: 112,
       kickEnd: 52,
@@ -8631,83 +8679,264 @@ function playDrumVoice(voiceId, kit, when, volume = 0.8) {
       machineColor: "crunch",
     },
   }[kitName];
-  const makeSaturationCurve = (drive = 2) => {
-    const samples = 256;
-    const curve = new Float32Array(samples);
-    for (let index = 0; index < samples; index += 1) {
-      const x = (index * 2) / samples - 1;
-      curve[index] = ((1 + drive) * x) / (1 + drive * Math.abs(x));
+}
+
+function createOfflineNoiseBuffer(context, duration = 0.6) {
+  const length = Math.max(1, Math.floor(context.sampleRate * duration));
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let index = 0; index < length; index += 1) {
+    data[index] = Math.random() * 2 - 1;
+  }
+  return buffer;
+}
+
+function renderDrumVoiceToOfflineContext(context, voiceId, kit) {
+  const destination = context.destination;
+  const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
+  const kitProfile = getDrumKitProfile(kitName);
+  const noiseBuffer = createOfflineNoiseBuffer(context);
+  const startAt = 0.01;
+  const makeEnvelope = (peak = 0.7, duration = 0.18) => {
+    const envelope = context.createGain();
+    envelope.gain.setValueAtTime(0.0001, startAt);
+    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak), startAt + 0.004);
+    envelope.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    envelope.connect(destination);
+    return envelope;
+  };
+  const makeNoise = (filterType, frequency, peak, duration) => {
+    const noise = context.createBufferSource();
+    const filter = context.createBiquadFilter();
+    noise.buffer = noiseBuffer;
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(frequency, startAt);
+    noise.connect(filter).connect(makeEnvelope(peak, duration));
+    noise.start(startAt);
+    noise.stop(startAt + duration + 0.04);
+  };
+
+  if (voiceId === "kick") {
+    const oscillator = context.createOscillator();
+    oscillator.type = kitName === "909" ? "triangle" : "sine";
+    oscillator.frequency.setValueAtTime(kitProfile.kickStart, startAt);
+    oscillator.frequency.exponentialRampToValueAtTime(kitProfile.kickEnd, startAt + (kitName === "808" ? 0.3 : 0.12));
+    oscillator.connect(makeEnvelope(kitProfile.kickPeak, kitProfile.kickDecay));
+    oscillator.start(startAt);
+    oscillator.stop(startAt + kitProfile.kickDecay + 0.08);
+    if (kitName !== "808") {
+      makeNoise("highpass", kitName === "909" ? 3400 : 2600, kitName === "909" ? 0.16 : 0.12, 0.018);
     }
-    return curve;
-  };
-  const makeVoiceBus = (voiceType = voiceId) => {
-    const input = audioContext.createGain();
-    const preTone = audioContext.createBiquadFilter();
-    const drive = audioContext.createWaveShaper();
-    const polish = audioContext.createBiquadFilter();
-    const compressor = audioContext.createDynamicsCompressor();
+    return;
+  }
 
-    preTone.type = voiceType === "kick" || voiceType === "loTom" || voiceType === "hiTom" ? "lowshelf" : "highshelf";
-    preTone.frequency.setValueAtTime(voiceType === "kick" ? 78 : voiceType.includes("Hat") || voiceType === "crashRide" ? 6200 : 1800, safeWhen);
-    preTone.gain.setValueAtTime(
-      voiceType === "kick"
-        ? kitProfile.machineColor === "warm" ? 4.5 : 2.4
-        : voiceType.includes("Hat") || voiceType === "crashRide"
-          ? kitProfile.air * 3.2
-          : kitProfile.machineColor === "crunch"
-            ? 2.8
-            : 1.6,
-      safeWhen,
+  if (voiceId === "loTom" || voiceId === "hiTom") {
+    const oscillator = context.createOscillator();
+    oscillator.type = "sine";
+    const isHigh = voiceId === "hiTom";
+    oscillator.frequency.setValueAtTime(isHigh ? kitProfile.tomHigh : kitProfile.tomLow, startAt);
+    oscillator.frequency.exponentialRampToValueAtTime(isHigh ? (kitName === "909" ? 118 : 104) : (kitName === "909" ? 84 : 72), startAt + 0.18);
+    oscillator.connect(makeEnvelope(isHigh ? 0.46 : 0.55, isHigh ? 0.22 : 0.26));
+    oscillator.start(startAt);
+    oscillator.stop(startAt + 0.32);
+    return;
+  }
+
+  if (voiceId === "sidestick") {
+    makeNoise("bandpass", kitName === "707" ? 2100 : 1850, 0.36, 0.045);
+    const click = context.createOscillator();
+    click.type = "square";
+    click.frequency.setValueAtTime(kitName === "808" ? 920 : 1120, startAt);
+    click.connect(makeEnvelope(0.16, 0.035));
+    click.start(startAt);
+    click.stop(startAt + 0.045);
+    return;
+  }
+
+  if (voiceId === "snare") {
+    makeNoise("bandpass", kitProfile.snareNoise, kitName === "909" ? 0.68 : kitName === "707" ? 0.62 : 0.55, kitName === "909" ? 0.22 : 0.15);
+    const tone = context.createOscillator();
+    tone.type = "triangle";
+    tone.frequency.setValueAtTime(kitName === "808" ? 190 : 235, startAt);
+    tone.connect(makeEnvelope(0.18, 0.12));
+    tone.start(startAt);
+    tone.stop(startAt + 0.16);
+    return;
+  }
+
+  if (voiceId === "clap") {
+    [0, 0.012, 0.026].forEach((offset) => {
+      const shiftedAt = startAt + offset;
+      const noise = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const envelope = context.createGain();
+      noise.buffer = noiseBuffer;
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(kitName === "707" ? 1500 : 1250, shiftedAt);
+      envelope.gain.setValueAtTime(0.0001, shiftedAt);
+      envelope.gain.exponentialRampToValueAtTime(0.28, shiftedAt + 0.003);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, shiftedAt + 0.055);
+      noise.connect(filter).connect(envelope).connect(destination);
+      noise.start(shiftedAt);
+      noise.stop(shiftedAt + 0.08);
+    });
+    makeNoise("bandpass", kitName === "909" ? 1250 : 980, kitName === "808" ? 0.16 : 0.12, kitName === "808" ? 0.24 : 0.16);
+    return;
+  }
+
+  if (voiceId === "closedHat" || voiceId === "openHat") {
+    const isOpen = voiceId === "openHat";
+    makeNoise(
+      "highpass",
+      kitProfile.hatFreq,
+      isOpen ? 0.28 : 0.22,
+      isOpen ? (kitName === "909" ? 0.34 : 0.24) : (kitName === "909" ? 0.075 : 0.055),
     );
+    return;
+  }
 
-    drive.curve = makeSaturationCurve(
-      voiceType === "kick"
-        ? kitProfile.drive * 0.72
-        : voiceType.includes("Hat") || voiceType === "crashRide"
-          ? kitProfile.drive * 0.42
-          : kitProfile.drive,
-    );
-    drive.oversample = "2x";
+  if (voiceId === "crashRide") {
+    makeNoise("highpass", kitName === "707" ? 5200 : 6200, 0.34, kitName === "808" ? 0.55 : 0.42);
+    const shimmer = context.createOscillator();
+    shimmer.type = "triangle";
+    shimmer.frequency.setValueAtTime(kitName === "909" ? 760 : 690, startAt);
+    shimmer.connect(makeEnvelope(0.08, 0.38));
+    shimmer.start(startAt);
+    shimmer.stop(startAt + 0.45);
+    return;
+  }
 
-    polish.type = "peaking";
-    polish.frequency.setValueAtTime(
-      voiceType === "kick"
-        ? 62
-        : voiceType === "snare" || voiceType === "clap" || voiceType === "sidestick"
-          ? 2900
-          : voiceType.includes("Tom")
-            ? 220
-            : 9800,
-      safeWhen,
-    );
-    polish.Q.setValueAtTime(voiceType === "kick" ? 0.8 : 1.2, safeWhen);
-    polish.gain.setValueAtTime(
-      voiceType === "kick"
-        ? kitProfile.machineColor === "warm" ? 2.8 : 1.2
-        : voiceType.includes("Hat") || voiceType === "crashRide"
-          ? 1.8
-          : kitProfile.machineColor === "punch"
-            ? 2.2
-            : 1.4,
-      safeWhen,
-    );
+  if (voiceId === "cowbell") {
+    const bellGain = makeEnvelope(0.26, kitName === "808" ? 0.18 : 0.13);
+    [kitName === "707" ? 610 : 540, kitName === "707" ? 930 : 845].forEach((frequency) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "square";
+      oscillator.frequency.setValueAtTime(frequency, startAt);
+      oscillator.connect(bellGain);
+      oscillator.start(startAt);
+      oscillator.stop(startAt + 0.2);
+    });
+  }
+}
 
-    compressor.threshold.setValueAtTime(-18, safeWhen);
-    compressor.knee.setValueAtTime(18, safeWhen);
-    compressor.ratio.setValueAtTime(voiceType === "kick" ? 3.2 : 2.4, safeWhen);
-    compressor.attack.setValueAtTime(0.003, safeWhen);
-    compressor.release.setValueAtTime(0.09, safeWhen);
+async function renderDrumKitBuffers() {
+  if (!audioContext || webAudioDisabled) {
+    return drumRenderedBuffers;
+  }
 
-    input.connect(preTone).connect(drive).connect(polish).connect(compressor).connect(output);
-    return input;
-  };
+  const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (typeof OfflineContext !== "function") {
+    return drumRenderedBuffers;
+  }
+
+  if (drumRenderedSampleRate !== audioContext.sampleRate) {
+    drumRenderedBuffers = new Map();
+    drumRenderedSampleRate = audioContext.sampleRate;
+  }
+
+  if (drumRenderPromise) {
+    return drumRenderPromise;
+  }
+
+  drumRenderPromise = (async () => {
+    const renderedBuffers = new Map(drumRenderedBuffers);
+    const renderJobs = [];
+    DRUM_KITS.forEach((kit) => {
+      DRUM_VOICES.forEach((voice) => {
+        const key = `${kit}:${voice.id}`;
+        if (renderedBuffers.has(key)) {
+          return;
+        }
+        renderJobs.push({ kit, voiceId: voice.id, key });
+      });
+    });
+
+    for (const job of renderJobs) {
+      const duration = job.voiceId === "kick" && job.kit === "808"
+        ? 0.9
+        : job.voiceId === "crashRide"
+          ? 0.8
+          : job.voiceId === "openHat"
+            ? 0.55
+            : 0.45;
+      const context = new OfflineContext(1, Math.ceil(audioContext.sampleRate * duration), audioContext.sampleRate);
+      renderDrumVoiceToOfflineContext(context, job.voiceId, job.kit);
+      try {
+        renderedBuffers.set(job.key, await context.startRendering());
+      } catch (error) {
+        console.warn(`Failed to render ${job.kit} ${job.voiceId}`, error);
+      }
+    }
+
+    drumRenderedBuffers = renderedBuffers;
+    return drumRenderedBuffers;
+  })().finally(() => {
+    drumRenderPromise = null;
+  });
+
+  return drumRenderPromise;
+}
+
+function playDrumVoice(voiceId, kit, when, volume = 0.8) {
+  const output = ensureDrumAudioOutput();
+  if (!output || masterMuted) {
+    return;
+  }
+
+  const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
+  const key = `${kitName}:${voiceId}`;
+  const buffer = drumRenderedBuffers.get(key);
+  if (!buffer) {
+    renderDrumKitBuffers();
+    return;
+  }
+
+  const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
+  const safeVolume = clamp(Number(volume), 0, 1);
+  if (voiceId === "closedHat" && openHatTail) {
+    try {
+      openHatTail.gain.cancelScheduledValues(safeWhen);
+      openHatTail.gain.setTargetAtTime(0.0001, safeWhen, 0.012);
+    } catch {
+      // Open hat already finished.
+    }
+  }
+
+  const source = audioContext.createBufferSource();
+  const gain = audioContext.createGain();
+  const hitTrim = voiceId === "kick" ? 0.7 : voiceId === "crashRide" || voiceId === "openHat" ? 0.52 : 0.62;
+  gain.gain.setValueAtTime(Math.max(0.0001, safeVolume * hitTrim), safeWhen);
+  source.buffer = buffer;
+  source.connect(gain).connect(output);
+  source.start(safeWhen);
+  source.stop(safeWhen + buffer.duration + 0.02);
+  if (voiceId === "openHat") {
+    openHatTail = gain;
+  }
+}
+
+/*
+ * Legacy live drum synth body intentionally removed from the playback path.
+ * Drum hits are now pre-rendered with OfflineAudioContext by renderDrumKitBuffers()
+ * and played as lightweight AudioBufferSource one-shots.
+ */
+function playDrumVoiceLegacyUnused(voiceId, kit, when, volume = 0.8) {
+  const output = ensureDrumAudioOutput();
+  if (!output || masterMuted) {
+    return;
+  }
+
+  const safeWhen = Math.max(audioContext.currentTime, Number(when) || audioContext.currentTime);
+  const safeVolume = clamp(Number(volume), 0, 1);
+  const kitName = DRUM_KITS.includes(kit) ? kit : DRUM_DEFAULT_KIT;
+  const kitProfile = getDrumKitProfile(kitName);
   const drumHitTrim = voiceId === "kick" ? 0.68 : voiceId === "crashRide" || voiceId === "openHat" ? 0.52 : 0.6;
   const makeEnvelope = (peak = 0.7, duration = 0.18) => {
     const envelope = audioContext.createGain();
     envelope.gain.setValueAtTime(0.0001, safeWhen);
     envelope.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * safeVolume * drumHitTrim), safeWhen + 0.004);
     envelope.gain.exponentialRampToValueAtTime(0.0001, safeWhen + duration);
-    envelope.connect(makeVoiceBus());
+    envelope.connect(output);
     return envelope;
   };
   const makeNoise = (filterType, frequency, peak, duration) => {
@@ -8972,6 +9201,7 @@ async function exportComposition(mode = "clip") {
       try {
         await ensureAudioContext();
         ensureDrumAudioOutput();
+        await renderDrumKitBuffers();
       } catch (error) {
         console.warn("Export audio context unavailable", error);
       }
