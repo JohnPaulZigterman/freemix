@@ -533,6 +533,8 @@ let arrangementPlayheadUpdateFrame = null;
 let searchResultCachePersistTimer = null;
 let sourceMetadataCachePersistTimer = null;
 let arrangementClipboardStep = null;
+let arrangementClipboardClips = [];
+let selectedArrangementClipKeys = new Set();
 let arrangementUndoStack = [];
 let arrangementRedoStack = [];
 const ARRANGEMENT_HISTORY_LIMIT = 50;
@@ -1111,6 +1113,22 @@ function getTrackVideo(track) {
   return video;
 }
 
+function ensureTrackVideoElementForPlayback(track, playbackState = null) {
+  const state = playbackState || getTrackPlaybackState(track) || track;
+  const sourceUrl = state?.source?.mediaUrl || track?.source?.mediaUrl;
+  let video = getTrackVideo(track);
+  if (video || !sourceUrl) {
+    return video;
+  }
+
+  if (window.freemixRender?.updateTrackRow) {
+    window.freemixRender.updateTrackRow(track);
+    video = getTrackVideo(track);
+  }
+
+  return video;
+}
+
 function getArrangementStepIndex(stepIndex = arrangement?.step) {
   if (!arrangement?.clips || !Number.isFinite(Number(stepIndex))) {
     return null;
@@ -1221,6 +1239,14 @@ function getArrangementClipColorIndex(clip, stepIndex = arrangement?.step) {
 }
 
 function getArrangementSceneColorIndex(stepIndex = arrangement?.step) {
+  const selectedTarget = getSelectedArrangementClipTargets()[0];
+  if (selectedTarget) {
+    const selectedClip = arrangement?.clips?.[selectedTarget.stepIndex]?.[selectedTarget.track.id];
+    if (selectedClip) {
+      return getArrangementClipColorIndex(selectedClip, selectedTarget.stepIndex);
+    }
+  }
+
   const primaryClip = getArrangementStepPrimaryClip(stepIndex);
   return getArrangementClipColorIndex(primaryClip, stepIndex);
 }
@@ -1240,6 +1266,17 @@ function arrangementStepHasClips(stepIndex) {
 }
 
 function getSelectedEditTargetLabel() {
+  const selectedTargets = getSelectedArrangementClipTargets();
+  if (selectedTargets.length === 1) {
+    const [{ track, stepIndex }] = selectedTargets;
+    const hasClip = !!arrangement?.clips?.[stepIndex]?.[track.id];
+    return `Editing ${track.name} / scene ${stepIndex + 1}${hasClip ? "" : " (blank)"}`;
+  }
+
+  if (selectedTargets.length > 1) {
+    return `Editing ${selectedTargets.length} selected clips`;
+  }
+
   const resolvedStep = getArrangementStepIndex(arrangement?.step);
   if (resolvedStep === null) {
     return "Editing live tracks";
@@ -1257,7 +1294,15 @@ function setArrangementSceneColor(stepIndex, colorIndex) {
 
   const nextColorIndex = normalizeSceneColorIndex(colorIndex);
   const step = arrangement?.clips?.[resolvedStep];
-  const clips = step && typeof step === "object" && !Array.isArray(step) ? Object.values(step) : [];
+  const selectedTargets = getSelectedArrangementClipTargets();
+  const selectedClips = selectedTargets
+    .map(({ track, stepIndex: targetStep }) => arrangement?.clips?.[targetStep]?.[track.id])
+    .filter(Boolean);
+  const clips = selectedClips.length
+    ? selectedClips
+    : step && typeof step === "object" && !Array.isArray(step)
+      ? Object.values(step)
+      : [];
   if (!clips.length) {
     if (!Array.isArray(arrangement.sceneColors)) {
       arrangement.sceneColors = Array.from({ length: arrangement.clips?.length || arrangementStepCount }, () => DEFAULT_SCENE_COLOR_INDEX);
@@ -1494,6 +1539,102 @@ function getArrangementCellsByStep(stepIndex) {
   );
 }
 
+function getArrangementClipSelectionKey(trackId, stepIndex) {
+  return `${trackId}:${Number(stepIndex)}`;
+}
+
+function parseArrangementClipSelectionKey(key) {
+  const [trackId, rawStep] = String(key || "").split(":");
+  const stepIndex = Number(rawStep);
+  if (!trackId || !Number.isInteger(stepIndex)) {
+    return null;
+  }
+
+  return { trackId, stepIndex };
+}
+
+function isArrangementClipSelected(trackId, stepIndex) {
+  return selectedArrangementClipKeys.has(getArrangementClipSelectionKey(trackId, stepIndex));
+}
+
+function setArrangementClipSelectedClass(trackId, stepIndex, isSelected) {
+  const cell = playerPanel?.querySelector(
+    `.arrangement-cell[data-arr-track="${trackId}"][data-arr-step="${stepIndex}"]`,
+  );
+  cell?.classList.toggle("selected", !!isSelected);
+}
+
+function renderArrangementClipSelection() {
+  playerPanel?.querySelectorAll(".arrangement-cell.selected").forEach((cell) => {
+    cell.classList.remove("selected");
+  });
+  selectedArrangementClipKeys.forEach((key) => {
+    const selection = parseArrangementClipSelectionKey(key);
+    if (selection) {
+      setArrangementClipSelectedClass(selection.trackId, selection.stepIndex, true);
+    }
+  });
+}
+
+function selectArrangementClip(trackId, stepIndex, options = {}) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (!trackId || resolvedStep === null) {
+    return false;
+  }
+
+  playerPanel?.querySelectorAll(".arrangement-cell.selected").forEach((cell) => {
+    cell.classList.remove("selected");
+  });
+  const key = getArrangementClipSelectionKey(trackId, resolvedStep);
+  if (options.additive) {
+    if (selectedArrangementClipKeys.has(key)) {
+      selectedArrangementClipKeys.delete(key);
+    } else {
+      selectedArrangementClipKeys.add(key);
+    }
+  } else {
+    selectedArrangementClipKeys = new Set([key]);
+  }
+
+  if (selectedArrangementClipKeys.size === 0) {
+    selectedArrangementClipKeys.add(key);
+  }
+  renderArrangementClipSelection();
+  return true;
+}
+
+function getSelectedArrangementClipTargets() {
+  const targets = [];
+  selectedArrangementClipKeys.forEach((key) => {
+    const selection = parseArrangementClipSelectionKey(key);
+    if (!selection) {
+      return;
+    }
+
+    const track = getTrackById(selection.trackId);
+    const stepIndex = getArrangementStepIndex(selection.stepIndex);
+    if (!track || stepIndex === null) {
+      return;
+    }
+
+    targets.push({ track, stepIndex });
+  });
+  return targets;
+}
+
+function selectArrangementSceneClips(stepIndex) {
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  selectedArrangementClipKeys = new Set(
+    tracks.map((track) => getArrangementClipSelectionKey(track.id, resolvedStep)),
+  );
+  renderArrangementClipSelection();
+  return true;
+}
+
 function getFirstLoadedTrackSource() {
   const firstLoaded = tracks.find((track) => track.source);
   return firstLoaded?.source || null;
@@ -1614,14 +1755,14 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
     return;
   }
 
-  const video = getTrackVideo(track);
-  if (!video) {
-    return;
-  }
-
   const playbackState = getTrackPlaybackState(track) || track;
   const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
   if (!sourceUrl) {
+    return;
+  }
+
+  const video = ensureTrackVideoElementForPlayback(track, playbackState);
+  if (!video) {
     return;
   }
 
@@ -2738,7 +2879,7 @@ function renderArrangementRow(track) {
             : `Capture ${track.name} into scene ${index + 1}`;
         return `
           <button
-            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${arrangement.step === index ? "playing" : ""}"
+            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${isArrangementClipSelected(track.id, index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
             type="button"
             data-arr-track="${track.id}"
             data-arr-step="${index}"
@@ -3432,7 +3573,13 @@ async function startTransport() {
 
       await Promise.all(
         tracks
-          .filter((track) => getTrackPlaybackSourceUrl(track))
+          .filter((track) => {
+            const arrangementClip =
+              arrangement.enabled && hasArrangementClips()
+                ? getArrangementStepClip(track, arrangement.step)
+                : null;
+            return getTrackPlaybackSourceUrl(track, arrangementClip || undefined);
+          })
           .map((track) =>
             primeTrackForTransport(track, startToken).catch((error) => {
               console.warn(error);
@@ -4695,12 +4842,12 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     return;
   }
 
-  const video = getTrackVideo(track);
   const playbackState = getTrackPlaybackState(track, clip) || track;
   if (!playbackState?.source?.mediaUrl && !track?.source?.mediaUrl) {
     return;
   }
 
+  const video = ensureTrackVideoElementForPlayback(track, playbackState);
   if (!video) {
     return;
   }
@@ -5433,6 +5580,8 @@ function handleArrangementCell(event) {
     return;
   }
   const hasTrackClip = Object.prototype.hasOwnProperty.call(step, track.id);
+  const isMultiSelect = !!(event.ctrlKey || event.metaKey);
+  selectArrangementClip(track.id, stepIndex, { additive: isMultiSelect });
 
   if (arrangementDeleteMode) {
     if (!hasTrackClip) {
@@ -5555,6 +5704,7 @@ function handleArrangementStepLabel(event) {
     return;
   }
 
+  selectArrangementSceneClips(stepIndex);
   selectArrangementStep(stepIndex);
 }
 
@@ -5639,66 +5789,104 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
 }
 
 function copySelectedArrangementScene() {
-  const sourceStep = getArrangementStepIndex(arrangement?.step);
-  if (sourceStep === null || !arrangementStepHasClips(sourceStep)) {
-    setStatus("No selected scene to copy", true);
+  const selectedClips = getSelectedArrangementClipTargets()
+    .map(({ track, stepIndex }) => ({
+      trackId: track.id,
+      trackName: track.name,
+      stepIndex,
+      clip: arrangement?.clips?.[stepIndex]?.[track.id] || null,
+    }))
+    .filter((entry) => entry.clip);
+
+  if (!selectedClips.length) {
+    setStatus("No selected clip to copy", true);
     return false;
   }
 
-  arrangementClipboardStep = cloneArrangementStep(arrangement.clips[sourceStep]);
-  setStatus(`Scene ${sourceStep + 1} copied`);
+  arrangementClipboardClips = selectedClips.map((entry) => ({
+    trackId: entry.trackId,
+    trackName: entry.trackName,
+    stepIndex: entry.stepIndex,
+    clip: cloneArrangementClip(entry.clip),
+  }));
+  arrangementClipboardStep = null;
+  setStatus(`${arrangementClipboardClips.length} clip${arrangementClipboardClips.length === 1 ? "" : "s"} copied`);
   return true;
 }
 
 function pasteArrangementClipboardToSelectedScene() {
-  const targetStep = getArrangementStepIndex(arrangement?.step);
-  if (targetStep === null) {
-    setStatus("Choose a scene first", true);
+  const targets = getSelectedArrangementClipTargets();
+  if (!targets.length) {
+    setStatus("Choose a clip slot first", true);
     return false;
   }
 
-  if (!arrangementClipboardStep || typeof arrangementClipboardStep !== "object") {
-    setStatus("No copied scene", true);
+  if (!arrangementClipboardClips.length) {
+    setStatus("No copied clip", true);
     return false;
   }
 
-  captureArrangementEdit(`Pasted copied scene to ${targetStep + 1}`);
-  arrangement.clips[targetStep] = cloneArrangementStep(arrangementClipboardStep);
+  captureArrangementEdit("Pasted copied clip");
+  if (arrangementClipboardClips.length === 1) {
+    const source = arrangementClipboardClips[0];
+    targets.forEach(({ track, stepIndex }) => {
+      arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
+      arrangement.clips[stepIndex][track.id] = cloneArrangementClip(source.clip);
+    });
+  } else if (targets.length === arrangementClipboardClips.length) {
+    targets.forEach(({ track, stepIndex }, index) => {
+      const source = arrangementClipboardClips[index];
+      arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
+      arrangement.clips[stepIndex][track.id] = cloneArrangementClip(source.clip);
+    });
+  } else {
+    const targetStep = targets[0].stepIndex;
+    arrangementClipboardClips.forEach((source) => {
+      arrangement.clips[targetStep] = arrangement.clips[targetStep] || {};
+      arrangement.clips[targetStep][source.trackId] = cloneArrangementClip(source.clip);
+    });
+  }
   refreshArrangementHasClipsState();
-  selectArrangementStep(targetStep);
+  selectArrangementStep(targets[0].stepIndex);
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
   } else {
     renderWorkstation();
   }
   markAppStateDirty(true);
-  setStatus(`Pasted to scene ${targetStep + 1}`);
+  setStatus("Clip pasted");
   return true;
 }
 
 function deleteSelectedArrangementScene() {
-  const targetStep = getArrangementStepIndex(arrangement?.step);
-  if (targetStep === null) {
-    setStatus("Choose a scene first", true);
+  const targets = getSelectedArrangementClipTargets();
+  if (!targets.length) {
+    setStatus("Choose a clip first", true);
     return false;
   }
 
-  if (!arrangement?.clips?.[targetStep] || !Object.keys(arrangement.clips[targetStep]).length) {
-    setStatus(`Scene ${targetStep + 1} is already empty`);
+  const filledTargets = targets.filter(({ track, stepIndex }) => arrangement?.clips?.[stepIndex]?.[track.id]);
+  if (!filledTargets.length) {
+    setStatus("Selected clip slot is already empty");
     return false;
   }
 
-  captureArrangementEdit(`Deleted scene ${targetStep + 1}`);
-  arrangement.clips[targetStep] = {};
+  captureArrangementEdit("Deleted selected clip");
+  filledTargets.forEach(({ track, stepIndex }) => {
+    delete arrangement.clips[stepIndex][track.id];
+    if (!Object.keys(arrangement.clips[stepIndex]).length) {
+      arrangement.clips[stepIndex] = {};
+    }
+  });
   refreshArrangementHasClipsState();
-  selectArrangementStep(targetStep);
+  selectArrangementStep(filledTargets[0].stepIndex);
   if (window.freemixRender?.updateArrangementGrid) {
     window.freemixRender.updateArrangementGrid();
   } else {
     renderWorkstation();
   }
   markAppStateDirty(true);
-  setStatus(`Deleted scene ${targetStep + 1}`);
+  setStatus(`${filledTargets.length} clip${filledTargets.length === 1 ? "" : "s"} deleted`);
   return true;
 }
 
@@ -6295,10 +6483,13 @@ function renderArrangementPlayhead() {
     });
   }
 
-  getArrangementCellsByStep(currentStep).forEach((cell) => {
-    cell.classList.add("playing");
-  });
+  if (transport?.active && arrangement.enabled) {
+    getArrangementCellsByStep(currentStep).forEach((cell) => {
+      cell.classList.add("playing");
+    });
+  }
   arrangementPlayheadStep = currentStep;
+  renderArrangementClipSelection();
   window.freemixRender?.updateArrangementSceneColorSelector?.();
 }
 

@@ -752,6 +752,8 @@ input[type="number"]:focus {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  max-height: min(100%, calc(100dvh - 170px));
+  overflow: hidden;
 }
 
 .video-matrix {
@@ -1475,14 +1477,36 @@ input[type="number"]:focus {
   align-items: start;
   gap: 1px;
   margin-top: 0;
-  max-height: none;
-  overflow: visible;
+  max-height: min(52vh, 430px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   position: relative;
   padding-top: 0;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--silver) 46%, var(--panel-strong)) color-mix(in srgb, var(--panel-strong) 88%, transparent);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.02),
     inset 0 0 22px rgba(0, 0, 0, 0.45);
   min-height: 0;
+}
+
+.control-bank::-webkit-scrollbar {
+  width: 7px;
+}
+
+.control-bank::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--panel-strong) 88%, transparent);
+}
+
+.control-bank::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--silver) 58%, var(--panel-strong)),
+    color-mix(in srgb, var(--silver) 24%, var(--panel-strong))
+  );
+  border: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
 }
 
 .track-add-row {
@@ -1912,6 +1936,64 @@ input[type="number"]:focus {
   font-size: 0.58rem;
   line-height: 1;
   white-space: nowrap;
+}
+
+.track-row.is-advanced {
+  gap: 0;
+  padding-block: 0;
+}
+
+.track-row.is-advanced .track-row-label {
+  padding-block: 0;
+}
+
+.track-row.is-advanced .track-row-body,
+.track-row.is-advanced .track-channel-row,
+.track-row.is-advanced .track-source,
+.track-row.is-advanced .fx-chain {
+  gap: 1px;
+}
+
+.track-row.is-advanced .fx-chain {
+  padding-top: 0;
+}
+
+.track-row.is-advanced .fx-field {
+  min-height: 22px;
+}
+
+.track-row.is-advanced .fx-mini-value {
+  min-height: 11px;
+  font-size: 0.52rem;
+}
+
+.track-row.is-advanced .fx-field label,
+.track-row.is-advanced .fx-field .fx-value {
+  font-size: 0.52rem;
+}
+
+.track-row.is-advanced input[type="range"] {
+  min-height: 12px;
+  height: 12px;
+}
+
+.track-row.is-advanced input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px;
+}
+
+.track-row.is-advanced input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 10px;
+  margin-top: -3px;
+}
+
+.track-row.is-advanced input[type="range"]::-moz-range-track {
+  height: 5px;
+}
+
+.track-row.is-advanced input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 10px;
 }
 
 .fx-reset-button {
@@ -2445,7 +2527,7 @@ input[type="range"]::-moz-range-thumb {
 
   .control-bank {
     grid-template-columns: 1fr;
-    max-height: none;
+    max-height: min(54vh, 420px);
     min-height: 0;
   }
 
@@ -2554,11 +2636,12 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .control-bank {
-    max-height: none;
+    max-height: min(46vh, 330px);
     min-height: 0;
     padding-top: 0;
     gap: 1px;
-    overflow: visible;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .arrangement-grid {

@@ -343,7 +343,7 @@
     event.target.value = "";
   }
 
-  function handleArrangementCellClick(target) {
+  function handleArrangementCellClick(target, event = null) {
     const sceneColorButton = target.closest("[data-arrangement-scene-color]");
     if (sceneColorButton) {
       const colorIndex = Number(sceneColorButton.getAttribute("data-arrangement-scene-color"));
@@ -355,7 +355,11 @@
 
     const arrangementCell = target.closest(".arrangement-cell");
     if (arrangementCell) {
-      handleArrangementCell({ currentTarget: arrangementCell });
+      handleArrangementCell({
+        currentTarget: arrangementCell,
+        ctrlKey: !!event?.ctrlKey,
+        metaKey: !!event?.metaKey,
+      });
       return;
     }
 
@@ -540,7 +544,7 @@
         return true;
       }
 
-      handleArrangementCellClick(transportButton);
+      handleArrangementCellClick(transportButton, event);
       return;
     }
     return false;

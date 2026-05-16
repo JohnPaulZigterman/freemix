@@ -165,6 +165,10 @@
     }
     cell.classList.toggle("filled", isFilled);
     cell.classList.toggle("has-density-bars", isFilled && densityCount > 1);
+    cell.classList.toggle(
+      "selected",
+      typeof isArrangementClipSelected === "function" && isArrangementClipSelected(track.id, stepIndex),
+    );
     cell.textContent = isFilled ? "x" : "";
     const canDragCopy = isFilled;
     cell.draggable = canDragCopy;
@@ -175,7 +179,7 @@
       : isFilled
         ? `${track.name || "Track"} scene ${stepIndex + 1}; click to edit, drag to copy`
         : `Capture ${track.name || "track"} into scene ${stepIndex + 1}`;
-    cell.classList.toggle("playing", arrangement.step === stepIndex);
+    cell.classList.toggle("playing", !!transport?.active && arrangement.step === stepIndex);
   }
 
   function updateArrangementGrid() {
