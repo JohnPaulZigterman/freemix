@@ -18,7 +18,6 @@
     const playButton = player.querySelector("#playButton");
     const metroButton = player.querySelector("#metroButton");
     const arrangementToggle = player.querySelector("#arrangementToggle");
-    const arrangementCopyButton = player.querySelector("#arrangementCopyButton");
     const arrangementDeleteButton = player.querySelector("#arrangementDeleteButton");
     const arrangementLengthSelect = player.querySelector("#arrangementStepsSelect");
     const timeSignatureSelect = player.querySelector("#timeSignatureSelect");
@@ -44,15 +43,6 @@
       arrangementToggle.textContent = arrangement.enabled ? "On" : "Off";
       arrangementToggle.classList.toggle("active", arrangement.enabled);
       arrangementToggle.setAttribute("aria-pressed", String(arrangement.enabled));
-    }
-
-    if (arrangementCopyButton) {
-      arrangementCopyButton.textContent = arrangementCopyMode ? "Copying" : "Copy";
-      arrangementCopyButton.classList.toggle("active", !!arrangementCopyMode);
-      arrangementCopyButton.setAttribute("aria-pressed", String(!!arrangementCopyMode));
-      arrangementCopyButton.title = arrangementCopyMode
-        ? "Copying section; click destination sections to paste"
-        : "Copy current section";
     }
 
     if (arrangementDeleteButton) {
@@ -159,13 +149,10 @@
     }
     cell.classList.toggle("filled", isFilled);
     cell.textContent = isFilled ? "x" : "";
-    const canDragCopy =
-      typeof window.freemixIsArrangementCopyMode === "function" &&
-      window.freemixIsArrangementCopyMode() &&
-      isFilled;
+    const canDragCopy = isFilled;
     cell.draggable = canDragCopy;
     cell.title = isFilled
-      ? escapeHtml(`${track.name || "Track"} bar ${stepIndex + 1}`)
+      ? escapeHtml(`${track.name || "Track"} scene ${stepIndex + 1}; drag to copy, click to select`)
       : `Capture ${track.name || "track"}`;
     cell.classList.toggle("playing", arrangement.step === stepIndex);
   }
@@ -279,3 +266,5 @@
     updateArrangementPlayhead: renderArrangementPlayhead,
   };
 })();
+
+

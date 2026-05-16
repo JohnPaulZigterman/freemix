@@ -2436,14 +2436,6 @@ function renderArrangementPanel() {
             ${arrangement.enabled ? "On" : "Off"}
           </button>
           <button
-            class="arrangement-copy ${arrangementCopyMode ? "active" : ""}"
-            type="button"
-            id="arrangementCopyButton"
-            aria-pressed="${arrangementCopyMode}"
-          >
-            ${arrangementCopyMode ? "Copying" : "Copy"}
-          </button>
-          <button
             class="arrangement-delete ${arrangementDeleteMode ? "active" : ""}"
             type="button"
             id="arrangementDeleteButton"
@@ -2519,7 +2511,7 @@ function renderDebugPanel() {
 }
 
 function renderArrangementStepLabel(stepIndex) {
-  const isCopySource = arrangementCopyMode && arrangementCopySourceStep === stepIndex;
+  const isCopySource = false;
   return `
     <button
       class="arrangement-step-label ${isCopySource ? "copy-source" : ""}"
@@ -2538,7 +2530,7 @@ function renderArrangementRow(track) {
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
-        const canDragCopy = arrangementCopyMode && !!clip;
+        const canDragCopy = !!clip;
         const sceneColor = getArrangementSceneColor(index);
         const sceneStyle = sceneColor ? ` style="--scene-track-color: ${sceneColor};"` : "";
         return `
@@ -5092,16 +5084,6 @@ function handleArrangementStepLabel(event) {
     return;
   }
 
-  if (arrangementCopyMode) {
-    if (stepIndex === arrangementCopySourceStep) {
-      setStatus("Choose a destination section to paste");
-      return;
-    }
-
-    pasteArrangementSection(stepIndex);
-    return;
-  }
-
   if (arrangementDeleteMode) {
     if (!arrangement?.clips?.[stepIndex] || !Object.keys(arrangement.clips[stepIndex]).length) {
       setStatus(`Scene ${stepIndex + 1} is already empty`);
@@ -5137,31 +5119,11 @@ function handleArrangementStepLabel(event) {
 }
 
 function toggleArrangementCopyMode() {
-  arrangementCopyMode = !arrangementCopyMode;
-  if (arrangementCopyMode) {
-    if (arrangementDeleteMode) {
-      arrangementDeleteMode = false;
-    }
-    arrangementCopySourceStep = arrangement.step;
-    setStatus(`Copying section ${arrangementCopySourceStep + 1}; click destination sections`);
-  } else {
-    arrangementCopySourceStep = null;
-    setStatus("Copy mode off");
-  }
-
-  if (window.freemixRender?.updateArrangementGrid) {
-    if (window.freemixRender?.updateArrangementStepLabels) {
-      window.freemixRender.updateArrangementStepLabels();
-    } else {
-      window.freemixRender.updateArrangementGrid();
-    }
-    window.freemixRender?.updateTransportRow?.();
-    markAppStateDirty();
-    return;
-  }
-
-  renderWorkstation();
-  markAppStateDirty();
+  arrangementCopyMode = false;
+  arrangementCopySourceStep = null;
+  setStatus("Drag filled clip blocks to copy them");
+  window.freemixRender?.updateArrangementGrid?.();
+  window.freemixRender?.updateTransportRow?.();
 }
 
 function toggleArrangementDeleteMode() {
@@ -5264,7 +5226,7 @@ function highlightArrangementDragStep(stepIndex, className) {
 }
 
 function canDragCopyArrangementStep(stepIndex) {
-  return !!arrangementCopyMode && arrangementStepHasClips(stepIndex);
+  return arrangementStepHasClips(stepIndex);
 }
 
 function getArrangementClipDragTarget(trackId, stepIndex) {
@@ -5283,7 +5245,7 @@ function getArrangementClipDragTarget(trackId, stepIndex) {
 
 function beginArrangementClipDragCopy(trackId, stepIndex) {
   const source = getArrangementClipDragTarget(trackId, stepIndex);
-  if (!arrangementCopyMode || !source?.clip) {
+  if (!source?.clip) {
     return false;
   }
 
@@ -5299,7 +5261,7 @@ function beginArrangementClipDragCopy(trackId, stepIndex) {
 
 function hoverArrangementClipDragTarget(trackId, stepIndex, sourceTrackId = null, sourceStepIndex = null) {
   const target = getArrangementClipDragTarget(trackId, stepIndex);
-  if (!arrangementCopyMode || !target) {
+  if (!target) {
     clearArrangementDragState();
     return false;
   }
@@ -5335,8 +5297,8 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
 
   arrangement.clips[target.stepIndex] = arrangement.clips[target.stepIndex] || {};
   arrangement.clips[target.stepIndex][target.track.id] = cloneArrangementClip(source.clip);
-  arrangement.step = target.stepIndex;
   refreshArrangementHasClipsState();
+  selectArrangementStep(target.stepIndex);
 
   if (transport?.active && arrangement.enabled && hasArrangementClips()) {
     rebindArrangementClipsForActiveTransport();
@@ -6557,3 +6519,6 @@ function escapeHtml(value) {
 }
 
 window.freemixRenderDebugPanel = window.freemixRenderDebugPanel || null;
+
+
+

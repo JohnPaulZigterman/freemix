@@ -202,10 +202,6 @@
       return true;
     }
 
-    if (id === "arrangementCopyButton") {
-      toggleArrangementCopyMode();
-      return true;
-    }
 
     if (id === "arrangementDeleteButton") {
       toggleArrangementDeleteMode();
@@ -773,3 +769,5 @@
 
   bind();
 })();
+
+
