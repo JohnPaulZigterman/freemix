@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: freemix-vm-420
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: FREEMIX_CACHE_MAX_BYTES
+        value: 450000000
+      - key: FREEMIX_CACHE_PRUNE_TARGET_BYTES
+        value: 250000000
+      - key: FREEMIX_CACHE_SLICE_MAX_AGE_MS
+        value: 7200000
+      - key: FREEMIX_CACHE_ORIGINAL_MAX_AGE_MS
+        value: 1800000

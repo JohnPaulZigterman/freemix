@@ -3,10 +3,13 @@
   "version": "1.0.0",
   "description": "Freemix VM-420 local playback server",
   "main": "server.js",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "directories": {
     "doc": "docs"
   },
-  "devDependencies": {
+  "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0"
   },
   "scripts": {

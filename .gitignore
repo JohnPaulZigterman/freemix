@@ -4,3 +4,7 @@ npm-cache/
 *.log
 *.tmp
 *.tmp.mp4
+# Freemix local media cache
+*.media
+*.slice.mp4
+*.playable.mp4
