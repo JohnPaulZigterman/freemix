@@ -27,6 +27,8 @@ Extend normalized A/V clip state with a timing mode:
 ```js
 {
   timingMode: "retrigger" | "pianoRoll",
+  pianoSnap: "1/4" | "1/8" | "1/16" | "triplet",
+  pianoRoot: "C",
   retriggersPerBar: 4,
   notes: [],
   automation: {}
@@ -253,64 +255,67 @@ No older session should break or silently change behavior.
 
 ### Phase 1: Data model and compatibility
 
-- Add `timingMode`, `notes`, and `automation` to normalized clips.
-- Hydrate older sessions safely.
-- Save/load the new fields.
-- Add defensive validation for malformed notes and envelopes.
+- [x] Add `timingMode`, `notes`, and `automation` to normalized clips.
+- [x] Hydrate older sessions safely.
+- [x] Save/load the new fields through existing clip/session snapshots.
+- [x] Add defensive validation for malformed notes and envelopes.
+- [x] Add first shared event-generation helpers for retrigger and piano-roll timing.
+- [x] Add first automation-at-beat resolver.
 
 ### Phase 2: Unified clip event scheduler
 
-- Convert existing retrigger behavior into generated clip events.
-- Keep visible behavior identical.
-- Route live playback and export through the same event generator.
-- Add smoke coverage for retrigger events.
+- [x] Convert existing retrigger behavior into generated clip events.
+- [x] Keep visible behavior identical.
+- [x] Route live playback and export through the same event generator.
+- [x] Add smoke coverage for retrigger events.
 
 ### Phase 3: Piano-roll playback core
 
-- Add `Piano Roll` timing mode.
-- Add simple note data creation via debug/helper path first.
-- Make piano-roll clips trigger video/audio at exact note beats.
-- Support pitch via playback rate.
-- Keep per-track playback monophonic.
+- [x] Add `Piano Roll` timing mode.
+- [x] Add simple note data creation via debug/helper path first.
+- [x] Make piano-roll clips trigger video/audio at exact note beats.
+- [x] Support pitch via playback rate.
+- [x] Keep per-track playback monophonic.
 
 ### Phase 4: Piano-roll editor UI
 
-- Build compact note grid.
-- Add note create, move, resize, delete.
-- Add snap setting.
-- Add selected-note velocity control.
-- Reflect selected clip state immediately.
+- [x] Build compact note grid.
+- [x] Add note create, move, resize, delete.
+- [x] Add initial click-to-add/click-selected-to-remove note editing.
+- [x] Add snap setting.
+- [x] Add selected-note velocity control.
+- [x] Reflect selected clip state immediately.
 
 ### Phase 5: Automation engine
 
-- Add automation resolver.
-- Support hold and linear interpolation.
-- Apply automation to live playback controls.
-- Apply automation to export rendering.
+- [x] Add automation resolver.
+- [x] Support hold and linear interpolation.
+- [x] Apply automation to live playback controls.
+- [x] Apply automation to export rendering.
 
 ### Phase 6: Automation editor UI
 
-- Add automation target selector.
-- Add one-lane point editor.
-- Add enable, reset, and interpolation controls.
-- Add visual feedback for clips that contain automation.
+- [x] Add automation target selector.
+- [x] Add one-lane point editor.
+- [x] Add enable, reset, and interpolation controls.
+- [x] Add visual feedback for clips that contain automation.
 
 ### Phase 7: Validation
 
 - Extend smoke test for:
-  - old sessions hydrate as retrigger clips
-  - piano-roll note events fire on expected beats
-  - automation resolves expected values
+  - [x] old sessions hydrate as retrigger clips
+  - [x] piano-roll note events fire on expected beats
+  - [x] automation resolves expected values
   - export includes piano-roll timing
   - export includes automation changes
 
 ### Phase 8: Polish
 
-- Clip badge for `Retrigger` vs `Piano`.
-- Automation indicator on clips.
-- Optional root pitch setting.
-- Optional note preview/audition.
-- Optional duplicate notes and quantize commands.
+- [x] Clip badge for `Retrigger` vs `Piano`.
+- [x] Automation indicator on clips.
+- [x] Optional root pitch setting.
+- [x] Optional note preview/audition.
+- [x] Optional duplicate notes and quantize commands.
 
 ## Open choices before implementation
 

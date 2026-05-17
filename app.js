@@ -82,6 +82,22 @@ const SCENE_EDITABLE_CONTROLS = Object.freeze(
     "pitch",
     "startTime",
     "startNumber",
+    "timingMode",
+    "pianoSnap",
+    "pianoRoot",
+    "pianoNote",
+    "pianoVelocity",
+    "pianoDuration",
+    "pianoDeleteNote",
+    "pianoDuplicateNote",
+    "pianoQuantizeNotes",
+    "automation",
+    "automationTarget",
+    "automationEnable",
+    "automationInterpolation",
+    "automationPoint",
+    "automationReset",
+    "automationDeletePoint",
     "retriggersPerBar",
     "volume",
     "muted",
@@ -93,6 +109,48 @@ const SCENE_EDITABLE_CONTROLS = Object.freeze(
     "reverb",
   ]),
 );
+const CLIP_TIMING_MODES = Object.freeze({
+  retrigger: "retrigger",
+  pianoRoll: "pianoRoll",
+});
+const CLIP_TIMING_MODE_LABELS = Object.freeze({
+  [CLIP_TIMING_MODES.retrigger]: "Retrigger",
+  [CLIP_TIMING_MODES.pianoRoll]: "Piano Roll",
+});
+const CLIP_TIMING_MODE_OPTIONS = Object.freeze(
+  Object.entries(CLIP_TIMING_MODE_LABELS).map(([value, label]) => ({ value, label })),
+);
+const DEFAULT_CLIP_TIMING_MODE = CLIP_TIMING_MODES.retrigger;
+const PIANO_ROLL_MIN_PITCH_SEMITONES = -12;
+const PIANO_ROLL_MAX_PITCH_SEMITONES = 12;
+const PIANO_ROLL_MIN_NOTE_BEATS = 0.0625;
+const PIANO_ROLL_MAX_NOTE_BEATS = 64;
+const PIANO_ROLL_MAX_START_BEAT = 512;
+const PIANO_ROLL_MIN_ANCHOR_OFFSET = -120;
+const PIANO_ROLL_MAX_ANCHOR_OFFSET = 120;
+const DEFAULT_PIANO_ROLL_SNAP = "1/16";
+const PIANO_ROLL_SNAP_OPTIONS = Object.freeze([
+  { value: "1/4", label: "1/4", stepsPerBeat: 1 },
+  { value: "1/8", label: "1/8", stepsPerBeat: 2 },
+  { value: "1/16", label: "1/16", stepsPerBeat: 4 },
+  { value: "triplet", label: "Triplet", stepsPerBeat: 3 },
+]);
+const DEFAULT_PIANO_ROOT_NOTE = "C";
+const PIANO_ROOT_NOTE_OPTIONS = Object.freeze([
+  "C",
+  "C#",
+  "D",
+  "D#",
+  "E",
+  "F",
+  "F#",
+  "G",
+  "G#",
+  "A",
+  "A#",
+  "B",
+].map((note, index) => ({ value: note, label: note, index })));
+const CLIP_AUTOMATION_POINT_MAX_BEAT = 512;
 const REVERB_BUFFER_CACHE = new WeakMap();
 const TUBE_CURVE_CACHE = new Map();
 let metronomeGain = null;
@@ -211,6 +269,33 @@ const FX_CONTROLS = [
   { key: "reverb", label: "Reverb", min: 0, max: 1, step: 0.01 },
 ];
 const FX_CONTROL_INDEX = Object.freeze(Object.fromEntries(FX_CONTROLS.map((entry) => [entry.key, entry])));
+const CLIP_AUTOMATION_TARGETS = Object.freeze({
+  volume: { type: "number", min: 0, max: 1, defaultValue: 0.55, path: ["volume"] },
+  opacity: { type: "number", min: 0, max: 1, defaultValue: 1, path: ["opacity"] },
+  speed: { type: "number", min: 0.5, max: 2, defaultValue: 1, path: ["speed"] },
+  pitch: { type: "number", min: -12, max: 12, defaultValue: 0, path: ["pitch"] },
+  startTime: { type: "number", min: 0, max: 36_000, defaultValue: 0, path: ["startTime"] },
+  blendMode: {
+    type: "enum",
+    values: Object.keys(BLEND_MODES),
+    defaultValue: TRACK_BLEND_DEFAULTS[0],
+    interpolation: "hold",
+    path: ["blendMode"],
+  },
+  "fx.eqLow": { type: "number", min: -12, max: 12, defaultValue: 0, path: ["fx", "eqLow"] },
+  "fx.eqMid": { type: "number", min: -12, max: 12, defaultValue: 0, path: ["fx", "eqMid"] },
+  "fx.eqHigh": { type: "number", min: -12, max: 12, defaultValue: 0, path: ["fx", "eqHigh"] },
+  "fx.tube": { type: "number", min: 0, max: 1, defaultValue: 0, path: ["fx", "tube"] },
+  "fx.delay": { type: "number", min: 0, max: 1, defaultValue: 0, path: ["fx", "delay"] },
+  "fx.reverb": { type: "number", min: 0, max: 1, defaultValue: 0, path: ["fx", "reverb"] },
+});
+const CLIP_AUTOMATION_TARGET_OPTIONS = Object.freeze(
+  Object.keys(CLIP_AUTOMATION_TARGETS).map((value) => ({
+    value,
+    label: value.startsWith("fx.") ? `FX ${value.slice(3)}` : value,
+  })),
+);
+const DEFAULT_CLIP_AUTOMATION_TARGET = CLIP_AUTOMATION_TARGET_OPTIONS[0]?.value || "volume";
 const TRACK_MEDIA_STATUS_LABELS = Object.freeze({
   "audio-only": "Audio only",
   "clean-frame-ready": "Clean frame",
@@ -289,7 +374,7 @@ const PLAYBACK_PHASES = Object.freeze({
   stopped: "stopped",
   failed: "failed",
 });
-const CLIP_STATE_SCHEMA_VERSION = 2;
+const CLIP_STATE_SCHEMA_VERSION = 3;
 const sourceMetadataCache = new Map();
 const sourceMetadataInflight = new Map();
 const mediaElementSourceNodes = new WeakMap();
@@ -352,6 +437,15 @@ const TRACK_CONTROL_SECTIONS = {
     },
   ],
   density: [
+    {
+      control: "timingMode",
+      type: "select",
+      label: "Mode",
+      icon: "M",
+      tooltip: "Choose retrigger or piano-roll timing for this clip",
+      fieldClass: "timing-mode-field",
+      options: CLIP_TIMING_MODE_OPTIONS,
+    },
     {
       control: "retriggersPerBar",
       type: "select",
@@ -583,7 +677,12 @@ function normalizeTrackPreferences(track) {
   track.speed = Number.isFinite(Number(track.speed)) ? clamp(track.speed, 0.5, 2) : 1;
   track.pitch = Number.isFinite(Number(track.pitch)) ? clamp(track.pitch, -12, 12) : 0;
 
+  track.timingMode = normalizeClipTimingMode(track.timingMode);
+  track.pianoSnap = normalizePianoRollSnap(track.pianoSnap);
+  track.pianoRoot = normalizePianoRootNote(track.pianoRoot);
   track.retriggersPerBar = normalizeRetriggersPerBar(track.retriggersPerBar);
+  track.notes = normalizePianoRollNotes(track.notes);
+  track.automation = normalizeClipAutomation(track.automation);
   track.blendMode = TRACK_BLEND_DEFAULTS.includes(track.blendMode)
     ? track.blendMode
     : TRACK_BLEND_DEFAULTS[0];
@@ -1654,6 +1753,222 @@ function normalizeClipFx(rawFx = {}, fallbackFx = {}) {
   );
 }
 
+function normalizeClipTimingMode(value, fallback = DEFAULT_CLIP_TIMING_MODE) {
+  if (Object.values(CLIP_TIMING_MODES).includes(value)) {
+    return value;
+  }
+
+  return Object.values(CLIP_TIMING_MODES).includes(fallback) ? fallback : DEFAULT_CLIP_TIMING_MODE;
+}
+
+function normalizePianoRollSnap(value, fallback = DEFAULT_PIANO_ROLL_SNAP) {
+  const rawValue = String(value || "");
+  if (PIANO_ROLL_SNAP_OPTIONS.some((option) => option.value === rawValue)) {
+    return rawValue;
+  }
+
+  return PIANO_ROLL_SNAP_OPTIONS.some((option) => option.value === fallback)
+    ? fallback
+    : DEFAULT_PIANO_ROLL_SNAP;
+}
+
+function getPianoRollSnapDefinition(value = DEFAULT_PIANO_ROLL_SNAP) {
+  const snapValue = normalizePianoRollSnap(value);
+  return PIANO_ROLL_SNAP_OPTIONS.find((option) => option.value === snapValue) || PIANO_ROLL_SNAP_OPTIONS[2];
+}
+
+function normalizePianoRootNote(value, fallback = DEFAULT_PIANO_ROOT_NOTE) {
+  const rawValue = String(value || "").trim().toUpperCase();
+  const normalizedValue = rawValue.replace("♯", "#").replace("SHARP", "#");
+  if (PIANO_ROOT_NOTE_OPTIONS.some((option) => option.value === normalizedValue)) {
+    return normalizedValue;
+  }
+
+  return PIANO_ROOT_NOTE_OPTIONS.some((option) => option.value === fallback)
+    ? fallback
+    : DEFAULT_PIANO_ROOT_NOTE;
+}
+
+function getPianoRootNoteIndex(value = DEFAULT_PIANO_ROOT_NOTE) {
+  const rootValue = normalizePianoRootNote(value);
+  return PIANO_ROOT_NOTE_OPTIONS.find((option) => option.value === rootValue)?.index ?? 0;
+}
+
+function getPianoRollPitchLabel(rootNote = DEFAULT_PIANO_ROOT_NOTE, pitchSemitones = 0) {
+  const rootIndex = getPianoRootNoteIndex(rootNote);
+  const semitone = Number(pitchSemitones) || 0;
+  const noteIndex = ((rootIndex + semitone) % 12 + 12) % 12;
+  const octaveShift = Math.floor((rootIndex + semitone) / 12);
+  const noteName = PIANO_ROOT_NOTE_OPTIONS[noteIndex]?.label || DEFAULT_PIANO_ROOT_NOTE;
+  const offsetLabel = semitone > 0 ? `+${semitone}` : String(semitone);
+  return `${noteName}${octaveShift === 0 ? "" : octaveShift > 0 ? `+${octaveShift}` : octaveShift} ${offsetLabel}`;
+}
+
+function normalizePianoRollNote(rawNote = {}, index = 0) {
+  const note = rawNote && typeof rawNote === "object" && !Array.isArray(rawNote) ? rawNote : {};
+  const rawStartBeat = Number(note.startBeat);
+  const rawDurationBeats = Number(note.durationBeats);
+  const rawPitchSemitones = Number(note.pitchSemitones);
+  const rawVelocity = Number(note.velocity);
+  const rawAnchorOffset = Number(note.anchorOffset);
+  return {
+    id: String(note.id || `note-${index + 1}`),
+    startBeat: clamp(Number.isFinite(rawStartBeat) ? rawStartBeat : 0, 0, PIANO_ROLL_MAX_START_BEAT),
+    durationBeats: clamp(
+      Number.isFinite(rawDurationBeats) ? rawDurationBeats : 0.25,
+      PIANO_ROLL_MIN_NOTE_BEATS,
+      PIANO_ROLL_MAX_NOTE_BEATS,
+    ),
+    pitchSemitones: clamp(
+      Number.isFinite(rawPitchSemitones) ? rawPitchSemitones : 0,
+      PIANO_ROLL_MIN_PITCH_SEMITONES,
+      PIANO_ROLL_MAX_PITCH_SEMITONES,
+    ),
+    velocity: clamp(Number.isFinite(rawVelocity) ? rawVelocity : 1, 0, 1),
+    anchorOffset: clamp(
+      Number.isFinite(rawAnchorOffset) ? rawAnchorOffset : 0,
+      PIANO_ROLL_MIN_ANCHOR_OFFSET,
+      PIANO_ROLL_MAX_ANCHOR_OFFSET,
+    ),
+  };
+}
+
+function normalizePianoRollNotes(rawNotes, fallbackNotes = []) {
+  const sourceNotes = Array.isArray(rawNotes)
+    ? rawNotes
+    : Array.isArray(fallbackNotes)
+      ? fallbackNotes
+      : [];
+  return sourceNotes
+    .map(normalizePianoRollNote)
+    .sort((a, b) => a.startBeat - b.startBeat || a.pitchSemitones - b.pitchSemitones);
+}
+
+function createPianoRollNote(overrides = {}) {
+  return normalizePianoRollNote({
+    id:
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `note-${Date.now()}-${Math.round(Math.random() * 10000)}`,
+    startBeat: 0,
+    durationBeats: 0.25,
+    pitchSemitones: 0,
+    velocity: 1,
+    anchorOffset: 0,
+    ...overrides,
+  });
+}
+
+function normalizeAutomationPointValue(targetDefinition, rawValue) {
+  if (!targetDefinition) {
+    return rawValue;
+  }
+
+  if (targetDefinition.type === "enum") {
+    return targetDefinition.values.includes(rawValue) ? rawValue : targetDefinition.defaultValue;
+  }
+
+  const numericValue = Number(rawValue);
+  return clamp(
+    Number.isFinite(numericValue) ? numericValue : targetDefinition.defaultValue,
+    targetDefinition.min,
+    targetDefinition.max,
+  );
+}
+
+function normalizeAutomationPoint(targetKey, rawPoint = {}, index = 0) {
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  const point = rawPoint && typeof rawPoint === "object" && !Array.isArray(rawPoint) ? rawPoint : {};
+  const rawBeat = Number(point.beat);
+  return {
+    id: String(point.id || `${targetKey}-point-${index + 1}`),
+    beat: clamp(Number.isFinite(rawBeat) ? rawBeat : 0, 0, CLIP_AUTOMATION_POINT_MAX_BEAT),
+    value: normalizeAutomationPointValue(targetDefinition, point.value),
+  };
+}
+
+function normalizeAutomationEnvelope(targetKey, rawEnvelope, fallbackEnvelope = {}) {
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  if (!targetDefinition) {
+    return null;
+  }
+
+  const sourceEnvelope = rawEnvelope && typeof rawEnvelope === "object" && !Array.isArray(rawEnvelope)
+    ? rawEnvelope
+    : null;
+  const fallback = fallbackEnvelope && typeof fallbackEnvelope === "object" && !Array.isArray(fallbackEnvelope)
+    ? fallbackEnvelope
+    : null;
+  const envelope = sourceEnvelope || fallback || {};
+  const interpolation = targetDefinition.type === "enum"
+    ? "hold"
+    : envelope.interpolation === "hold"
+      ? "hold"
+      : "linear";
+  const points = Array.isArray(envelope.points) ? envelope.points : [];
+  return {
+    enabled: envelope.enabled !== false,
+    interpolation,
+    points: points
+      .map((point, index) => normalizeAutomationPoint(targetKey, point, index))
+      .sort((a, b) => a.beat - b.beat),
+  };
+}
+
+function createAutomationPoint(targetKey, overrides = {}) {
+  return normalizeAutomationPoint(
+    targetKey,
+    {
+      id:
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${targetKey}-point-${Date.now()}-${Math.round(Math.random() * 10000)}`,
+      beat: 0,
+      value: CLIP_AUTOMATION_TARGETS[targetKey]?.defaultValue,
+      ...overrides,
+    },
+  );
+}
+
+function createAutomationEnvelope(targetKey, overrides = {}) {
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  if (!targetDefinition) {
+    return null;
+  }
+
+  return normalizeAutomationEnvelope(
+    targetKey,
+    {
+      enabled: true,
+      interpolation: targetDefinition.type === "enum" ? "hold" : "linear",
+      points: [],
+      ...overrides,
+    },
+  );
+}
+
+function normalizeClipAutomation(rawAutomation = {}, fallbackAutomation = {}) {
+  const sourceAutomation = rawAutomation && typeof rawAutomation === "object" && !Array.isArray(rawAutomation)
+    ? rawAutomation
+    : {};
+  const fallback = fallbackAutomation && typeof fallbackAutomation === "object" && !Array.isArray(fallbackAutomation)
+    ? fallbackAutomation
+    : {};
+  return Object.keys(CLIP_AUTOMATION_TARGETS).reduce((normalized, targetKey) => {
+    const hasEnvelope = Object.prototype.hasOwnProperty.call(sourceAutomation, targetKey);
+    const hasFallbackEnvelope = Object.prototype.hasOwnProperty.call(fallback, targetKey);
+    if (!hasEnvelope && !hasFallbackEnvelope) {
+      return normalized;
+    }
+
+    const envelope = normalizeAutomationEnvelope(targetKey, sourceAutomation[targetKey], fallback[targetKey]);
+    if (envelope) {
+      normalized[targetKey] = envelope;
+    }
+    return normalized;
+  }, {});
+}
+
 function normalizeClipState(rawClip = {}, fallbackState = {}) {
   const clip = rawClip && typeof rawClip === "object" && !Array.isArray(rawClip) ? rawClip : {};
   const fallback = fallbackState && typeof fallbackState === "object" && !Array.isArray(fallbackState) ? fallbackState : {};
@@ -1677,7 +1992,12 @@ function normalizeClipState(rawClip = {}, fallbackState = {}) {
     ),
     durationFilter: normalizeDurationFilterValue(clip.durationFilter, fallback.durationFilter),
     startTime: Math.max(0, Number.isFinite(rawStart) ? rawStart : Number.isFinite(fallbackStart) ? fallbackStart : 0),
+    timingMode: normalizeClipTimingMode(clip.timingMode, fallback.timingMode),
+    pianoSnap: normalizePianoRollSnap(clip.pianoSnap, fallback.pianoSnap),
+    pianoRoot: normalizePianoRootNote(clip.pianoRoot, fallback.pianoRoot),
     retriggersPerBar: normalizeRetriggersPerBar(clip.retriggersPerBar ?? fallback.retriggersPerBar),
+    notes: normalizePianoRollNotes(clip.notes, fallback.notes),
+    automation: normalizeClipAutomation(clip.automation, fallback.automation),
     volume: clamp(Number.isFinite(rawVolume) ? rawVolume : Number.isFinite(fallbackVolume) ? fallbackVolume : 0.55, 0, 1),
     muted: typeof clip.muted === "boolean" ? clip.muted : !!fallback.muted,
     blendMode: normalizeBlendModeValue(clip.blendMode, fallback.blendMode),
@@ -1686,6 +2006,86 @@ function normalizeClipState(rawClip = {}, fallbackState = {}) {
     pitch: clamp(Number.isFinite(rawPitch) ? rawPitch : Number.isFinite(fallbackPitch) ? fallbackPitch : 0, -12, 12),
     fx: normalizeClipFx(clip.fx, fallback.fx),
   };
+}
+
+function getAutomationTargetValue(state, targetDefinition) {
+  if (!state || !targetDefinition?.path?.length) {
+    return targetDefinition?.defaultValue;
+  }
+
+  let value = state;
+  targetDefinition.path.forEach((key) => {
+    value = value && typeof value === "object" ? value[key] : undefined;
+  });
+  return typeof value === "undefined" ? targetDefinition.defaultValue : value;
+}
+
+function setAutomationTargetValue(state, targetDefinition, value) {
+  if (!state || !targetDefinition?.path?.length) {
+    return;
+  }
+
+  let target = state;
+  targetDefinition.path.slice(0, -1).forEach((key) => {
+    if (!target[key] || typeof target[key] !== "object") {
+      target[key] = {};
+    }
+    target = target[key];
+  });
+  target[targetDefinition.path.at(-1)] = normalizeAutomationPointValue(targetDefinition, value);
+}
+
+function evaluateAutomationEnvelope(envelope, beat = 0, baseValue = null, targetDefinition = null) {
+  if (!envelope?.enabled || !Array.isArray(envelope.points) || !envelope.points.length || !targetDefinition) {
+    return baseValue;
+  }
+
+  const localBeat = Math.max(0, Number(beat) || 0);
+  const points = envelope.points;
+  if (localBeat < points[0].beat) {
+    return baseValue;
+  }
+
+  if (points.length === 1 || localBeat >= points.at(-1).beat) {
+    return points.at(-1).value;
+  }
+
+  const nextPointIndex = points.findIndex((point) => point.beat > localBeat);
+  const nextPoint = points[nextPointIndex];
+  const previousPoint = points[Math.max(0, nextPointIndex - 1)];
+  if (!nextPoint || !previousPoint) {
+    return baseValue;
+  }
+
+  if (envelope.interpolation === "hold" || targetDefinition.type === "enum") {
+    return previousPoint.value;
+  }
+
+  const span = nextPoint.beat - previousPoint.beat;
+  if (!Number.isFinite(span) || span <= 0) {
+    return nextPoint.value;
+  }
+
+  const progress = clamp((localBeat - previousPoint.beat) / span, 0, 1);
+  const startValue = Number(previousPoint.value);
+  const endValue = Number(nextPoint.value);
+  if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
+    return previousPoint.value;
+  }
+
+  return startValue + (endValue - startValue) * progress;
+}
+
+function applyAutomationAtBeat(baseState = {}, automation = baseState?.automation, localBeat = 0) {
+  const automatedState = normalizeClipState(baseState);
+  const envelopes = normalizeClipAutomation(automation);
+  Object.entries(envelopes).forEach(([targetKey, envelope]) => {
+    const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+    const baseValue = getAutomationTargetValue(automatedState, targetDefinition);
+    const nextValue = evaluateAutomationEnvelope(envelope, localBeat, baseValue, targetDefinition);
+    setAutomationTargetValue(automatedState, targetDefinition, nextValue);
+  });
+  return automatedState;
 }
 
 function syncTrackVideoElementSource(track, video, state = null) {
@@ -2042,7 +2442,7 @@ function bindTracksToArrangementStep(stepIndex, options = {}) {
   tracks.forEach((track) => {
     const clip = target[track.id] ?? null;
     track.arrangementClip = clip;
-    track.stepMs = getClipRetriggerStepMs(clip, barMs);
+    track.stepMs = isPianoRollTimingState(clip) ? 0 : getClipRetriggerStepMs(clip, barMs);
     if (shouldSyncTiming && Number.isFinite(track.stepMs) && track.stepMs > 0) {
       resetTrackPulseCursor(track, nextTriggerAt, { fireAtReference: true });
     }
@@ -2056,6 +2456,304 @@ function getClipRetriggerStepMs(clip, barMs) {
   }
 
   return Number(barMs) / normalizeRetriggersPerBar(clip.retriggersPerBar);
+}
+
+function getClipRetriggerStepBeats(clip, beatsPerBar = getTransportBeatsPerBar()) {
+  const resolvedBeatsPerBar = Number(beatsPerBar);
+  if (!clip || !Number.isFinite(resolvedBeatsPerBar) || resolvedBeatsPerBar <= 0) {
+    return 0;
+  }
+
+  return resolvedBeatsPerBar / normalizeRetriggersPerBar(clip.retriggersPerBar);
+}
+
+function getClipPlaybackSourceUrlForEvent(clip, track = null) {
+  if (track) {
+    return getTrackPlaybackSourceUrl(track, clip);
+  }
+
+  return clip?.source?.mediaUrl || clip?.source?.url || "";
+}
+
+function getPitchAdjustedPlaybackRate(baseSpeed = 1, pitchSemitones = 0) {
+  const speed = Number(baseSpeed);
+  const pitch = Number(pitchSemitones);
+  const safeSpeed = Number.isFinite(speed) ? speed : 1;
+  const safePitch = Number.isFinite(pitch) ? pitch : 0;
+  return safeSpeed * Math.pow(2, safePitch / 12);
+}
+
+const PIANO_ROLL_TRIGGER_LOOKAHEAD_MS = 45;
+
+function isPianoRollTimingState(state) {
+  return normalizeClipTimingMode(state?.timingMode) === CLIP_TIMING_MODES.pianoRoll;
+}
+
+function resetPianoRollEventCursor(track, contextKey) {
+  if (!track) {
+    return null;
+  }
+
+  if (track.__pianoRollEventContext !== contextKey) {
+    track.__pianoRollEventContext = contextKey;
+    track.__playedPianoRollEvents = new Set();
+  }
+
+  if (!(track.__playedPianoRollEvents instanceof Set)) {
+    track.__playedPianoRollEvents = new Set();
+  }
+
+  return track.__playedPianoRollEvents;
+}
+
+function clearPianoRollGate(track) {
+  if (!track) {
+    return;
+  }
+
+  if (track.__pianoRollGateTimer) {
+    window.clearTimeout(track.__pianoRollGateTimer);
+  }
+  track.__pianoRollGateTimer = null;
+  track.__pianoRollGateToken = null;
+}
+
+function clearPianoRollAudition(track) {
+  if (!track) {
+    return;
+  }
+
+  if (track.__pianoRollAuditionTimer) {
+    window.clearTimeout(track.__pianoRollAuditionTimer);
+  }
+  track.__pianoRollAuditionTimer = null;
+  track.__pianoRollAuditionToken = null;
+}
+
+function getPianoRollEventKey(event, index) {
+  const noteId = String(event?.noteId || event?.id || `note-${index}`);
+  const localBeat = Number.isFinite(Number(event?.localBeat)) ? Number(event.localBeat).toFixed(4) : "0.0000";
+  return `${noteId}:${localBeat}`;
+}
+
+function createClipEventPlaybackState(baseState, event) {
+  const automatedState = applyAutomationAtBeat(baseState, baseState?.automation, event?.localBeat || 0);
+  const velocity = clamp(Number(event?.velocity) || 0, 0, 1);
+  const baseVolume = clamp(Number(automatedState?.volume ?? baseState?.volume ?? 0.55), 0, 1);
+  const pitch = clamp(
+    Number(event?.pitchSemitones) || 0,
+    PIANO_ROLL_MIN_PITCH_SEMITONES,
+    PIANO_ROLL_MAX_PITCH_SEMITONES,
+  );
+  const startTime = Number.isFinite(Number(event?.startTime)) ? Number(event.startTime) : safeStartTime(automatedState);
+
+  return normalizeClipState(
+    {
+      ...automatedState,
+      startTime,
+      pitch,
+      volume: baseVolume * velocity,
+    },
+    automatedState,
+  );
+}
+
+function createPianoRollEventPlaybackState(baseState, event) {
+  return createClipEventPlaybackState(baseState, event);
+}
+
+function getRetriggerPlaybackEventForPulse(track, playbackState, pulseIndex, beatsPerBar, beatMs) {
+  if (!track || !playbackState || isPianoRollTimingState(playbackState)) {
+    return null;
+  }
+
+  const events = getClipPlaybackEvents(playbackState, 0, beatsPerBar, {
+    track,
+    trackId: track.id,
+    beatMs,
+  });
+  if (!events.length) {
+    return null;
+  }
+
+  const safePulseIndex = Math.max(0, Number(pulseIndex) || 0);
+  return events[safePulseIndex % events.length] || events[0];
+}
+
+function getRetriggerPlaybackStateForPulse(track, playbackState, pulseIndex, beatsPerBar, beatMs) {
+  const event = getRetriggerPlaybackEventForPulse(track, playbackState, pulseIndex, beatsPerBar, beatMs);
+  return event
+    ? createClipEventPlaybackState(playbackState, event)
+    : applyAutomationAtBeat(playbackState, playbackState?.automation, 0);
+}
+
+function schedulePianoRollNoteGate(track, event, eventKey, beatMs, contextKey, sessionToken) {
+  if (!track || !event || !Number.isFinite(Number(beatMs)) || Number(beatMs) <= 0) {
+    return;
+  }
+
+  const durationBeats = Math.max(0.0625, Number(event.durationBeats) || 0.25);
+  const durationMs = Math.max(30, durationBeats * Number(beatMs));
+  const gateToken = `${contextKey}:${eventKey}`;
+  clearPianoRollGate(track);
+  track.__pianoRollGateToken = gateToken;
+  track.__pianoRollGateTimer = window.setTimeout(() => {
+    if (
+      !transport?.active ||
+      transport.sessionToken !== sessionToken ||
+      track.__pianoRollGateToken !== gateToken
+    ) {
+      return;
+    }
+
+    const video = getTrackVideo(track);
+    if (video && typeof video.pause === "function") {
+      video.pause();
+    }
+    setTrackBlackout(track, true);
+    setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, { mediaStatus: "ready" });
+    clearPianoRollGate(track);
+  }, durationMs);
+}
+
+function triggerPianoRollEventForTrack(track, playbackState, event, eventKey, beatMs, contextKey, sessionToken) {
+  if (
+    !track ||
+    !transport?.active ||
+    transport.sessionToken !== sessionToken ||
+    track.__pianoRollEventContext !== contextKey
+  ) {
+    return;
+  }
+
+  if (!isTrackAudibleInMix(track, playbackState)) {
+    return;
+  }
+
+  const eventPlaybackState = createPianoRollEventPlaybackState(playbackState, event);
+  track.__transportClockCorrectionPulse = null;
+  track.__transportClockCorrectionUntil = null;
+  triggerTrack(track, eventPlaybackState, sessionToken);
+  schedulePianoRollNoteGate(track, event, eventKey, beatMs, contextKey, sessionToken);
+}
+
+function playPianoRollEventsForTrack(track, playbackState, now, barStartAt, barMs, beatsPerBar, contextKey) {
+  if (!track || !playbackState || !transport?.active || !Number.isFinite(Number(barStartAt))) {
+    return;
+  }
+
+  const playedEvents = resetPianoRollEventCursor(track, contextKey);
+  if (!playedEvents) {
+    return;
+  }
+
+  const beatMs = Number(barMs) / Number(beatsPerBar || getTransportBeatsPerBar(transport));
+  if (!Number.isFinite(beatMs) || beatMs <= 0) {
+    return;
+  }
+
+  const events = getPianoRollPlaybackEvents(playbackState, 0, beatsPerBar, {
+    track,
+    trackId: track.id,
+    beatMs,
+  });
+
+  events.forEach((event, index) => {
+    const scheduledAt = Number(barStartAt) + Number(event.localBeat || 0) * beatMs;
+    if (!Number.isFinite(scheduledAt) || scheduledAt > now + PIANO_ROLL_TRIGGER_LOOKAHEAD_MS) {
+      return;
+    }
+
+    const eventKey = getPianoRollEventKey(event, index);
+    if (playedEvents.has(eventKey)) {
+      return;
+    }
+
+    playedEvents.add(eventKey);
+    const delayMs = Math.max(0, scheduledAt - performance.now());
+    const sessionToken = transport.sessionToken;
+    if (delayMs > 2) {
+      window.setTimeout(() => {
+        triggerPianoRollEventForTrack(track, playbackState, event, eventKey, beatMs, contextKey, sessionToken);
+      }, delayMs);
+      return;
+    }
+
+    triggerPianoRollEventForTrack(track, playbackState, event, eventKey, beatMs, contextKey, sessionToken);
+  });
+}
+
+function createClipPlaybackEvent(clip, localBeat, sceneStartBeat = 0, options = {}) {
+  const normalizedClip = normalizeClipState(clip);
+  const note = options.note || null;
+  const notePitch = Number(note?.pitchSemitones);
+  const noteVelocity = Number(note?.velocity);
+  const noteAnchorOffset = Number(note?.anchorOffset);
+  const durationBeats = Number(options.durationBeats);
+  const beatMs = Number(options.beatMs);
+  const absoluteBeat = Number(sceneStartBeat) + Number(localBeat || 0);
+  const playbackPitch = normalizedClip.pitch + (Number.isFinite(notePitch) ? notePitch : 0);
+  const playbackRate = getPitchAdjustedPlaybackRate(normalizedClip.speed, playbackPitch);
+  return {
+    beat: absoluteBeat,
+    localBeat: Number(localBeat) || 0,
+    timeMs: Number.isFinite(beatMs) ? absoluteBeat * beatMs : null,
+    trackId: options.trackId || null,
+    clip: normalizedClip,
+    sourceUrl: getClipPlaybackSourceUrlForEvent(normalizedClip, options.track || null),
+    startTime: Math.max(0, normalizedClip.startTime + (Number.isFinite(noteAnchorOffset) ? noteAnchorOffset : 0)),
+    durationBeats: Number.isFinite(durationBeats) ? durationBeats : null,
+    durationMs: Number.isFinite(durationBeats) && Number.isFinite(beatMs) ? durationBeats * beatMs : null,
+    pitchSemitones: playbackPitch,
+    speed: playbackRate,
+    velocity: clamp(Number.isFinite(noteVelocity) ? noteVelocity : 1, 0, 1),
+    noteId: note?.id || null,
+    timingMode: normalizedClip.timingMode,
+  };
+}
+
+function getRetriggerPlaybackEvents(clip, sceneStartBeat = 0, sceneLengthBeats = getTransportBeatsPerBar(), options = {}) {
+  const normalizedClip = normalizeClipState(clip);
+  const beatsPerBar = Number(options.beatsPerBar ?? getTransportBeatsPerBar());
+  const stepBeats = getClipRetriggerStepBeats(normalizedClip, beatsPerBar);
+  const resolvedLength = Number(sceneLengthBeats);
+  if (!Number.isFinite(stepBeats) || stepBeats <= 0 || !Number.isFinite(resolvedLength) || resolvedLength <= 0) {
+    return [];
+  }
+
+  const events = [];
+  for (let localBeat = 0; localBeat < resolvedLength - 1e-6; localBeat += stepBeats) {
+    events.push(createClipPlaybackEvent(normalizedClip, localBeat, sceneStartBeat, {
+      ...options,
+      durationBeats: Math.min(stepBeats, resolvedLength - localBeat),
+    }));
+  }
+  return events;
+}
+
+function getPianoRollPlaybackEvents(clip, sceneStartBeat = 0, sceneLengthBeats = getTransportBeatsPerBar(), options = {}) {
+  const normalizedClip = normalizeClipState(clip);
+  const resolvedLength = Number(sceneLengthBeats);
+  if (!Number.isFinite(resolvedLength) || resolvedLength <= 0) {
+    return [];
+  }
+
+  return normalizedClip.notes
+    .filter((note) => note.startBeat < resolvedLength)
+    .map((note) => createClipPlaybackEvent(normalizedClip, note.startBeat, sceneStartBeat, {
+      ...options,
+      note,
+      durationBeats: Math.min(note.durationBeats, Math.max(PIANO_ROLL_MIN_NOTE_BEATS, resolvedLength - note.startBeat)),
+    }));
+}
+
+function getClipPlaybackEvents(clip, sceneStartBeat = 0, sceneLengthBeats = getTransportBeatsPerBar(), options = {}) {
+  const normalizedClip = normalizeClipState(clip);
+  if (normalizedClip.timingMode === CLIP_TIMING_MODES.pianoRoll) {
+    return getPianoRollPlaybackEvents(normalizedClip, sceneStartBeat, sceneLengthBeats, options);
+  }
+
+  return getRetriggerPlaybackEvents(normalizedClip, sceneStartBeat, sceneLengthBeats, options);
 }
 
 function getTrackActiveControlState(track) {
@@ -3269,13 +3967,17 @@ function revealArrangementPreroll(sessionToken) {
       track.__prerollPlaybackSignature === playbackSignature &&
       track.__prerollRevealCanSkipSeek;
 
-    if (canOpenPreparedVideo) {
-      applyTrackVolume(track, clip);
-      applyTrackFx(track, clip);
-      applyVideoFx(track, clip);
-      applyTrackBlend(track, clip);
-      applyTrackOpacity(track, clip);
-      applyTrackPitchAndSpeed(track, clip);
+    const revealState = isPianoRollTimingState(clip)
+      ? clip
+      : getRetriggerPlaybackStateForPulse(track, clip, 0, getTransportBeatsPerBar(transport), getTransportBeatMs(transport));
+
+    if (canOpenPreparedVideo && !isPianoRollTimingState(clip)) {
+      applyTrackVolume(track, revealState);
+      applyTrackFx(track, revealState);
+      applyVideoFx(track, revealState);
+      applyTrackBlend(track, revealState);
+      applyTrackOpacity(track, revealState);
+      applyTrackPitchAndSpeed(track, revealState);
       void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
       track.__lastPlaybackSignature = playbackSignature;
       track.__warmLaunchFor = null;
@@ -3286,7 +3988,9 @@ function revealArrangementPreroll(sessionToken) {
       track.__parkedPlaybackSignature = null;
       flashTrackTrigger(track);
     } else {
-      triggerTrack(track, clip, sessionToken);
+      if (!isPianoRollTimingState(clip)) {
+        triggerTrack(track, revealState, sessionToken);
+      }
     }
 
     track.__lastRetriggerPulse = 0;
@@ -3451,21 +4155,33 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
         reason: "not-ready-at-reveal",
       });
       clearTrackArrangementLookahead(track);
-      if (clip && sourceUrl) {
-        triggerTrack(track, clip, sessionToken);
+      if (clip && sourceUrl && !isPianoRollTimingState(clip)) {
+        const revealState = getRetriggerPlaybackStateForPulse(
+          track,
+          clip,
+          0,
+          getTransportBeatsPerBar(transport),
+          getTransportBeatMs(transport),
+        );
+        triggerTrack(track, revealState, sessionToken);
       }
       return;
     }
 
-    setupTrackAudio(track, video, clip);
-    applyTrackVolume(track, clip);
-    applyTrackFx(track, clip);
-    applyVideoFx(track, clip);
-    applyTrackBlend(track, clip);
-    applyTrackOpacity(track, clip);
-    applyTrackPitchAndSpeed(track, clip);
-    applyVideoPitchAndSpeed(video, clip);
-    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    const revealState = isPianoRollTimingState(clip)
+      ? clip
+      : getRetriggerPlaybackStateForPulse(track, clip, 0, getTransportBeatsPerBar(transport), getTransportBeatMs(transport));
+    setupTrackAudio(track, video, revealState);
+    applyTrackVolume(track, revealState);
+    applyTrackFx(track, revealState);
+    applyVideoFx(track, revealState);
+    applyTrackBlend(track, revealState);
+    applyTrackOpacity(track, revealState);
+    applyTrackPitchAndSpeed(track, revealState);
+    applyVideoPitchAndSpeed(video, revealState);
+    if (!isPianoRollTimingState(clip)) {
+      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    }
 
     const pulseIndex = getTrackPulseIndex(track, barStartAt);
     track.__lastPlaybackSignature = playbackSignature;
@@ -4410,7 +5126,18 @@ function resyncTrackTiming(track) {
   const timingState = getTrackActiveControlState(track) || track;
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
-  track.stepMs = getClipRetriggerStepMs(timingState, barMs);
+  const isPianoRoll = isPianoRollTimingState(timingState);
+  track.stepMs = isPianoRoll ? 0 : getClipRetriggerStepMs(timingState, barMs);
+  if (isPianoRoll) {
+    clearPianoRollGate(track);
+    track.nextTriggerAt = Number.POSITIVE_INFINITY;
+    track.__lastRetriggerPulse = null;
+    track.__pianoRollEventContext = null;
+    track.__playedPianoRollEvents = new Set();
+    track.lastStep = -1;
+    return;
+  }
+  clearPianoRollGate(track);
   const rearmAt = Number.isFinite(transport?.nextBeatAt) ? transport.nextBeatAt : performance.now();
   resetTrackPulseCursor(track, rearmAt, { fireAtReference: false });
   track.lastStep = -1;
@@ -5685,6 +6412,27 @@ function renderArrangementStepLabel(stepIndex) {
   `;
 }
 
+function clipHasEnabledAutomation(clip) {
+  const automation = normalizeClipAutomation(clip?.automation);
+  return Object.values(automation).some((envelope) => !!envelope?.enabled && Array.isArray(envelope.points) && envelope.points.length > 0);
+}
+
+function renderArrangementClipBadges(clip) {
+  if (!clip) {
+    return "";
+  }
+
+  const isPianoClip = isPianoRollTimingState(clip);
+  const badges = [
+    `<span class="arrangement-cell-badge" title="${isPianoClip ? "Piano Roll timing" : "Retrigger timing"}">${isPianoClip ? "P" : "R"}</span>`,
+  ];
+  if (clipHasEnabledAutomation(clip)) {
+    badges.push(`<span class="arrangement-cell-badge automation" title="Clip automation">A</span>`);
+  }
+
+  return `<span class="arrangement-cell-badges" aria-hidden="true">${badges.join("")}</span>`;
+}
+
 function renderArrangementRow(track) {
   return `
     ${arrangement.clips
@@ -5693,19 +6441,23 @@ function renderArrangementRow(track) {
         const canDragCopy = !!clip;
         const sceneColor = getArrangementSceneColor(index, clip);
         const densityCount = clip ? normalizeRetriggersPerBar(clip.retriggersPerBar) : 1;
-        const densityClass = clip && densityCount > 1 ? "has-density-bars" : "";
+        const isPianoClip = isPianoRollTimingState(clip);
+        const hasAutomation = clipHasEnabledAutomation(clip);
+        const densityClass = clip && !isPianoClip && densityCount > 1 ? "has-density-bars" : "";
+        const timingClass = isPianoClip ? "has-piano-roll" : "";
+        const automationClass = hasAutomation ? "has-automation" : "";
         const sceneStyles = [
           sceneColor ? `--scene-track-color: ${sceneColor}` : "",
-          clip && densityCount > 1 ? `--clip-density-count: ${densityCount}` : "",
+          clip && !isPianoClip && densityCount > 1 ? `--clip-density-count: ${densityCount}` : "",
         ].filter(Boolean);
         const sceneStyle = sceneStyles.length ? ` style="${sceneStyles.join("; ")};"` : "";
         const isSelected = isArrangementSceneSelected(index) || isArrangementClipSelected(track.id, index);
         const title = clip
-          ? `${track.name} scene ${index + 1}; ${RETRIGGER_LABELS[densityCount] || densityCount} density; click to edit, drag to copy`
+          ? `${track.name} scene ${index + 1}; ${isPianoClip ? "Piano Roll" : `${RETRIGGER_LABELS[densityCount] || densityCount} density`}${hasAutomation ? "; automation" : ""}; click to edit, drag to copy`
           : `Blank ${track.name} slot in scene ${index + 1}; click to select, then Capture to create`;
         return `
           <button
-            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${isSelected ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${timingClass} ${automationClass} ${isSelected ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
             type="button"
             data-arr-track="${track.id}"
             data-arr-step="${index}"
@@ -5713,7 +6465,7 @@ function renderArrangementRow(track) {
             title="${escapeHtml(title)}"
             ${sceneStyle}
           >
-            ${clip ? "x" : ""}
+            ${renderArrangementClipBadges(clip)}
           </button>
         `;
       })
@@ -6346,6 +7098,373 @@ function renderTrackMediaPrep(track, renderState = getTrackRenderState(track)) {
   `;
 }
 
+const PIANO_ROLL_EDITOR_STEPS_PER_BEAT = 4;
+
+function getPianoRollEditorGrid(snapValue = DEFAULT_PIANO_ROLL_SNAP, beatsPerBar = getTransportBeatsPerBar()) {
+  if (typeof snapValue === "number" && arguments.length === 1) {
+    beatsPerBar = snapValue;
+    snapValue = DEFAULT_PIANO_ROLL_SNAP;
+  }
+
+  const resolvedBeatsPerBar = Math.max(1, Number(beatsPerBar) || 4);
+  const snapDefinition = getPianoRollSnapDefinition(snapValue);
+  const stepsPerBeat = Math.max(1, Number(snapDefinition?.stepsPerBeat) || PIANO_ROLL_EDITOR_STEPS_PER_BEAT);
+  const stepCount = Math.max(1, Math.round(resolvedBeatsPerBar * stepsPerBeat));
+  return {
+    beatsPerBar: resolvedBeatsPerBar,
+    snap: snapDefinition.value,
+    snapLabel: snapDefinition.label,
+    stepsPerBeat,
+    stepCount,
+    stepBeat: resolvedBeatsPerBar / stepCount,
+  };
+}
+
+function getSelectedPianoRollNoteId(track, notes = []) {
+  const selectedId = String(track?.__selectedPianoRollNoteId || "");
+  if (selectedId && notes.some((note) => note.id === selectedId)) {
+    return selectedId;
+  }
+
+  track.__selectedPianoRollNoteId = null;
+  return "";
+}
+
+function getPianoRollNoteEnd(note) {
+  return Number(note.startBeat || 0) + Math.max(PIANO_ROLL_MIN_NOTE_BEATS, Number(note.durationBeats) || 0.25);
+}
+
+function findPianoRollNoteAtCell(notes, beat, pitch, stepBeat) {
+  const cellStart = Number(beat);
+  const cellEnd = cellStart + Number(stepBeat);
+  return notes.find((note) => {
+    if (Number(note.pitchSemitones) !== Number(pitch)) {
+      return false;
+    }
+
+    const noteStart = Number(note.startBeat || 0);
+    const noteEnd = getPianoRollNoteEnd(note);
+    return noteStart < cellEnd - 0.0001 && noteEnd > cellStart + 0.0001;
+  }) || null;
+}
+
+function findPianoRollNoteStartingAtCell(notes, beat, pitch) {
+  return notes.find((note) => (
+    Number(note.pitchSemitones) === Number(pitch) &&
+    Math.abs(Number(note.startBeat || 0) - Number(beat)) < 0.0001
+  )) || null;
+}
+
+function renderPianoRollEditor(track, renderState = getTrackRenderState(track)) {
+  const timingMode = normalizeClipTimingMode(renderState?.timingMode);
+  const isPianoMode = timingMode === CLIP_TIMING_MODES.pianoRoll;
+  if (!isPianoMode) {
+    return "";
+  }
+
+  const notes = normalizePianoRollNotes(renderState?.notes);
+  const pianoSnap = normalizePianoRollSnap(renderState?.pianoSnap);
+  const pianoRoot = normalizePianoRootNote(renderState?.pianoRoot);
+  const grid = getPianoRollEditorGrid(pianoSnap);
+  const pitchRows = [];
+  for (let pitch = PIANO_ROLL_MAX_PITCH_SEMITONES; pitch >= PIANO_ROLL_MIN_PITCH_SEMITONES; pitch -= 1) {
+    pitchRows.push(pitch);
+  }
+
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || renderState?.selectedNoteId || "";
+  const selectedNote = notes.find((note) => note.id === selectedNoteId) || null;
+  const canPreviewNote = !!selectedNote && !!getTrackPlaybackSourceUrl(track, renderState);
+  const selectedVelocity = selectedNote ? Math.round(clamp(Number(selectedNote.velocity) || 0, 0, 1) * 100) : 80;
+  const selectedDurationSteps = selectedNote
+    ? Math.max(1, Math.round((Number(selectedNote.durationBeats) || grid.stepBeat) / grid.stepBeat))
+    : 1;
+
+  return `
+    <div
+      class="piano-roll-editor"
+      data-piano-roll-editor="${track.id}"
+      style="--piano-roll-steps: ${grid.stepCount}; --piano-roll-rows: ${pitchRows.length};"
+      onkeydown="window.freemixPianoRollKeyDown(event)"
+      tabindex="0"
+    >
+      <div class="piano-roll-head">
+        <span>Piano Roll</span>
+        <small>${notes.length} note${notes.length === 1 ? "" : "s"} / ${grid.stepCount} steps</small>
+        <label class="piano-roll-snap">
+          <span>Snap</span>
+          <select data-track-control="${track.id}" data-control="pianoSnap">
+            ${PIANO_ROLL_SNAP_OPTIONS.map((option) => (
+              `<option value="${escapeHtml(option.value)}" ${option.value === pianoSnap ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+            )).join("")}
+          </select>
+        </label>
+        <label class="piano-roll-snap piano-roll-root">
+          <span>Root</span>
+          <select data-track-control="${track.id}" data-control="pianoRoot">
+            ${PIANO_ROOT_NOTE_OPTIONS.map((option) => (
+              `<option value="${escapeHtml(option.value)}" ${option.value === pianoRoot ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+            )).join("")}
+          </select>
+        </label>
+        <button
+          class="piano-roll-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="pianoPreviewNote"
+          onclick="window.freemixPreviewSelectedPianoRollNote(event)"
+          ${canPreviewNote ? "" : "disabled"}
+        >Preview</button>
+        <button
+          class="piano-roll-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="pianoDuplicateNote"
+          onclick="window.freemixDuplicateSelectedPianoRollNote(event)"
+          ${selectedNote ? "" : "disabled"}
+        >Duplicate</button>
+        <button
+          class="piano-roll-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="pianoQuantizeNotes"
+          onclick="window.freemixQuantizePianoRollNotes(event)"
+          ${notes.length ? "" : "disabled"}
+        >Quantize</button>
+        <button
+          class="piano-roll-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="pianoDeleteNote"
+          onclick="window.freemixDeleteSelectedPianoRollNote(event)"
+          ${selectedNote ? "" : "disabled"}
+        >Delete note</button>
+      </div>
+      <div class="piano-roll-grid" role="grid" aria-label="${escapeHtml(`${track.name} piano roll`)}">
+        ${pitchRows
+          .map((pitch) => `
+            <div class="piano-roll-row" role="row">
+              <span class="piano-roll-pitch" title="${pitch > 0 ? "+" : ""}${pitch} semitones">${escapeHtml(getPianoRollPitchLabel(pianoRoot, pitch))}</span>
+              ${Array.from({ length: grid.stepCount }, (_, stepIndex) => {
+                const startBeat = stepIndex * grid.stepBeat;
+                const note = findPianoRollNoteAtCell(notes, startBeat, pitch, grid.stepBeat);
+                const isSelected = note && note.id === selectedNoteId;
+                const isStart = !!note && Math.abs(Number(note.startBeat || 0) - startBeat) < 0.0001;
+                const isEnd = !!note && getPianoRollNoteEnd(note) <= startBeat + grid.stepBeat + 0.0001;
+                return `
+                  <button
+                    class="piano-roll-cell${note ? " has-note" : ""}${isStart ? " note-start" : ""}${note && !isStart ? " note-body" : ""}${isEnd ? " note-end" : ""}${isSelected ? " selected" : ""}"
+                    type="button"
+                    data-piano-cell="true"
+                    data-track-control="${track.id}"
+                    data-control="pianoNote"
+                    data-note-beat="${startBeat.toFixed(4)}"
+                    data-note-step="${stepIndex}"
+                    data-note-pitch="${pitch}"
+                    data-note-id="${escapeHtml(note?.id || "")}"
+                    data-note-edge="${isEnd ? "end" : "body"}"
+                    aria-pressed="${note ? "true" : "false"}"
+                    title="${note ? "Drag to move; drag edge/Shift-drag to resize" : "Drag to paint note"} at beat ${startBeat + 1}, pitch ${pitch > 0 ? "+" : ""}${pitch}"
+                    onpointerdown="window.freemixPianoRollPointerDown(event)"
+                  ></button>
+                `;
+              }).join("")}
+            </div>
+          `)
+          .join("")}
+      </div>
+      <div class="piano-roll-edit-row">
+        <label class="piano-roll-velocity">
+          <span>Velocity</span>
+          <input
+            type="range"
+            min="1"
+            max="100"
+            value="${selectedVelocity}"
+            data-track-control="${track.id}"
+            data-control="pianoVelocity"
+            oninput="window.freemixPianoRollVelocityInput(event)"
+            ${selectedNote ? "" : "disabled"}
+          >
+        </label>
+        <label class="piano-roll-velocity piano-roll-duration">
+          <span>Length</span>
+          <input
+            type="range"
+            min="1"
+            max="${grid.stepCount}"
+            value="${selectedDurationSteps}"
+            data-track-control="${track.id}"
+            data-control="pianoDuration"
+            oninput="window.freemixPianoRollDurationInput(event)"
+            ${selectedNote ? "" : "disabled"}
+          >
+        </label>
+        <span class="piano-roll-hint">Drag empty cells to paint. Drag notes to move. Drag note edges or Shift-drag to resize.</span>
+      </div>
+    </div>
+  `;
+}
+
+function normalizeAutomationTargetKey(value, fallback = DEFAULT_CLIP_AUTOMATION_TARGET) {
+  return CLIP_AUTOMATION_TARGETS[value] ? value : CLIP_AUTOMATION_TARGETS[fallback] ? fallback : DEFAULT_CLIP_AUTOMATION_TARGET;
+}
+
+function getSelectedAutomationTarget(track) {
+  return normalizeAutomationTargetKey(track?.__selectedAutomationTarget);
+}
+
+function getSelectedAutomationPointId(track, envelope) {
+  const selectedId = String(track?.__selectedAutomationPointId || "");
+  if (selectedId && envelope?.points?.some((point) => point.id === selectedId)) {
+    return selectedId;
+  }
+
+  if (track) {
+    track.__selectedAutomationPointId = null;
+  }
+  return "";
+}
+
+function getAutomationTargetLabel(targetKey) {
+  return CLIP_AUTOMATION_TARGET_OPTIONS.find((option) => option.value === targetKey)?.label || targetKey;
+}
+
+function getAutomationValuePercent(targetKey, value) {
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  if (!targetDefinition) {
+    return 0;
+  }
+
+  if (targetDefinition.type === "enum") {
+    const values = targetDefinition.values || [];
+    const index = Math.max(0, values.indexOf(value));
+    return values.length > 1 ? index / (values.length - 1) : 0;
+  }
+
+  const min = Number(targetDefinition.min);
+  const max = Number(targetDefinition.max);
+  const numericValue = Number(value);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min || !Number.isFinite(numericValue)) {
+    return 0;
+  }
+
+  return clamp((numericValue - min) / (max - min), 0, 1);
+}
+
+function getAutomationPointLabel(targetKey, point) {
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  const beat = Number(point?.beat || 0).toFixed(2).replace(/\.?0+$/, "");
+  const value = targetDefinition?.type === "enum"
+    ? String(point?.value || targetDefinition.defaultValue)
+    : Number(point?.value ?? targetDefinition?.defaultValue ?? 0).toFixed(2).replace(/\.?0+$/, "");
+  return `Beat ${beat}: ${value}`;
+}
+
+function renderAutomationEditor(track, renderState = getTrackRenderState(track)) {
+  const targetKey = getSelectedAutomationTarget(track);
+  const targetDefinition = CLIP_AUTOMATION_TARGETS[targetKey];
+  if (!targetDefinition) {
+    return "";
+  }
+
+  const beatsPerBar = getTransportBeatsPerBar();
+  const automation = normalizeClipAutomation(renderState?.automation);
+  const envelope = automation[targetKey] || createAutomationEnvelope(targetKey, { enabled: false });
+  const selectedPointId = getSelectedAutomationPointId(track, envelope);
+  const hasPoints = envelope.points.length > 0;
+  const targetOptions = CLIP_AUTOMATION_TARGET_OPTIONS.map((option) => (
+    `<option value="${escapeHtml(option.value)}" ${option.value === targetKey ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+  )).join("");
+  const interpolationDisabled = targetDefinition.type === "enum" ? "disabled" : "";
+  const pointsMarkup = envelope.points
+    .map((point) => {
+      const left = clamp(Number(point.beat || 0) / beatsPerBar, 0, 1) * 100;
+      const bottom = getAutomationValuePercent(targetKey, point.value) * 100;
+      const isSelected = point.id === selectedPointId;
+      return `
+        <button
+          class="automation-point${isSelected ? " selected" : ""}"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="automationPoint"
+          data-automation-target="${escapeHtml(targetKey)}"
+          data-automation-point-id="${escapeHtml(point.id)}"
+          style="left: ${left.toFixed(3)}%; bottom: ${bottom.toFixed(3)}%;"
+          title="${escapeHtml(getAutomationPointLabel(targetKey, point))}"
+          onpointerdown="window.freemixAutomationPointPointerDown(event)"
+        ></button>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="automation-editor" data-automation-editor="${track.id}">
+      <div class="automation-head">
+        <span>Automation</span>
+        <select
+          data-track-control="${track.id}"
+          data-control="automationTarget"
+          onchange="window.freemixAutomationTargetChange(event)"
+          aria-label="${escapeHtml(`${track.name} automation target`)}"
+        >
+          ${targetOptions}
+        </select>
+        <button
+          class="automation-tool${envelope.enabled ? " active" : ""}"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="automationEnable"
+          onclick="window.freemixAutomationToggle(event)"
+          aria-pressed="${!!envelope.enabled}"
+        >${envelope.enabled ? "On" : "Off"}</button>
+        <button
+          class="automation-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="automationReset"
+          onclick="window.freemixAutomationReset(event)"
+          ${hasPoints || renderState?.automation?.[targetKey] ? "" : "disabled"}
+        >Reset</button>
+      </div>
+      <div
+        class="automation-lane${envelope.enabled ? " enabled" : ""}"
+        data-track-control="${track.id}"
+        data-control="automation"
+        data-automation-target="${escapeHtml(targetKey)}"
+        style="--automation-beats: ${beatsPerBar};"
+        onpointerdown="window.freemixAutomationLanePointerDown(event)"
+        role="presentation"
+      >
+        <div class="automation-line" aria-hidden="true"></div>
+        ${pointsMarkup}
+      </div>
+      <div class="automation-footer">
+        <label>
+          <span>Curve</span>
+          <select
+            data-track-control="${track.id}"
+            data-control="automationInterpolation"
+            onchange="window.freemixAutomationInterpolationChange(event)"
+            ${interpolationDisabled}
+          >
+            <option value="linear" ${envelope.interpolation === "linear" ? "selected" : ""}>Linear</option>
+            <option value="hold" ${envelope.interpolation === "hold" ? "selected" : ""}>Hold</option>
+          </select>
+        </label>
+        <button
+          class="automation-tool"
+          type="button"
+          data-track-control="${track.id}"
+          data-control="automationDeletePoint"
+          onclick="window.freemixDeleteSelectedAutomationPoint(event)"
+          ${selectedPointId ? "" : "disabled"}
+        >Delete point</button>
+        <span>${escapeHtml(getAutomationTargetLabel(targetKey))}${hasPoints ? `: ${envelope.points.length} point${envelope.points.length === 1 ? "" : "s"}` : ": no points"}</span>
+      </div>
+    </section>
+  `;
+}
+
 function renderTrackControlRow(track) {
   const renderState = getTrackRenderState(track);
   const renderSource = renderState.source || track.source;
@@ -6356,6 +7475,8 @@ function renderTrackControlRow(track) {
   const sourceControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.source);
   const timingControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.timing);
   const densityControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.density);
+  const pianoRollEditor = renderPianoRollEditor(track, renderState);
+  const automationEditor = renderAutomationEditor(track, renderState);
   const levelControls = renderTrackControls(track, TRACK_CONTROL_SECTIONS.performance);
   const advancedControls = TRACK_CONTROL_SECTIONS.advanced
     .map((control) => renderTrackControlField(track, control))
@@ -6446,6 +7567,8 @@ function renderTrackControlRow(track) {
           ${timingControls}
           ${levelControls}
         </div>
+        ${pianoRollEditor}
+        ${automationEditor}
         ${advancedControls}
       </div>
     </article>
@@ -6907,6 +8030,1001 @@ function bindWorkstationControls() {
   }, 0);
 }
 
+let pianoRollDragState = null;
+let pianoRollSuppressClickUntil = 0;
+
+function updatePianoRollEditorForTrack(track) {
+  if (window.freemixRender?.updateTrackRow) {
+    window.freemixRender.updateTrackRow(track);
+  } else {
+    renderWorkstation();
+  }
+}
+
+function getPianoRollEditableContext(track, controlName = "pianoNote") {
+  if (!track) {
+    return null;
+  }
+
+  const safeStepIndex = getArrangementStepIndex(arrangement?.step);
+  const shouldCreateSceneClipOnEdit =
+    SCENE_EDITABLE_CONTROLS.has(controlName) &&
+    safeStepIndex !== null &&
+    !getArrangementStepClip(track, safeStepIndex);
+  const editableState = shouldCreateSceneClipOnEdit
+    ? getArrangementStepClipForTrack(track, { stepIndex: safeStepIndex, create: true })
+    : getTrackSceneEditableState(track, controlName);
+
+  return {
+    editableState: editableState || track,
+    safeStepIndex,
+  };
+}
+
+function getPianoRollCellInfo(control) {
+  const cell = control?.closest?.("[data-piano-cell='true']");
+  if (!cell) {
+    return null;
+  }
+
+  const track = getTrackById(cell.dataset.trackControl);
+  const startBeat = Number(cell.dataset.noteBeat);
+  const pitchSemitones = Number(cell.dataset.notePitch);
+  if (!track || !Number.isFinite(startBeat) || !Number.isFinite(pitchSemitones)) {
+    return null;
+  }
+
+  return {
+    cell,
+    track,
+    startBeat,
+    pitchSemitones,
+    edge: cell.dataset.noteEdge || "body",
+    key: `${track.id}:${startBeat.toFixed(4)}:${pitchSemitones}`,
+    grid: getPianoRollEditorGrid(),
+  };
+}
+
+function getPianoRollCellFromPointer(event) {
+  const target = document.elementFromPoint(event.clientX, event.clientY);
+  return target?.closest?.("[data-piano-cell='true']") || null;
+}
+
+function capturePianoRollEditIfNeeded(track, context, label, dragState = null) {
+  if (!track || !context?.editableState || context.editableState === track || !arrangement?.clips) {
+    return false;
+  }
+
+  if (dragState) {
+    if (dragState.didCapture) {
+      return false;
+    }
+    dragState.didCapture = true;
+  }
+
+  captureArrangementEdit(label || `Changed piano roll in scene ${(context.safeStepIndex ?? 0) + 1}`);
+  return true;
+}
+
+function commitPianoRollNotes(track, context, notes, selectedNoteId = "", options = {}) {
+  if (!track || !context?.editableState) {
+    return false;
+  }
+
+  if (options.capture) {
+    capturePianoRollEditIfNeeded(track, context, options.captureLabel, options.dragState || null);
+  }
+
+  const editableState = context.editableState;
+  const normalizedNotes = normalizePianoRollNotes(notes);
+  const resolvedSelectedId = selectedNoteId && normalizedNotes.some((note) => note.id === selectedNoteId)
+    ? selectedNoteId
+    : "";
+
+  editableState.timingMode = CLIP_TIMING_MODES.pianoRoll;
+  editableState.notes = normalizedNotes;
+  editableState.selectedNoteId = resolvedSelectedId;
+  track.__selectedPianoRollNoteId = resolvedSelectedId;
+  applyArrangementClipControlValue(track, "timingMode", editableState.timingMode, editableState);
+  applyArrangementClipControlValue(track, "notes", editableState.notes, editableState);
+
+  if (editableState !== track && arrangement?.clips) {
+    refreshArrangementStepCells(context.safeStepIndex ?? 0);
+  }
+
+  if (options.render !== false) {
+    updatePianoRollEditorForTrack(track);
+  }
+
+  markAppStateDirty(true);
+  if (options.status !== false) {
+    setStatus(`${track.name}: piano roll ${normalizedNotes.length} note${normalizedNotes.length === 1 ? "" : "s"}`);
+  }
+  return true;
+}
+
+function selectPianoRollNote(track, context, noteId) {
+  if (!track || !context?.editableState) {
+    return false;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const selectedId = noteId && notes.some((note) => note.id === noteId) ? noteId : "";
+  context.editableState.selectedNoteId = selectedId;
+  track.__selectedPianoRollNoteId = selectedId;
+  updatePianoRollEditorForTrack(track);
+  return true;
+}
+
+function addPianoRollNoteAtCell(track, context, cellInfo, dragState = null) {
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const existingNote = findPianoRollNoteStartingAtCell(notes, cellInfo.startBeat, cellInfo.pitchSemitones);
+  if (existingNote) {
+    selectPianoRollNote(track, context, existingNote.id);
+    return existingNote.id;
+  }
+
+  const nextNote = createPianoRollNote({
+    startBeat: cellInfo.startBeat,
+    pitchSemitones: cellInfo.pitchSemitones,
+    durationBeats: cellInfo.grid.stepBeat,
+    velocity: dragState?.velocity ?? 1,
+  });
+  notes.push(nextNote);
+  commitPianoRollNotes(track, context, notes, nextNote.id, {
+    capture: true,
+    captureLabel: `Changed piano roll in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    dragState,
+  });
+  return nextNote.id;
+}
+
+function movePianoRollNoteToCell(track, context, cellInfo, dragState) {
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const noteIndex = notes.findIndex((note) => note.id === dragState.noteId);
+  if (noteIndex < 0) {
+    return false;
+  }
+
+  const note = notes[noteIndex];
+  const durationBeats = Math.max(PIANO_ROLL_MIN_NOTE_BEATS, Number(note.durationBeats) || cellInfo.grid.stepBeat);
+  const maxStart = Math.max(0, cellInfo.grid.beatsPerBar - durationBeats);
+  const nextStartBeat = clamp(cellInfo.startBeat, 0, maxStart);
+  const nextPitch = clamp(
+    cellInfo.pitchSemitones,
+    PIANO_ROLL_MIN_PITCH_SEMITONES,
+    PIANO_ROLL_MAX_PITCH_SEMITONES,
+  );
+  if (
+    Math.abs(Number(note.startBeat || 0) - nextStartBeat) < 0.0001 &&
+    Number(note.pitchSemitones) === nextPitch
+  ) {
+    return false;
+  }
+
+  notes[noteIndex] = {
+    ...note,
+    startBeat: nextStartBeat,
+    pitchSemitones: nextPitch,
+  };
+  commitPianoRollNotes(track, context, notes, note.id, {
+    capture: true,
+    captureLabel: `Moved piano roll note in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    dragState,
+  });
+  return true;
+}
+
+function resizePianoRollNoteToCell(track, context, cellInfo, dragState) {
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const noteIndex = notes.findIndex((note) => note.id === dragState.noteId);
+  if (noteIndex < 0) {
+    return false;
+  }
+
+  const note = notes[noteIndex];
+  const noteStart = Number(note.startBeat) || 0;
+  const requestedEnd = cellInfo.startBeat + cellInfo.grid.stepBeat;
+  const nextDuration = clamp(
+    requestedEnd - noteStart,
+    cellInfo.grid.stepBeat,
+    Math.max(cellInfo.grid.stepBeat, cellInfo.grid.beatsPerBar - noteStart),
+  );
+  if (Math.abs(Number(note.durationBeats || 0) - nextDuration) < 0.0001) {
+    return false;
+  }
+
+  notes[noteIndex] = {
+    ...note,
+    durationBeats: nextDuration,
+  };
+  commitPianoRollNotes(track, context, notes, note.id, {
+    capture: true,
+    captureLabel: `Resized piano roll note in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    dragState,
+  });
+  return true;
+}
+
+function editPianoRollCellFromPointer(event, cellInfo, dragState) {
+  if (!cellInfo || !dragState || cellInfo.track.id !== dragState.trackId || cellInfo.key === dragState.lastCellKey) {
+    return false;
+  }
+
+  const context = getPianoRollEditableContext(cellInfo.track, "pianoNote");
+  if (!context) {
+    return false;
+  }
+
+  dragState.lastCellKey = cellInfo.key;
+  if (dragState.mode === "paint") {
+    addPianoRollNoteAtCell(cellInfo.track, context, cellInfo, dragState);
+    return true;
+  }
+
+  if (dragState.mode === "resize") {
+    return resizePianoRollNoteToCell(cellInfo.track, context, cellInfo, dragState);
+  }
+
+  return movePianoRollNoteToCell(cellInfo.track, context, cellInfo, dragState);
+}
+
+window.freemixPianoRollPointerDown = (event) => {
+  const cellInfo = getPianoRollCellInfo(event.currentTarget);
+  if (!cellInfo) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  pianoRollSuppressClickUntil = performance.now() + 250;
+  cellInfo.cell.closest(".piano-roll-editor")?.focus?.({ preventScroll: true });
+
+  const context = getPianoRollEditableContext(cellInfo.track, "pianoNote");
+  if (!context) {
+    return;
+  }
+
+  context.editableState.timingMode = CLIP_TIMING_MODES.pianoRoll;
+  context.editableState.notes = normalizePianoRollNotes(context.editableState.notes);
+  const note = findPianoRollNoteAtCell(
+    context.editableState.notes,
+    cellInfo.startBeat,
+    cellInfo.pitchSemitones,
+    cellInfo.grid.stepBeat,
+  );
+  const mode = note
+    ? event.shiftKey || cellInfo.edge === "end"
+      ? "resize"
+      : "move"
+    : "paint";
+
+  pianoRollDragState = {
+    mode,
+    trackId: cellInfo.track.id,
+    noteId: note?.id || "",
+    velocity: note?.velocity ?? 1,
+    lastCellKey: "",
+    didCapture: false,
+  };
+
+  if (note) {
+    selectPianoRollNote(cellInfo.track, context, note.id);
+    pianoRollDragState.noteId = note.id;
+    pianoRollDragState.lastCellKey = cellInfo.key;
+  } else {
+    pianoRollDragState.noteId = addPianoRollNoteAtCell(cellInfo.track, context, cellInfo, pianoRollDragState);
+    pianoRollDragState.lastCellKey = cellInfo.key;
+  }
+
+  document.addEventListener("pointermove", window.freemixPianoRollPointerMove, { passive: false });
+  document.addEventListener("pointerup", window.freemixPianoRollPointerUp, { once: true });
+  document.addEventListener("pointercancel", window.freemixPianoRollPointerUp, { once: true });
+};
+
+window.freemixPianoRollPointerMove = (event) => {
+  if (!pianoRollDragState) {
+    return;
+  }
+
+  event.preventDefault();
+  const cell = getPianoRollCellFromPointer(event);
+  const cellInfo = getPianoRollCellInfo(cell);
+  editPianoRollCellFromPointer(event, cellInfo, pianoRollDragState);
+};
+
+window.freemixPianoRollPointerUp = () => {
+  document.removeEventListener("pointermove", window.freemixPianoRollPointerMove);
+  document.removeEventListener("pointercancel", window.freemixPianoRollPointerUp);
+  pianoRollDragState = null;
+};
+
+window.freemixPianoRollVelocityInput = (event) => {
+  const control = event.currentTarget;
+  const track = getTrackById(control.dataset.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoVelocity");
+  if (!track || !context) {
+    return;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context.editableState.selectedNoteId || "";
+  const selectedIndex = notes.findIndex((note) => note.id === selectedNoteId);
+  if (selectedIndex < 0) {
+    return;
+  }
+
+  notes[selectedIndex] = {
+    ...notes[selectedIndex],
+    velocity: clamp(Number(control.value) / 100, 0, 1),
+  };
+  commitPianoRollNotes(track, context, notes, notes[selectedIndex].id, {
+    capture: false,
+    status: false,
+    render: false,
+  });
+};
+
+window.freemixPianoRollDurationInput = (event) => {
+  const control = event.currentTarget;
+  const track = getTrackById(control.dataset.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoNote");
+  if (!track || !context) {
+    return;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context.editableState.selectedNoteId || "";
+  const selectedIndex = notes.findIndex((note) => note.id === selectedNoteId);
+  if (selectedIndex < 0) {
+    return;
+  }
+
+  const grid = getPianoRollEditorGrid();
+  const requestedSteps = Math.max(1, Number(control.value) || 1);
+  const maxDuration = Math.max(grid.stepBeat, grid.beatsPerBar - Number(notes[selectedIndex].startBeat || 0));
+  notes[selectedIndex] = {
+    ...notes[selectedIndex],
+    durationBeats: clamp(requestedSteps * grid.stepBeat, grid.stepBeat, maxDuration),
+  };
+  commitPianoRollNotes(track, context, notes, notes[selectedIndex].id, {
+    capture: false,
+    status: false,
+  });
+};
+
+window.freemixDeleteSelectedPianoRollNote = (event) => {
+  event?.preventDefault?.();
+  const track = getTrackById(event?.currentTarget?.dataset?.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoNote");
+  if (!track || !context) {
+    return;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context.editableState.selectedNoteId || "";
+  if (!selectedNoteId) {
+    return;
+  }
+
+  const nextNotes = notes.filter((note) => note.id !== selectedNoteId);
+  commitPianoRollNotes(track, context, nextNotes, "", {
+    capture: true,
+    captureLabel: `Deleted piano roll note in scene ${(context.safeStepIndex ?? 0) + 1}`,
+  });
+};
+
+window.freemixPreviewSelectedPianoRollNote = async (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledPianoRoll = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event?.currentTarget?.dataset?.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoNote");
+  if (!track || !context) {
+    return;
+  }
+
+  if (transport?.active) {
+    setStatus("Stop playback to preview piano-roll notes", true);
+    return;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context.editableState.selectedNoteId || "";
+  const selectedNote = notes.find((note) => note.id === selectedNoteId);
+  if (!selectedNote) {
+    setStatus(`${track.name}: select a piano-roll note to preview`, true);
+    return;
+  }
+
+  if (!getTrackPlaybackSourceUrl(track, context.editableState)) {
+    setStatus(`${track.name}: load a source before previewing notes`, true);
+    return;
+  }
+
+  if (typeof ensureAudioContext === "function" && !webAudioDisabled) {
+    try {
+      await ensureAudioContext();
+    } catch (error) {
+      console.warn("Piano-roll preview audio context unavailable", error);
+    }
+  }
+
+  const beatMs = getTransportBeatMs();
+  const beatsPerBar = getTransportBeatsPerBar();
+  const previewClip = normalizeClipState(
+    {
+      ...context.editableState,
+      timingMode: CLIP_TIMING_MODES.pianoRoll,
+      notes: [selectedNote],
+    },
+    context.editableState,
+  );
+  const [noteEvent] = getPianoRollPlaybackEvents(previewClip, 0, beatsPerBar, {
+    track,
+    trackId: track.id,
+    beatMs,
+  });
+  if (!noteEvent) {
+    setStatus(`${track.name}: note preview unavailable`, true);
+    return;
+  }
+
+  clearPianoRollAudition(track);
+  const previewToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  track.__pianoRollAuditionToken = previewToken;
+  const eventPlaybackState = createPianoRollEventPlaybackState(previewClip, noteEvent);
+  triggerTrack(track, eventPlaybackState, transport?.sessionToken);
+
+  const durationMs = Math.max(
+    90,
+    (Number(noteEvent.durationBeats) || Number(selectedNote.durationBeats) || 0.25) * beatMs,
+  );
+  track.__pianoRollAuditionTimer = window.setTimeout(() => {
+    if (transport?.active || track.__pianoRollAuditionToken !== previewToken) {
+      return;
+    }
+
+    const video = getTrackVideo(track);
+    if (video && typeof video.pause === "function") {
+      video.pause();
+    }
+    setTrackBlackout(track, true);
+    setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, { mediaStatus: "ready" });
+    clearPianoRollAudition(track);
+  }, durationMs);
+
+  setStatus(`${track.name}: preview ${getPianoRollPitchLabel(previewClip.pianoRoot, selectedNote.pitchSemitones)}`);
+};
+
+function quantizePianoRollValue(value, stepBeat) {
+  const step = Math.max(PIANO_ROLL_MIN_NOTE_BEATS, Number(stepBeat) || PIANO_ROLL_MIN_NOTE_BEATS);
+  return Math.round((Number(value) || 0) / step) * step;
+}
+
+function getSelectedPianoRollNoteForEdit(track, context) {
+  const notes = normalizePianoRollNotes(context?.editableState?.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context?.editableState?.selectedNoteId || "";
+  const selectedNote = notes.find((note) => note.id === selectedNoteId) || null;
+  return { notes, selectedNote, selectedNoteId };
+}
+
+window.freemixDuplicateSelectedPianoRollNote = (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledPianoRoll = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event?.currentTarget?.dataset?.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoDuplicateNote");
+  if (!track || !context) {
+    return;
+  }
+
+  const { notes, selectedNote } = getSelectedPianoRollNoteForEdit(track, context);
+  if (!selectedNote) {
+    setStatus(`${track.name}: select a piano-roll note to duplicate`, true);
+    return;
+  }
+
+  const grid = getPianoRollEditorGrid(context.editableState.pianoSnap);
+  const durationBeats = clamp(
+    Number(selectedNote.durationBeats) || grid.stepBeat,
+    grid.stepBeat,
+    Math.max(grid.stepBeat, grid.beatsPerBar),
+  );
+  const maxStartBeat = Math.max(0, grid.beatsPerBar - durationBeats);
+  let nextStartBeat = quantizePianoRollValue(Number(selectedNote.startBeat || 0) + grid.stepBeat, grid.stepBeat);
+  if (nextStartBeat > maxStartBeat + 0.0001) {
+    nextStartBeat = quantizePianoRollValue(Math.max(0, Number(selectedNote.startBeat || 0) - grid.stepBeat), grid.stepBeat);
+  }
+  nextStartBeat = clamp(nextStartBeat, 0, maxStartBeat);
+
+  const duplicateNote = createPianoRollNote({
+    startBeat: nextStartBeat,
+    durationBeats,
+    pitchSemitones: selectedNote.pitchSemitones,
+    velocity: selectedNote.velocity,
+    anchorOffset: selectedNote.anchorOffset,
+  });
+  commitPianoRollNotes(track, context, [...notes, duplicateNote], duplicateNote.id, {
+    capture: true,
+    captureLabel: `Duplicated piano roll note in scene ${(context.safeStepIndex ?? 0) + 1}`,
+  });
+  setStatus(`${track.name}: note duplicated`);
+};
+
+window.freemixQuantizePianoRollNotes = (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledPianoRoll = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event?.currentTarget?.dataset?.trackControl);
+  const context = getPianoRollEditableContext(track, "pianoQuantizeNotes");
+  if (!track || !context) {
+    return;
+  }
+
+  const notes = normalizePianoRollNotes(context.editableState.notes);
+  if (!notes.length) {
+    setStatus(`${track.name}: no piano-roll notes to quantize`, true);
+    return;
+  }
+
+  const grid = getPianoRollEditorGrid(context.editableState.pianoSnap);
+  const quantizedNotes = notes.map((note) => {
+    const durationBeats = clamp(
+      quantizePianoRollValue(Number(note.durationBeats) || grid.stepBeat, grid.stepBeat),
+      grid.stepBeat,
+      Math.max(grid.stepBeat, grid.beatsPerBar),
+    );
+    const maxStartBeat = Math.max(0, grid.beatsPerBar - durationBeats);
+    const startBeat = clamp(
+      quantizePianoRollValue(Number(note.startBeat) || 0, grid.stepBeat),
+      0,
+      maxStartBeat,
+    );
+    return {
+      ...note,
+      startBeat,
+      durationBeats,
+    };
+  });
+  const selectedNoteId = getSelectedPianoRollNoteId(track, notes) || context.editableState.selectedNoteId || "";
+  commitPianoRollNotes(track, context, quantizedNotes, selectedNoteId, {
+    capture: true,
+    captureLabel: `Quantized piano roll in scene ${(context.safeStepIndex ?? 0) + 1}`,
+  });
+  setStatus(`${track.name}: notes quantized to ${getPianoRollSnapDefinition(context.editableState.pianoSnap).label}`);
+};
+
+window.freemixPianoRollKeyDown = (event) => {
+  if (!event || !["Delete", "Backspace"].includes(event.key)) {
+    return;
+  }
+
+  const editor = event.currentTarget?.closest?.("[data-piano-roll-editor]");
+  const track = getTrackById(editor?.dataset?.pianoRollEditor);
+  if (!track) {
+    return;
+  }
+
+  event.preventDefault();
+  window.freemixDeleteSelectedPianoRollNote({
+    preventDefault() {},
+    currentTarget: { dataset: { trackControl: track.id } },
+  });
+};
+
+function handlePianoRollNoteControl(track, editableState, control, safeStepIndex, isInputEvent) {
+  if (pianoRollSuppressClickUntil > performance.now()) {
+    return true;
+  }
+
+  if (!track || !editableState || !control) {
+    return false;
+  }
+
+  const cellInfo = getPianoRollCellInfo(control);
+  if (!cellInfo) {
+    return false;
+  }
+
+  const context = { editableState, safeStepIndex };
+  editableState.timingMode = CLIP_TIMING_MODES.pianoRoll;
+  editableState.notes = normalizePianoRollNotes(editableState.notes);
+  const note = findPianoRollNoteAtCell(
+    editableState.notes,
+    cellInfo.startBeat,
+    cellInfo.pitchSemitones,
+    cellInfo.grid.stepBeat,
+  );
+
+  if (note) {
+    selectPianoRollNote(track, context, note.id);
+    return true;
+  }
+
+  addPianoRollNoteAtCell(track, context, cellInfo, null);
+  return true;
+}
+
+function handlePianoRollVelocityControl(track, editableState, control, safeStepIndex, isInputEvent) {
+  if (!track || !editableState || !control) {
+    return false;
+  }
+
+  editableState.notes = normalizePianoRollNotes(editableState.notes);
+  const selectedNoteId = getSelectedPianoRollNoteId(track, editableState.notes) || editableState.selectedNoteId || "";
+  const selectedIndex = editableState.notes.findIndex((note) => note.id === selectedNoteId);
+  if (selectedIndex < 0) {
+    return false;
+  }
+
+  if (editableState !== track && arrangement?.clips && !isInputEvent) {
+    captureArrangementEdit(`Changed piano roll velocity in scene ${(safeStepIndex ?? 0) + 1}`);
+  }
+
+  const rawValue = Number(control.value);
+  editableState.notes[selectedIndex] = {
+    ...editableState.notes[selectedIndex],
+    velocity: clamp(rawValue > 1 ? rawValue / 100 : rawValue, 0, 1),
+  };
+  editableState.selectedNoteId = editableState.notes[selectedIndex].id;
+  track.__selectedPianoRollNoteId = editableState.selectedNoteId;
+  applyArrangementClipControlValue(track, "notes", editableState.notes, editableState);
+  if (!isInputEvent) {
+    updatePianoRollEditorForTrack(track);
+  }
+  markAppStateDirty(true);
+  return true;
+}
+
+let automationDragState = null;
+
+function getAutomationEditableContext(track, controlName = "automation") {
+  return getPianoRollEditableContext(track, controlName);
+}
+
+function getAutomationEnvelopeForEdit(automation, targetKey, enabledFallback = true) {
+  const normalizedAutomation = normalizeClipAutomation(automation);
+  return normalizedAutomation[targetKey] || createAutomationEnvelope(targetKey, { enabled: enabledFallback });
+}
+
+function captureAutomationEditIfNeeded(track, context, label, dragState = null) {
+  if (!track || !context?.editableState || context.editableState === track || !arrangement?.clips) {
+    return false;
+  }
+
+  if (dragState) {
+    if (dragState.didCapture) {
+      return false;
+    }
+    dragState.didCapture = true;
+  }
+
+  captureArrangementEdit(label || `Changed automation in scene ${(context.safeStepIndex ?? 0) + 1}`);
+  return true;
+}
+
+function applyAutomationPreview(track, clipState) {
+  if (!track || !clipState || transport?.active) {
+    return;
+  }
+
+  const previewState = applyAutomationAtBeat(clipState, clipState.automation, 0);
+  applyTrackVolume(track, previewState);
+  applyTrackPitchAndSpeed(track, previewState);
+  applyTrackOpacity(track, previewState);
+  applyTrackBlend(track, previewState);
+  applyTrackFx(track, previewState);
+  applyVideoFx(track, previewState);
+  updateTrackModeChips(track);
+}
+
+function commitAutomation(track, context, automation, selectedPointId = "", options = {}) {
+  if (!track || !context?.editableState) {
+    return false;
+  }
+
+  if (options.capture) {
+    captureAutomationEditIfNeeded(track, context, options.captureLabel, options.dragState || null);
+  }
+
+  const normalizedAutomation = normalizeClipAutomation(automation);
+  const targetKey = normalizeAutomationTargetKey(options.targetKey || getSelectedAutomationTarget(track));
+  const selectedExists = selectedPointId && normalizedAutomation[targetKey]?.points?.some((point) => point.id === selectedPointId);
+  context.editableState.automation = normalizedAutomation;
+  track.__selectedAutomationTarget = targetKey;
+  track.__selectedAutomationPointId = selectedExists ? selectedPointId : null;
+  applyArrangementClipControlValue(track, "automation", normalizedAutomation, context.editableState);
+
+  if (context.editableState !== track && arrangement?.clips) {
+    refreshArrangementStepCells(context.safeStepIndex ?? 0);
+  }
+
+  applyAutomationPreview(track, context.editableState);
+  if (options.render !== false) {
+    updatePianoRollEditorForTrack(track);
+  }
+
+  markAppStateDirty(true);
+  if (options.status !== false) {
+    setStatus(`${track.name}: automation updated`);
+  }
+  return true;
+}
+
+function getAutomationLaneInfo(element) {
+  const lane = element?.closest?.(".automation-lane");
+  if (!lane) {
+    return null;
+  }
+
+  const track = getTrackById(lane.dataset.trackControl);
+  const targetKey = normalizeAutomationTargetKey(lane.dataset.automationTarget);
+  if (!track || !CLIP_AUTOMATION_TARGETS[targetKey]) {
+    return null;
+  }
+
+  return {
+    lane,
+    track,
+    targetKey,
+    targetDefinition: CLIP_AUTOMATION_TARGETS[targetKey],
+  };
+}
+
+function getAutomationValueFromLanePointer(laneInfo, event) {
+  const rect = laneInfo.lane.getBoundingClientRect();
+  const xPercent = rect.width > 0 ? clamp((event.clientX - rect.left) / rect.width, 0, 1) : 0;
+  const yPercent = rect.height > 0 ? clamp(1 - (event.clientY - rect.top) / rect.height, 0, 1) : 0;
+  const beatsPerBar = getTransportBeatsPerBar();
+  const grid = getPianoRollEditorGrid(beatsPerBar);
+  const rawBeat = xPercent * beatsPerBar;
+  const beat = clamp(Math.round(rawBeat / grid.stepBeat) * grid.stepBeat, 0, beatsPerBar);
+  const targetDefinition = laneInfo.targetDefinition;
+  let value = targetDefinition.defaultValue;
+
+  if (targetDefinition.type === "enum") {
+    const values = targetDefinition.values || [];
+    const index = clamp(Math.round(yPercent * Math.max(0, values.length - 1)), 0, Math.max(0, values.length - 1));
+    value = values[index] || targetDefinition.defaultValue;
+  } else {
+    value = targetDefinition.min + yPercent * (targetDefinition.max - targetDefinition.min);
+  }
+
+  return {
+    beat,
+    value: normalizeAutomationPointValue(targetDefinition, value),
+  };
+}
+
+function upsertAutomationPoint(track, context, targetKey, point, selectedPointId = point?.id, options = {}) {
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = getAutomationEnvelopeForEdit(automation, targetKey, true);
+  const nextPoint = normalizeAutomationPoint(targetKey, point);
+  const pointIndex = envelope.points.findIndex((existingPoint) => existingPoint.id === nextPoint.id);
+  if (pointIndex >= 0) {
+    envelope.points[pointIndex] = nextPoint;
+  } else {
+    envelope.points.push(nextPoint);
+  }
+  envelope.points.sort((a, b) => a.beat - b.beat);
+  automation[targetKey] = normalizeAutomationEnvelope(targetKey, envelope);
+  return commitAutomation(track, context, automation, selectedPointId || nextPoint.id, {
+    ...options,
+    targetKey,
+  });
+}
+
+function selectAutomationPoint(track, targetKey, pointId) {
+  if (!track) {
+    return false;
+  }
+
+  const context = getAutomationEditableContext(track, "automationPoint");
+  if (!context) {
+    return false;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = automation[targetKey];
+  if (!envelope?.points?.some((point) => point.id === pointId)) {
+    return false;
+  }
+
+  track.__selectedAutomationTarget = targetKey;
+  track.__selectedAutomationPointId = pointId;
+  updatePianoRollEditorForTrack(track);
+  return true;
+}
+
+window.freemixAutomationTargetChange = (event) => {
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event.currentTarget?.dataset?.trackControl);
+  if (!track) {
+    return;
+  }
+
+  track.__selectedAutomationTarget = normalizeAutomationTargetKey(event.currentTarget.value);
+  track.__selectedAutomationPointId = null;
+  updatePianoRollEditorForTrack(track);
+};
+
+window.freemixAutomationToggle = (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event.currentTarget?.dataset?.trackControl);
+  const targetKey = getSelectedAutomationTarget(track);
+  const context = getAutomationEditableContext(track, "automationEnable");
+  if (!track || !context) {
+    return;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = getAutomationEnvelopeForEdit(automation, targetKey, false);
+  envelope.enabled = !envelope.enabled;
+  automation[targetKey] = normalizeAutomationEnvelope(targetKey, envelope);
+  commitAutomation(track, context, automation, track.__selectedAutomationPointId || "", {
+    capture: true,
+    captureLabel: `Toggled automation in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    targetKey,
+  });
+};
+
+window.freemixAutomationInterpolationChange = (event) => {
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event.currentTarget?.dataset?.trackControl);
+  const targetKey = getSelectedAutomationTarget(track);
+  const context = getAutomationEditableContext(track, "automationInterpolation");
+  if (!track || !context || CLIP_AUTOMATION_TARGETS[targetKey]?.type === "enum") {
+    return;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = getAutomationEnvelopeForEdit(automation, targetKey, true);
+  envelope.interpolation = event.currentTarget.value === "hold" ? "hold" : "linear";
+  automation[targetKey] = normalizeAutomationEnvelope(targetKey, envelope);
+  commitAutomation(track, context, automation, track.__selectedAutomationPointId || "", {
+    capture: true,
+    captureLabel: `Changed automation curve in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    targetKey,
+  });
+};
+
+window.freemixAutomationReset = (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event.currentTarget?.dataset?.trackControl);
+  const targetKey = getSelectedAutomationTarget(track);
+  const context = getAutomationEditableContext(track, "automationReset");
+  if (!track || !context) {
+    return;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  delete automation[targetKey];
+  commitAutomation(track, context, automation, "", {
+    capture: true,
+    captureLabel: `Reset automation in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    targetKey,
+  });
+};
+
+window.freemixAutomationLanePointerDown = (event) => {
+  if (event.target?.closest?.(".automation-point")) {
+    return;
+  }
+
+  event.preventDefault();
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const laneInfo = getAutomationLaneInfo(event.currentTarget);
+  const context = getAutomationEditableContext(laneInfo?.track, "automationPoint");
+  if (!laneInfo || !context) {
+    return;
+  }
+
+  const pointValue = getAutomationValueFromLanePointer(laneInfo, event);
+  const point = createAutomationPoint(laneInfo.targetKey, pointValue);
+  upsertAutomationPoint(laneInfo.track, context, laneInfo.targetKey, point, point.id, {
+    capture: true,
+    captureLabel: `Added automation point in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    targetKey: laneInfo.targetKey,
+  });
+};
+
+window.freemixAutomationPointPointerDown = (event) => {
+  event.preventDefault();
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const pointEl = event.currentTarget;
+  const laneInfo = getAutomationLaneInfo(pointEl);
+  const pointId = pointEl.dataset.automationPointId || "";
+  const context = getAutomationEditableContext(laneInfo?.track, "automationPoint");
+  if (!laneInfo || !context || !pointId) {
+    return;
+  }
+
+  selectAutomationPoint(laneInfo.track, laneInfo.targetKey, pointId);
+  automationDragState = {
+    trackId: laneInfo.track.id,
+    targetKey: laneInfo.targetKey,
+    pointId,
+    didCapture: false,
+  };
+
+  document.addEventListener("pointermove", window.freemixAutomationPointPointerMove, { passive: false });
+  document.addEventListener("pointerup", window.freemixAutomationPointPointerUp, { once: true });
+  document.addEventListener("pointercancel", window.freemixAutomationPointPointerUp, { once: true });
+};
+
+window.freemixAutomationPointPointerMove = (event) => {
+  if (!automationDragState) {
+    return;
+  }
+
+  event.preventDefault();
+  const track = getTrackById(automationDragState.trackId);
+  const editor = track ? document.querySelector(`[data-automation-editor="${CSS.escape(track.id)}"]`) : null;
+  const lane = editor?.querySelector(`.automation-lane[data-automation-target="${CSS.escape(automationDragState.targetKey)}"]`);
+  const laneInfo = getAutomationLaneInfo(lane);
+  const context = getAutomationEditableContext(track, "automationPoint");
+  if (!track || !laneInfo || !context) {
+    return;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = getAutomationEnvelopeForEdit(automation, automationDragState.targetKey, true);
+  const point = envelope.points.find((existingPoint) => existingPoint.id === automationDragState.pointId);
+  if (!point) {
+    return;
+  }
+
+  const pointValue = getAutomationValueFromLanePointer(laneInfo, event);
+  upsertAutomationPoint(track, context, automationDragState.targetKey, { ...point, ...pointValue }, point.id, {
+    capture: true,
+    captureLabel: `Moved automation point in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    dragState: automationDragState,
+    targetKey: automationDragState.targetKey,
+  });
+};
+
+window.freemixAutomationPointPointerUp = () => {
+  document.removeEventListener("pointermove", window.freemixAutomationPointPointerMove);
+  document.removeEventListener("pointercancel", window.freemixAutomationPointPointerUp);
+  automationDragState = null;
+};
+
+window.freemixDeleteSelectedAutomationPoint = (event) => {
+  event?.preventDefault?.();
+  event.__freemixHandledAutomation = true;
+  event.stopImmediatePropagation?.();
+  const track = getTrackById(event.currentTarget?.dataset?.trackControl);
+  const targetKey = getSelectedAutomationTarget(track);
+  const context = getAutomationEditableContext(track, "automationDeletePoint");
+  if (!track || !context) {
+    return;
+  }
+
+  const selectedPointId = track.__selectedAutomationPointId || "";
+  if (!selectedPointId) {
+    return;
+  }
+
+  const automation = normalizeClipAutomation(context.editableState.automation);
+  const envelope = getAutomationEnvelopeForEdit(automation, targetKey, true);
+  envelope.points = envelope.points.filter((point) => point.id !== selectedPointId);
+  automation[targetKey] = normalizeAutomationEnvelope(targetKey, envelope);
+  commitAutomation(track, context, automation, "", {
+    capture: true,
+    captureLabel: `Deleted automation point in scene ${(context.safeStepIndex ?? 0) + 1}`,
+    targetKey,
+  });
+};
+
 function handleTrackControl(event) {
   const control = event.currentTarget;
   const track = getTrackById(control.dataset.trackControl);
@@ -6915,6 +9033,13 @@ function handleTrackControl(event) {
   }
 
   const controlName = control.dataset.control;
+  if (event.__freemixHandledAutomation) {
+    return;
+  }
+
+  if (event.__freemixHandledPianoRoll) {
+    return;
+  }
   const safeStepIndex = getArrangementStepIndex(arrangement?.step);
   const shouldCreateSceneClipOnEdit =
     SCENE_EDITABLE_CONTROLS.has(controlName) &&
@@ -7006,6 +9131,74 @@ function handleTrackControl(event) {
     applyTrackBlend(track, editableState);
     updateTrackModeChips(track);
     commitControlEdit();
+    return;
+  }
+
+  if (controlName === "timingMode") {
+    editableState.timingMode = normalizeClipTimingMode(control.value);
+    applyArrangementClipControlValue(track, "timingMode", editableState.timingMode, editableState);
+    if (editableState.timingMode === CLIP_TIMING_MODES.pianoRoll) {
+      editableState.notes = normalizePianoRollNotes(editableState.notes);
+      applyArrangementClipControlValue(track, "notes", editableState.notes, editableState);
+    }
+    track.lastStep = -1;
+    resyncTrackTiming(track);
+    updatePianoRollEditorForTrack(track);
+    commitControlEdit();
+    setStatus(`${track.name}: ${CLIP_TIMING_MODE_LABELS[editableState.timingMode]} mode`);
+    return;
+  }
+
+  if (controlName === "pianoSnap") {
+    editableState.pianoSnap = normalizePianoRollSnap(control.value);
+    applyArrangementClipControlValue(track, "pianoSnap", editableState.pianoSnap, editableState);
+    updatePianoRollEditorForTrack(track);
+    commitControlEdit();
+    setStatus(`${track.name}: piano roll snap ${getPianoRollSnapDefinition(editableState.pianoSnap).label}`);
+    return;
+  }
+
+  if (controlName === "pianoRoot") {
+    editableState.pianoRoot = normalizePianoRootNote(control.value);
+    applyArrangementClipControlValue(track, "pianoRoot", editableState.pianoRoot, editableState);
+    updatePianoRollEditorForTrack(track);
+    commitControlEdit();
+    setStatus(`${track.name}: piano roll root ${editableState.pianoRoot}`);
+    return;
+  }
+
+  if (controlName === "pianoNote") {
+    handlePianoRollNoteControl(track, editableState, control, safeStepIndex, isInputEvent);
+    return;
+  }
+
+  if (controlName === "pianoVelocity") {
+    handlePianoRollVelocityControl(track, editableState, control, safeStepIndex, isInputEvent);
+    return;
+  }
+
+  if (controlName === "pianoDuration") {
+    window.freemixPianoRollDurationInput(event);
+    return;
+  }
+
+  if (controlName === "pianoPreviewNote") {
+    window.freemixPreviewSelectedPianoRollNote(event);
+    return;
+  }
+
+  if (controlName === "pianoDuplicateNote") {
+    window.freemixDuplicateSelectedPianoRollNote(event);
+    return;
+  }
+
+  if (controlName === "pianoQuantizeNotes") {
+    window.freemixQuantizePianoRollNotes(event);
+    return;
+  }
+
+  if (controlName === "pianoDeleteNote") {
+    window.freemixDeleteSelectedPianoRollNote(event);
     return;
   }
 
@@ -8128,6 +10321,8 @@ function resetTrackPlaybackOutput(track) {
   track.__transportClockCorrectionPulse = null;
   track.__transportClockCorrectionUntil = null;
   track.__awaitingCleanVisualFrame = false;
+  clearPianoRollGate(track);
+  clearPianoRollAudition(track);
   const selectedClip = getArrangementStepClip(track, arrangement?.step);
   const resetState = selectedClip || track;
   setTrackPlaybackPhase(track, PLAYBACK_PHASES.stopped, {
@@ -8344,12 +10539,17 @@ function getExportPreflightIssue(mode = "clip") {
   return hasPlayableTrack || textClipHasVisibleText(getArrangementTextClip(arrangement?.step)) ? "" : "Load a source before exporting";
 }
 
-function getExportBlendMode(track) {
-  const trackState = getTrackActiveControlState(track) || track;
+function getExportBlendMode(track, state = null) {
+  const trackState = state || getTrackActiveControlState(track) || track;
   return EXPORT_BLEND_MODE_MAP[trackState?.blendMode] || "source-over";
 }
 
-function getTrackExportOpacity(track) {
+function getTrackExportOpacity(track, state = null) {
+  if (state) {
+    const opacity = Number(state.opacity);
+    return clamp(Number.isFinite(opacity) ? opacity : 1, 0, 1);
+  }
+
   const cell = getTrackCell(track);
   if (!cell) {
     return 1;
@@ -8363,7 +10563,30 @@ function getTrackExportOpacity(track) {
   return clamp(styleOpacity, 0, 1);
 }
 
-function getTrackExportFilter(track) {
+function getExportVideoFilterForState(state = {}) {
+  const fxState = state?.fx || {};
+  const eqMid = clamp(Number(fxState.eqMid), -12, 12);
+  const lowLift = Math.max(clamp(Number(fxState.eqLow), -12, 12), 0) / 12;
+  const midCut = Math.max(-eqMid, 0) / 12;
+  const highValue = clamp(Number(fxState.eqHigh), -12, 12);
+  const highLift = Math.max(highValue, 0) / 12;
+  const highCut = Math.max(-highValue, 0) / 12;
+  const tube = clamp(Number(fxState.tube), 0, 1);
+  const reverb = clamp(Number(fxState.reverb), 0, 1);
+
+  const brightness = 0.86 + highLift * 0.3 - highCut * 0.22 + lowLift * 0.06;
+  const contrast = 1 + tube * 0.45 + Math.max(eqMid, 0) * 0.018;
+  const saturate = 0.92 + lowLift * 0.25 + highLift * 0.18 + tube * 0.75;
+  const blur = reverb * 2.2 + highCut * 1.4 + midCut * 0.6;
+  const hue = eqMid * 1.6;
+  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturate}) blur(${blur}px) hue-rotate(${hue}deg)`;
+}
+
+function getTrackExportFilter(track, state = null) {
+  if (state) {
+    return getExportVideoFilterForState(state);
+  }
+
   const cell = getTrackCell(track);
   if (!cell) {
     return "none";
@@ -8388,7 +10611,48 @@ function getExportCanvasDimensions(targetRect = null) {
   return [Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))];
 }
 
-function drawTrackFrame(context, track, width, height) {
+function getCurrentExportLocalBeat() {
+  if (!transport?.active || !Number.isFinite(Number(transport.startedAt))) {
+    return 0;
+  }
+
+  const beatMs = getTransportBeatMs(transport);
+  const beatsPerBar = getTransportBeatsPerBar(transport);
+  const barMs = beatMs * beatsPerBar;
+  if (!Number.isFinite(beatMs) || beatMs <= 0 || !Number.isFinite(barMs) || barMs <= 0) {
+    return 0;
+  }
+
+  return (Math.max(0, performance.now() - transport.startedAt) % barMs) / beatMs;
+}
+
+function getExportFrameTrackState(track) {
+  if (!track) {
+    return null;
+  }
+
+  const baseState =
+    arrangement?.enabled && hasArrangementClips()
+      ? getArrangementStepClip(track, arrangement.step)
+      : getTrackPlaybackState(track) || track;
+  if (!baseState) {
+    return null;
+  }
+
+  return applyAutomationAtBeat(baseState, baseState.automation, getCurrentExportLocalBeat());
+}
+
+function applyExportFrameAutomation(track, state) {
+  if (!track || !state) {
+    return;
+  }
+
+  applyTrackVolume(track, state);
+  applyTrackPitchAndSpeed(track, state);
+  applyTrackFx(track, state);
+}
+
+function drawTrackFrame(context, track, width, height, state = null) {
   const video = getTrackVideo(track);
   if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
     return;
@@ -8402,9 +10666,9 @@ function drawTrackFrame(context, track, width, height) {
   const offsetX = (width - drawWidth) / 2;
   const offsetY = (height - drawHeight) / 2;
 
-  context.globalAlpha = getTrackExportOpacity(track);
-  context.globalCompositeOperation = getExportBlendMode(track);
-  context.filter = getTrackExportFilter(track);
+  context.globalAlpha = getTrackExportOpacity(track, state);
+  context.globalCompositeOperation = getExportBlendMode(track, state);
+  context.filter = getTrackExportFilter(track, state);
   context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
 }
 
@@ -8493,7 +10757,12 @@ function createExportCanvasSession() {
 
     tracks.forEach((track) => {
       try {
-        drawTrackFrame(context, track, width, height);
+        const frameState = getExportFrameTrackState(track);
+        if (!frameState || !getTrackPlaybackSourceUrl(track, frameState)) {
+          return;
+        }
+        applyExportFrameAutomation(track, frameState);
+        drawTrackFrame(context, track, width, height, frameState);
       } catch (error) {
         console.warn(`Export frame draw skipped for ${track?.name || "track"}`, error);
       }
@@ -9450,12 +11719,15 @@ function tickTransport() {
   const beatMs = getTransportBeatMs(transport);
   const beatsPerBar = getTransportBeatsPerBar(transport);
   const barMs = beatMs * beatsPerBar;
+  const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
+  const arrangementTransportActive = arrangement.enabled && hasArrangementClips();
+  const arrangementLength = arrangement.clips?.length || 1;
+  const currentStep = arrangementTransportActive
+    ? (transport.arrangementStartStep + elapsedBars) % arrangementLength
+    : getArrangementStepIndex(arrangement?.step) ?? 0;
+  const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
 
-  if (arrangement.enabled && hasArrangementClips()) {
-    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
-    const arrangementLength = arrangement.clips.length || 1;
-    const currentStep = (transport.arrangementStartStep + elapsedBars) % arrangementLength;
-    const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
+  if (arrangementTransportActive) {
     updateArrangementStep(currentStep, currentStepStartAt);
     reconcileArrangementPlaybackConfidence("transport");
     playArrangementDrums(now, currentStep, currentStepStartAt, barMs);
@@ -9471,17 +11743,15 @@ function tickTransport() {
       prepareUpcomingArrangementStepPreroll(nextStep.step, nextStep.startAt, transport.sessionToken);
     }
   } else {
-    const elapsedBars = Math.floor(Math.max(0, now - transport.startedAt) / barMs);
-    const currentStep = getArrangementStepIndex(arrangement?.step) ?? 0;
-    const currentStepStartAt = transport.startedAt + elapsedBars * barMs;
     playArrangementDrums(now, currentStep, currentStepStartAt, barMs);
   }
 
   tracks.forEach((track) => {
     const playbackState = getTrackPlaybackState(track) || track;
     const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+    const isPianoRoll = isPianoRollTimingState(playbackState);
 
-    if (!sourceUrl || !track.stepMs) {
+    if (!sourceUrl || (!track.stepMs && !isPianoRoll)) {
       return;
     }
 
@@ -9496,6 +11766,20 @@ function tickTransport() {
     }
 
     const activePlaybackState = playbackState;
+    if (isPianoRoll) {
+      const pianoContextKey = `${transport.sessionToken}:${arrangementTransportActive ? "arr" : "live"}:${currentStep}:${elapsedBars}`;
+      playPianoRollEventsForTrack(
+        track,
+        activePlaybackState,
+        now,
+        currentStepStartAt,
+        barMs,
+        beatsPerBar,
+        pianoContextKey,
+      );
+      return;
+    }
+
     const pulseIndex = getTrackPulseIndex(track, now);
     if (pulseIndex === null) {
       return;
@@ -9520,7 +11804,16 @@ function tickTransport() {
         track.__transportClockCorrectionPulse = null;
         track.__transportClockCorrectionUntil = null;
       }
-      triggerTrack(track, activePlaybackState, transport.sessionToken);
+      const eventPlaybackState = getRetriggerPlaybackStateForPulse(
+        track,
+        activePlaybackState,
+        pulseIndex,
+        beatsPerBar,
+        beatMs,
+      );
+      triggerTrack(track, eventPlaybackState, transport.sessionToken);
+      syncTrackVideoToTransportClock(track, eventPlaybackState, now, pulseIndex);
+      return;
     }
     syncTrackVideoToTransportClock(track, activePlaybackState, now, pulseIndex);
   });
@@ -9979,6 +12272,31 @@ function applyArrangementClipControlValue(track, controlName, value, clipState =
 
   if (controlName === "retriggersPerBar") {
     clip.retriggersPerBar = normalizeRetriggersPerBar(value);
+    return;
+  }
+
+  if (controlName === "timingMode") {
+    clip.timingMode = normalizeClipTimingMode(value);
+    return;
+  }
+
+  if (controlName === "pianoSnap") {
+    clip.pianoSnap = normalizePianoRollSnap(value);
+    return;
+  }
+
+  if (controlName === "pianoRoot") {
+    clip.pianoRoot = normalizePianoRootNote(value);
+    return;
+  }
+
+  if (controlName === "notes") {
+    clip.notes = normalizePianoRollNotes(value);
+    return;
+  }
+
+  if (controlName === "automation") {
+    clip.automation = normalizeClipAutomation(value);
     return;
   }
 
@@ -10703,7 +13021,18 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   tracks.forEach((track) => {
     const timingState = getTrackActiveControlState(track) || track;
     track.arrangementClip = null;
-    track.stepMs = getClipRetriggerStepMs(timingState, barMs);
+    const isPianoRoll = isPianoRollTimingState(timingState);
+    track.stepMs = isPianoRoll ? 0 : getClipRetriggerStepMs(timingState, barMs);
+    if (isPianoRoll) {
+      clearPianoRollGate(track);
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      track.__pianoRollEventContext = null;
+      track.__playedPianoRollEvents = new Set();
+      track.lastStep = -1;
+      return;
+    }
+    clearPianoRollGate(track);
     resetTrackPulseCursor(track, startAt, { fireAtReference: true });
   });
 }
@@ -11953,13 +14282,23 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
       track.__lookaheadRevealedStep === resolvedStep &&
       almostEqual(Number(track.__lookaheadRevealedBarStartAt), barStartAt, 3);
     const isAtOrAfterBarStart = performance.now() >= barStartAt - 1;
+    const isPianoRoll = isPianoRollTimingState(clip);
     const shouldRetriggerNow =
       !!force &&
       !!transport?.active &&
       isAtOrAfterBarStart &&
+      !isPianoRoll &&
       Number.isFinite(Number(track.stepMs)) &&
       track.stepMs > 0;
     resetTrackPulseCursor(track, barStartAt, { fireAtReference: !(shouldRetriggerNow || wasLookaheadRevealed) });
+    if (isPianoRoll) {
+      clearPianoRollGate(track);
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      track.__pianoRollEventContext = null;
+      track.__playedPianoRollEvents = new Set();
+      return;
+    }
     if (wasLookaheadRevealed) {
       if (Number.isFinite(lookaheadRevealedPulse)) {
         track.__lastRetriggerPulse = lookaheadRevealedPulse;
@@ -11974,7 +14313,14 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     if (shouldRetriggerNow) {
       track.__lastRetriggerPulse = 0;
       track.nextTriggerAt = barStartAt + track.stepMs;
-      triggerTrack(track, clip, transport.sessionToken);
+      const eventClip = getRetriggerPlaybackStateForPulse(
+        track,
+        clip,
+        0,
+        getTransportBeatsPerBar(transport),
+        getTransportBeatMs(transport),
+      );
+      triggerTrack(track, eventClip, transport.sessionToken);
     }
   });
 
@@ -12248,7 +14594,12 @@ function captureTrackSessionSnapshot(track) {
     showAdvanced: !!track.showAdvanced,
     collapsed: !!track.collapsed,
     startTime: Number(track.startTime) || 0,
+    timingMode: normalizeClipTimingMode(track.timingMode),
+    pianoSnap: normalizePianoRollSnap(track.pianoSnap),
+    pianoRoot: normalizePianoRootNote(track.pianoRoot),
     retriggersPerBar: normalizeRetriggersPerBar(track.retriggersPerBar),
+    notes: normalizePianoRollNotes(track.notes),
+    automation: normalizeClipAutomation(track.automation),
     volume: clamp(Number(track.volume), 0, 1),
     muted: !!track.muted,
     solo: !!track.solo,
@@ -12674,7 +15025,12 @@ function captureTrackClip(track) {
     colorIndex: getArrangementSceneColorIndex(arrangement?.step),
     durationFilter: track.durationFilter,
     startTime: track.startTime,
+    timingMode: track.timingMode,
+    pianoSnap: normalizePianoRollSnap(track.pianoSnap),
+    pianoRoot: normalizePianoRootNote(track.pianoRoot),
     retriggersPerBar: track.retriggersPerBar,
+    notes: track.notes,
+    automation: track.automation,
     volume: track.volume,
     muted: track.muted,
     blendMode: track.blendMode,
@@ -13055,6 +15411,11 @@ function createTrackTemplate(index) {
     collapsed: false,
     startTime: 0,
     retriggersPerBar: TRACK_RETRIGGER_DEFAULTS[paletteIndex % TRACK_RETRIGGER_DEFAULTS.length],
+    timingMode: DEFAULT_CLIP_TIMING_MODE,
+    pianoSnap: DEFAULT_PIANO_ROLL_SNAP,
+    pianoRoot: DEFAULT_PIANO_ROOT_NOTE,
+    notes: [],
+    automation: {},
     volume: 0.55,
     muted: false,
     solo: false,
@@ -13172,7 +15533,18 @@ window.freemixPlaybackEngine = Object.freeze({
   triggerTrack,
   getActiveEditTarget,
   getClipRetriggerStepMs,
+  getClipRetriggerStepBeats,
+  getClipPlaybackEvents,
+  getRetriggerPlaybackEvents,
+  getPianoRollPlaybackEvents,
+  createClipEventPlaybackState,
+  getRetriggerPlaybackEventForPulse,
+  getRetriggerPlaybackStateForPulse,
+  applyAutomationAtBeat,
   normalizeClipState,
+  normalizeClipTimingMode,
+  normalizePianoRollNotes,
+  normalizeClipAutomation,
   verifyTrackAudioFxRoute,
 });
 

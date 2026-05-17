@@ -1434,6 +1434,50 @@ input[type="number"]:focus {
     color-mix(in srgb, var(--scene-track-color, var(--track-color)) 24%, var(--panel-alt));
 }
 
+.arrangement-cell.filled.has-piano-roll {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.14) 0 3px,
+      rgba(0, 0, 0, 0.22) 3px 6px
+    ),
+    color-mix(in srgb, var(--scene-track-color, var(--track-color)) 26%, var(--panel-alt));
+}
+
+.arrangement-cell-badges {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 2;
+}
+
+.arrangement-cell-core {
+  position: relative;
+  z-index: 2;
+  opacity: 0.72;
+}
+
+.arrangement-cell-badge {
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--scene-track-color, var(--track-color)) 72%, #fff 10%);
+  border-radius: 3px;
+  background: color-mix(in srgb, #050708 56%, var(--scene-track-color, var(--track-color)) 44%);
+  color: color-mix(in srgb, #fff 88%, var(--scene-track-color, var(--track-color)) 12%);
+  font-size: 0.48rem;
+  font-weight: 950;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.arrangement-cell-badge.automation {
+  border-radius: 999px;
+}
+
 .arrangement-cell.playing {
   border-color: color-mix(in srgb, var(--amber) 85%, var(--scene-track-color, var(--track-color)));
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--scene-track-color, var(--track-color)) 22%, var(--panel-strong));
@@ -1745,8 +1789,8 @@ input[type="number"]:focus {
   position: relative;
   z-index: 3;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(54px, 0.34fr);
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   align-items: center;
   min-height: 18px;
   padding: 2px 4px;
@@ -1781,12 +1825,7 @@ input[type="number"]:focus {
 }
 
 .track-media-prep-bar {
-  position: relative;
-  overflow: hidden;
-  height: 5px;
-  border: 1px solid color-mix(in srgb, var(--track-color) 34%, var(--bg));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 78%, var(--panel-strong));
+  display: none;
 }
 
 .track-media-prep-bar span {
@@ -2092,6 +2131,302 @@ input[type="number"]:focus {
   background:
     linear-gradient(45deg, rgba(255, 255, 255, 0.08) 0 2px, transparent 2px 4px, rgba(255, 255, 255, 0.08) 4px 5px);
   opacity: 0.2;
+}
+
+.piano-roll-editor {
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 34%, var(--line));
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--track-color, var(--accent)) 10%, transparent), transparent),
+    color-mix(in srgb, var(--panel-strong) 82%, #000 18%);
+}
+
+.piano-roll-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--track-color, var(--accent));
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.piano-roll-head small {
+  color: var(--muted);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+}
+
+.piano-roll-snap {
+  display: inline-grid;
+  grid-template-columns: auto minmax(58px, 74px);
+  gap: 4px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.5rem;
+}
+
+.piano-roll-root {
+  grid-template-columns: auto minmax(46px, 58px);
+}
+
+.piano-roll-snap select {
+  min-height: 20px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 34%, var(--line));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--panel) 82%, #000 18%);
+  color: var(--text);
+  font: inherit;
+}
+
+.piano-roll-tool {
+  min-height: 18px;
+  padding: 2px 8px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 38%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 14%, var(--panel));
+  color: var(--text);
+  font-size: 0.48rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.piano-roll-tool:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.piano-roll-grid {
+  display: grid;
+  gap: 1px;
+  max-height: 165px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.piano-roll-row {
+  display: grid;
+  grid-template-columns: 46px repeat(var(--piano-roll-steps, 16), minmax(12px, 1fr));
+  gap: 1px;
+  align-items: stretch;
+}
+
+.piano-roll-pitch {
+  display: grid;
+  place-items: center;
+  min-height: 12px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 20%, var(--line));
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 0.44rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.piano-roll-cell {
+  min-width: 0;
+  min-height: 12px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 16%, var(--line));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--panel) 82%, #000 18%);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.piano-roll-cell:nth-child(4n + 2) {
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 8%, var(--panel));
+}
+
+.piano-roll-cell.has-note {
+  border-color: color-mix(in srgb, var(--track-color, var(--accent)) 82%, #fff 10%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--track-color, var(--accent)) 72%, #fff 8%), color-mix(in srgb, var(--track-color, var(--accent)) 42%, #000 18%));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--track-color, var(--accent)) 28%, transparent);
+  cursor: grab;
+}
+
+.piano-roll-cell.note-start {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.piano-roll-cell.note-body {
+  border-left-color: transparent;
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--track-color, var(--accent)) 60%, #fff 6%), color-mix(in srgb, var(--track-color, var(--accent)) 34%, #000 24%));
+}
+
+.piano-roll-cell.note-end {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  cursor: ew-resize;
+}
+
+.piano-roll-cell.selected {
+  outline: 2px solid var(--clip-selected);
+  outline-offset: 1px;
+}
+
+.piano-roll-edit-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.piano-roll-velocity {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.52rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.piano-roll-duration {
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.piano-roll-hint {
+  grid-column: 1 / -1;
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
+  font-size: 0.5rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.automation-editor {
+  display: grid;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 30%, var(--line));
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--track-color, var(--accent)) 8%, transparent), transparent),
+    color-mix(in srgb, var(--panel-strong) 78%, #000 22%);
+}
+
+.automation-head,
+.automation-footer {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 1fr) auto auto;
+  gap: 5px;
+  align-items: center;
+  color: var(--track-color, var(--accent));
+  font-size: 0.54rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.automation-head select,
+.automation-footer select {
+  min-height: 22px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 28%, var(--line));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--panel) 84%, #000 16%);
+  color: var(--text);
+  font: inherit;
+}
+
+.automation-tool {
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 34%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 12%, var(--panel));
+  color: var(--text);
+  font: inherit;
+  font-size: 0.5rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.automation-tool.active {
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 52%, #000 24%);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--track-color, var(--accent)) 24%, transparent);
+}
+
+.automation-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.automation-lane {
+  position: relative;
+  min-height: 74px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--track-color, var(--accent)) 18%, var(--line));
+  border-radius: 7px;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--track-color, var(--accent)) 14%, transparent) 0,
+      color-mix(in srgb, var(--track-color, var(--accent)) 14%, transparent) 1px,
+      transparent 1px,
+      transparent calc(100% / max(var(--automation-beats, 4), 1))
+    ),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 78%, #000 22%), color-mix(in srgb, var(--panel-strong) 76%, #000 24%));
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.automation-lane.enabled {
+  border-color: color-mix(in srgb, var(--track-color, var(--accent)) 46%, var(--line));
+}
+
+.automation-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 26%, transparent);
+}
+
+.automation-point {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--track-color, var(--accent)) 82%, #fff 8%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--track-color, var(--accent)) 70%, #000 18%);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--track-color, var(--accent)) 22%, transparent);
+  transform: translate(-50%, 50%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.automation-point.selected {
+  outline: 2px solid var(--clip-selected);
+  outline-offset: 2px;
+  background: var(--clip-selected);
+}
+
+.automation-footer {
+  grid-template-columns: minmax(110px, 150px) auto minmax(0, 1fr);
+  color: var(--muted);
+}
+
+.automation-footer label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
 }
 
 .fx-title {

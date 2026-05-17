@@ -389,6 +389,69 @@ async function runBrowserSmoke() {
         volume: clip.volume,
         fxLow: clip.fx.eqLow,
         schemaVersion: clip.schemaVersion,
+        timingMode: clip.timingMode,
+        notesLength: clip.notes.length,
+        automationKeys: Object.keys(clip.automation).length,
+      });
+      const retriggerClip = window.freemixPlaybackEngine.normalizeClipState({
+        source: { mediaUrl: "https://example.com/retrigger.mp4" },
+        startTime: 3,
+        retriggersPerBar: 4,
+        volume: 0.5,
+        pitch: 2,
+        automation: {
+          volume: {
+            enabled: true,
+            interpolation: "linear",
+            points: [
+              { beat: 0, value: 0.25 },
+              { beat: 2, value: 0.75 },
+            ],
+          },
+        },
+      });
+      const retriggerEvents = window.freemixPlaybackEngine.getClipPlaybackEvents(retriggerClip, 0, 4, {
+        trackId: "smoke-track",
+        beatMs: 500,
+      });
+      const retriggerPulseState = window.freemixPlaybackEngine.getRetriggerPlaybackStateForPulse(
+        { id: "smoke-track" },
+        retriggerClip,
+        2,
+        4,
+        500,
+      );
+      const pianoClip = window.freemixPlaybackEngine.normalizeClipState({
+        source: { mediaUrl: "https://example.com/piano.mp4" },
+        timingMode: "pianoRoll",
+        startTime: 9,
+        volume: 0.8,
+        notes: [
+          {
+            id: "smoke-note",
+            startBeat: 1,
+            durationBeats: 0.5,
+            pitchSemitones: 7,
+            velocity: 0.5,
+          },
+        ],
+      });
+      const pianoEvents = window.freemixPlaybackEngine.getClipPlaybackEvents(pianoClip, 0, 4, {
+        trackId: "smoke-track",
+        beatMs: 500,
+      });
+      const pianoEventState = window.freemixPlaybackEngine.createClipEventPlaybackState(pianoClip, pianoEvents[0]);
+      results.push({
+        action: "clip scheduler",
+        retriggerCount: retriggerEvents.length,
+        retriggerBeats: retriggerEvents.map((entry) => entry.localBeat),
+        retriggerVolumeAtPulseTwo: Number(retriggerPulseState.volume.toFixed(3)),
+        retriggerStartTimeAtPulseTwo: retriggerPulseState.startTime,
+        pianoCount: pianoEvents.length,
+        pianoBeat: pianoEvents[0]?.localBeat,
+        pianoDuration: pianoEvents[0]?.durationBeats,
+        pianoPitch: pianoEventState.pitch,
+        pianoVolume: Number(pianoEventState.volume.toFixed(3)),
       });
       window.freemixToggleDebugPanel?.(true);
       window.freemixToggleDebugPanel?.(false);
@@ -402,6 +465,58 @@ async function runBrowserSmoke() {
         action: "select av clip",
         selected: firstAvCell.classList.contains("selected"),
         targetLabel: document.querySelector("#selectedTargetLabel")?.textContent?.trim() || "",
+      });
+      const timingModeSelect = document.querySelector('[data-track-control="track-1"][data-control="timingMode"]');
+      if (!timingModeSelect) {
+        throw new Error("Timing mode control missing.");
+      }
+      timingModeSelect.value = "pianoRoll";
+      timingModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const snapSelect = document.querySelector('[data-track-control="track-1"][data-control="pianoSnap"]');
+      if (snapSelect) {
+        snapSelect.value = "1/8";
+        snapSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const rootSelect = document.querySelector('[data-track-control="track-1"][data-control="pianoRoot"]');
+      if (rootSelect) {
+        rootSelect.value = "D";
+        rootSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const firstPianoCell = document.querySelector('[data-piano-cell="true"][data-track-control="track-1"][data-note-pitch="0"]');
+      if (firstPianoCell) {
+        const rect = firstPianoCell.getBoundingClientRect();
+        firstPianoCell.dispatchEvent(new PointerEvent("pointerdown", {
+          bubbles: true,
+          clientX: rect.left + Math.max(1, rect.width / 2),
+          clientY: rect.top + Math.max(1, rect.height / 2),
+          pointerId: 1,
+          pointerType: "mouse",
+        }));
+        document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, pointerType: "mouse" }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const duplicateButton = document.querySelector('[data-track-control="track-1"][data-control="pianoDuplicateNote"]');
+      duplicateButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const quantizeButton = document.querySelector('[data-track-control="track-1"][data-control="pianoQuantizeNotes"]');
+      quantizeButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const activeTarget = window.freemixPlaybackEngine.getActiveEditTarget?.();
+      const activeClip = activeTarget?.clip || activeTarget?.state || null;
+      results.push({
+        action: "piano roll ui",
+        editor: !!document.querySelector('[data-piano-roll-editor="track-1"]'),
+        snap: document.querySelector('[data-track-control="track-1"][data-control="pianoSnap"]')?.value || "",
+        root: document.querySelector('[data-track-control="track-1"][data-control="pianoRoot"]')?.value || "",
+        noteCount: activeClip?.notes?.length || 0,
+        selectedTiming: activeClip?.timingMode || "",
+        clipSnap: activeClip?.pianoSnap || "",
+        clipRoot: activeClip?.pianoRoot || "",
+        duplicateEnabled: duplicateButton ? !duplicateButton.disabled : false,
+        quantizeEnabled: quantizeButton ? !quantizeButton.disabled : false,
       });
       const textCell = document.querySelector('.arrangement-text-cell[data-arr-step="0"]');
       if (!textCell) {
@@ -475,14 +590,47 @@ async function runBrowserSmoke() {
       normalizedClip?.density !== 4 ||
       normalizedClip?.volume !== 0.8 ||
       normalizedClip?.fxLow !== 6 ||
-      normalizedClip?.schemaVersion !== 2
+      normalizedClip?.schemaVersion !== 3 ||
+      normalizedClip?.timingMode !== "retrigger" ||
+      normalizedClip?.notesLength !== 0 ||
+      normalizedClip?.automationKeys !== 0
     ) {
       fail(`Clip normalization smoke failed: ${JSON.stringify(normalizedClip)}`);
+    }
+
+    const clipScheduler = interactionState.find((entry) => entry.action === "clip scheduler");
+    if (
+      clipScheduler?.retriggerCount !== 4 ||
+      JSON.stringify(clipScheduler.retriggerBeats) !== JSON.stringify([0, 1, 2, 3]) ||
+      clipScheduler.retriggerVolumeAtPulseTwo !== 0.75 ||
+      clipScheduler.retriggerStartTimeAtPulseTwo !== 3 ||
+      clipScheduler.pianoCount !== 1 ||
+      clipScheduler.pianoBeat !== 1 ||
+      clipScheduler.pianoDuration !== 0.5 ||
+      clipScheduler.pianoPitch !== 7 ||
+      clipScheduler.pianoVolume !== 0.4
+    ) {
+      fail(`Clip scheduler smoke failed: ${JSON.stringify(clipScheduler)}`);
     }
 
     const avSelection = interactionState.find((entry) => entry.action === "select av clip");
     if (!avSelection?.selected) {
       fail(`A/V arrangement selection smoke failed: ${JSON.stringify(avSelection)}`);
+    }
+
+    const pianoRollUi = interactionState.find((entry) => entry.action === "piano roll ui");
+    if (
+      !pianoRollUi?.editor ||
+      pianoRollUi.snap !== "1/8" ||
+      pianoRollUi.root !== "D" ||
+      pianoRollUi.selectedTiming !== "pianoRoll" ||
+      pianoRollUi.clipSnap !== "1/8" ||
+      pianoRollUi.clipRoot !== "D" ||
+      pianoRollUi.noteCount < 2 ||
+      !pianoRollUi.duplicateEnabled ||
+      !pianoRollUi.quantizeEnabled
+    ) {
+      fail(`Piano roll UI smoke failed: ${JSON.stringify(pianoRollUi)}`);
     }
 
     const textEdit = interactionState.find((entry) => entry.action === "edit text clip");
