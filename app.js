@@ -426,6 +426,24 @@ const PLAYBACK_PHASES = Object.freeze({
   failed: "failed",
 });
 const CLIP_STATE_SCHEMA_VERSION = 3;
+const CLIP_CONTRACT_VERSION = 1;
+const ARRANGEMENT_CLIP_KINDS = Object.freeze({
+  av: "av",
+  text: "text",
+  drum: "drum",
+});
+const ARRANGEMENT_CLIP_KIND_LABELS = Object.freeze({
+  [ARRANGEMENT_CLIP_KINDS.av]: "A/V",
+  [ARRANGEMENT_CLIP_KINDS.text]: "TEXT",
+  [ARRANGEMENT_CLIP_KINDS.drum]: "DRUM",
+});
+const ARRANGEMENT_CLIP_READINESS = Object.freeze({
+  empty: { status: "empty", label: "Empty", detail: "No clip data" },
+  ready: { status: "ready", label: "Ready", detail: "Clip has playable data" },
+  "missing-source": { status: "missing-source", label: "Missing source", detail: "Clip has no media source" },
+  bounced: { status: "bounced", label: "Bounced", detail: "Track is using rendered media" },
+  stale: { status: "stale", label: "Needs rebounce", detail: "Live settings changed after bounce" },
+});
 const sourceMetadataCache = new Map();
 const sourceMetadataInflight = new Map();
 const mediaElementSourceNodes = new WeakMap();
@@ -2371,11 +2389,317 @@ function arrangementStepHasClips(stepIndex) {
   }
 
   const step = arrangement?.clips?.[resolvedStep];
-  const hasVideoClips = !!step && typeof step === "object" && !Array.isArray(step) && Object.keys(step).length > 0;
+  const hasVideoClips = !!step &&
+    typeof step === "object" &&
+    !Array.isArray(step) &&
+    Object.values(step).some((clip) => isArrangementClipFilledForKind(ARRANGEMENT_CLIP_KINDS.av, clip));
   return hasVideoClips || arrangementStepHasText(resolvedStep) || drumClipHasNotes(getArrangementDrumClip(resolvedStep));
 }
 
+function createSelectedClipTargetDescriptor(kind, stepIndex, options = {}) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  const track = options.track || null;
+  const trackId = normalizedKind === ARRANGEMENT_CLIP_KINDS.text
+    ? TEXT_TRACK_ID
+    : normalizedKind === ARRANGEMENT_CLIP_KINDS.drum
+      ? DRUM_TRACK_ID
+      : track?.id || options.trackId || null;
+  const clip = Object.prototype.hasOwnProperty.call(options, "clip")
+    ? options.clip
+    : trackId
+      ? getArrangementClipAtTarget(trackId, resolvedStep)
+      : null;
+  const contract = getArrangementClipContract(normalizedKind, clip, {
+    track,
+    trackId,
+    stepIndex: resolvedStep,
+  });
+  const trackLabel = normalizedKind === ARRANGEMENT_CLIP_KINDS.av
+    ? track?.name || trackId || "A/V"
+    : getArrangementClipKindLabel(normalizedKind);
+
+  return {
+    type: "clip",
+    kind: normalizedKind,
+    track,
+    trackId,
+    trackLabel,
+    stepIndex: resolvedStep,
+    clip: contract.clip,
+    contract,
+    hasClips: contract.filled,
+    labelPrefix: `Editing ${trackLabel} / scene ${resolvedStep + 1}`,
+  };
+}
+
+function getSelectedClipTargetDescriptors() {
+  const descriptors = [];
+
+  getSelectedArrangementClipTargets().forEach(({ track, stepIndex }) => {
+    const descriptor = createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.av, stepIndex, { track });
+    if (descriptor) {
+      descriptors.push(descriptor);
+    }
+  });
+
+  getSelectedTextClipSteps().forEach((stepIndex) => {
+    const descriptor = createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.text, stepIndex);
+    if (descriptor) {
+      descriptors.push(descriptor);
+    }
+  });
+
+  getSelectedDrumClipSteps().forEach((stepIndex) => {
+    const descriptor = createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.drum, stepIndex);
+    if (descriptor) {
+      descriptors.push(descriptor);
+    }
+  });
+
+  return descriptors.sort((a, b) => {
+    if (a.stepIndex !== b.stepIndex) {
+      return a.stepIndex - b.stepIndex;
+    }
+
+    const order = {
+      [ARRANGEMENT_CLIP_KINDS.av]: 0,
+      [ARRANGEMENT_CLIP_KINDS.text]: 1,
+      [ARRANGEMENT_CLIP_KINDS.drum]: 2,
+    };
+    return (order[a.kind] ?? 99) - (order[b.kind] ?? 99);
+  });
+}
+
+function getSelectedEditTargetModel() {
+  const sceneStep = getSelectedArrangementSceneStep();
+  if (sceneStep !== null) {
+    const sceneTargets = [
+      ...tracks.map((track) => createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.av, sceneStep, { track })),
+      createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.text, sceneStep),
+      createSelectedClipTargetDescriptor(ARRANGEMENT_CLIP_KINDS.drum, sceneStep),
+    ].filter(Boolean);
+
+    return {
+      mode: "scene",
+      type: "scene-selection",
+      stepIndex: sceneStep,
+      label: `Editing scene ${sceneStep + 1}`,
+      labelPrefix: `Editing scene ${sceneStep + 1}`,
+      targetCount: sceneTargets.length,
+      targets: sceneTargets,
+      hasClips: arrangementStepHasClips(sceneStep),
+    };
+  }
+
+  const selectedTargets = getSelectedClipTargetDescriptors();
+  if (selectedTargets.length === 1) {
+    const target = selectedTargets[0];
+    return {
+      mode: "clip",
+      type: `${target.kind}-clip-selection`,
+      stepIndex: target.stepIndex,
+      label: `${target.labelPrefix}${target.hasClips ? "" : " (empty)"}`,
+      labelPrefix: target.labelPrefix,
+      targetCount: 1,
+      targets: selectedTargets,
+      primaryTarget: target,
+      hasClips: target.hasClips,
+    };
+  }
+
+  if (selectedTargets.length > 1) {
+    const filledCount = selectedTargets.filter((target) => target.hasClips).length;
+    return {
+      mode: "multi",
+      type: "multi-clip-selection",
+      stepIndex: selectedTargets[0]?.stepIndex ?? null,
+      label: `Editing ${selectedTargets.length} selected clips${filledCount ? "" : " (empty)"}`,
+      labelPrefix: `Editing ${selectedTargets.length} selected clips`,
+      targetCount: selectedTargets.length,
+      targets: selectedTargets,
+      primaryTarget: selectedTargets[0],
+      hasClips: filledCount > 0,
+    };
+  }
+
+  return {
+    mode: "live",
+    type: "live-track-selection",
+    stepIndex: getArrangementStepIndex(arrangement?.step),
+    label: "Editing live tracks",
+    labelPrefix: "Editing live tracks",
+    targetCount: tracks.length,
+    targets: tracks.map((track) => ({
+      type: "live-track",
+      kind: ARRANGEMENT_CLIP_KINDS.av,
+      track,
+      trackId: track.id,
+      trackLabel: track.name,
+      stepIndex: null,
+      clip: track,
+      contract: null,
+      hasClips: !!track.source,
+      labelPrefix: `Editing ${track.name}`,
+    })),
+    primaryTarget: null,
+    hasClips: tracks.some((track) => !!track.source),
+  };
+}
+
+function getArrangementCommandTargetsFromSelection(options = {}) {
+  const targetModel = getSelectedEditTargetModel();
+  const includeSceneTargets = options.includeSceneTargets !== false;
+  if (targetModel.mode === "scene" && includeSceneTargets) {
+    return targetModel.targets;
+  }
+
+  if (targetModel.mode === "clip" || targetModel.mode === "multi") {
+    return targetModel.targets;
+  }
+
+  return [];
+}
+
+function getArrangementCommandTargetId(target) {
+  if (!target) {
+    return "";
+  }
+
+  return target.trackId || (
+    target.kind === ARRANGEMENT_CLIP_KINDS.text
+      ? TEXT_TRACK_ID
+      : target.kind === ARRANGEMENT_CLIP_KINDS.drum
+        ? DRUM_TRACK_ID
+        : ""
+  );
+}
+
+function arrangementCommandTargetIsLocked(target) {
+  return target?.kind === ARRANGEMENT_CLIP_KINDS.av && (!!target.track?.locked || !!target.track?.frozen);
+}
+
+function arrangementCommandTargetCanCapture(target) {
+  if (!target || arrangementCommandTargetIsLocked(target)) {
+    return false;
+  }
+
+  if (target.kind === ARRANGEMENT_CLIP_KINDS.text || target.kind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return true;
+  }
+
+  return !!target.track?.source;
+}
+
+function captureArrangementCommandTarget(target) {
+  if (!arrangementCommandTargetCanCapture(target)) {
+    return false;
+  }
+
+  if (target.kind === ARRANGEMENT_CLIP_KINDS.text) {
+    ensureArrangementTextClip(target.stepIndex);
+    return true;
+  }
+
+  if (target.kind === ARRANGEMENT_CLIP_KINDS.drum) {
+    ensureArrangementDrumClip(target.stepIndex);
+    return true;
+  }
+
+  if (!target.track) {
+    return false;
+  }
+
+  return setArrangementClipAtTarget(target.track.id, target.stepIndex, captureTrackClip(target.track));
+}
+
+function deleteArrangementCommandTarget(target) {
+  if (!target || arrangementCommandTargetIsLocked(target)) {
+    return false;
+  }
+
+  if (!target.hasClips) {
+    return false;
+  }
+
+  return clearArrangementClipAtTarget(getArrangementCommandTargetId(target), target.stepIndex);
+}
+
+function createArrangementClipboardEntry(target) {
+  if (!target?.hasClips) {
+    return null;
+  }
+
+  return {
+    kind: target.kind,
+    trackId: getArrangementCommandTargetId(target),
+    trackName: target.trackLabel,
+    stepIndex: target.stepIndex,
+    clip: cloneArrangementClipForKind(target.kind, target.clip),
+  };
+}
+
+function getClipboardEntriesForKind(kind) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  if (arrangementClipboardKind === "scene") {
+    if (normalizedKind === ARRANGEMENT_CLIP_KINDS.text) {
+      return arrangementClipboardTextClip ? [{ kind: normalizedKind, trackId: TEXT_TRACK_ID, clip: arrangementClipboardTextClip }] : [];
+    }
+
+    if (normalizedKind === ARRANGEMENT_CLIP_KINDS.drum) {
+      return arrangementClipboardDrumClip ? [{ kind: normalizedKind, trackId: DRUM_TRACK_ID, clip: arrangementClipboardDrumClip }] : [];
+    }
+
+    return arrangementClipboardClips.map((entry) => ({ ...entry, kind: normalizedKind }));
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.text) {
+    return arrangementClipboardTextClips.length
+      ? arrangementClipboardTextClips.map((entry) => ({ ...entry, kind: normalizedKind, trackId: TEXT_TRACK_ID }))
+      : arrangementClipboardTextClip
+        ? [{ kind: normalizedKind, trackId: TEXT_TRACK_ID, clip: arrangementClipboardTextClip }]
+        : [];
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return arrangementClipboardDrumClips.length
+      ? arrangementClipboardDrumClips.map((entry) => ({ ...entry, kind: normalizedKind, trackId: DRUM_TRACK_ID }))
+      : arrangementClipboardDrumClip
+        ? [{ kind: normalizedKind, trackId: DRUM_TRACK_ID, clip: arrangementClipboardDrumClip }]
+        : [];
+  }
+
+  return arrangementClipboardClips.map((entry) => ({ ...entry, kind: normalizedKind }));
+}
+
+function pasteClipboardEntryToTarget(entry, target) {
+  if (!entry?.clip || !target || arrangementCommandTargetIsLocked(target) || entry.kind !== target.kind) {
+    return false;
+  }
+
+  return setArrangementClipAtTarget(getArrangementCommandTargetId(target), target.stepIndex, entry.clip);
+}
+
 function getActiveEditTarget() {
+  const selectedTargetModel = getSelectedEditTargetModel();
+  if (selectedTargetModel.mode === "clip" && selectedTargetModel.primaryTarget) {
+    return selectedTargetModel.primaryTarget;
+  }
+
+  if (selectedTargetModel.mode === "multi") {
+    return {
+      type: selectedTargetModel.type,
+      stepIndex: selectedTargetModel.stepIndex,
+      targets: selectedTargetModel.targets,
+      hasClips: selectedTargetModel.hasClips,
+      labelPrefix: selectedTargetModel.labelPrefix,
+    };
+  }
+
   if (selectedArrangementSceneStep !== null) {
     const resolvedScene = getArrangementStepIndex(selectedArrangementSceneStep);
     if (resolvedScene !== null) {
@@ -2443,6 +2767,11 @@ function getActiveEditTarget() {
 }
 
 function getSelectedEditTargetLabel() {
+  const targetModel = getSelectedEditTargetModel();
+  if (targetModel?.label) {
+    return targetModel.label;
+  }
+
   const target = getActiveEditTarget();
   if (!target) {
     return "Editing live tracks";
@@ -6608,7 +6937,8 @@ function renderArrangementRow(track) {
     ${arrangement.clips
       .map((step, index) => {
         const clip = step[track.id];
-        const canDragCopy = !!clip;
+        const contract = getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.av, clip, { track, stepIndex: index });
+        const canDragCopy = contract.filled;
         const sceneColor = getArrangementSceneColor(index, clip);
         const densityCount = clip ? normalizeRetriggersPerBar(clip.retriggersPerBar) : 1;
         const isPianoClip = isPianoRollTimingState(clip);
@@ -6616,6 +6946,7 @@ function renderArrangementRow(track) {
         const densityClass = clip && !isPianoClip && densityCount > 1 ? "has-density-bars" : "";
         const timingClass = isPianoClip ? "has-piano-roll" : "";
         const automationClass = hasAutomation ? "has-automation" : "";
+        const readinessClass = `clip-readiness-${contract.readiness.status}`;
         const sceneStyles = [
           sceneColor ? `--scene-track-color: ${sceneColor}` : "",
           clip && !isPianoClip && densityCount > 1 ? `--clip-density-count: ${densityCount}` : "",
@@ -6627,12 +6958,14 @@ function renderArrangementRow(track) {
           : `Blank ${track.name} slot in scene ${index + 1}; click to select, then Capture to create`;
         return `
           <button
-            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${timingClass} ${automationClass} ${isSelected ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            class="arrangement-cell ${track.color} ${clip ? "filled" : ""} ${densityClass} ${timingClass} ${automationClass} ${readinessClass} ${isSelected ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
             type="button"
             data-arr-track="${track.id}"
             data-arr-step="${index}"
+            data-clip-kind="${ARRANGEMENT_CLIP_KINDS.av}"
+            data-clip-readiness="${escapeHtml(contract.readiness.status)}"
             draggable="${canDragCopy ? "true" : "false"}"
-            title="${escapeHtml(title)}"
+            title="${escapeHtml(`${title}; ${contract.readiness.label}`)}"
             ${sceneStyle}
           >
             ${renderArrangementClipBadges(clip)}
@@ -6648,19 +6981,22 @@ function renderArrangementTextRow() {
     ${arrangement.textClips
       .map((clip, index) => {
         const textClip = normalizeTextClip(clip);
-        const isFilled = !!textClip?.fields?.some((field) => String(field.text || "").trim());
+        const contract = getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.text, textClip, { stepIndex: index });
+        const isFilled = contract.filled;
         const canDragCopy = isFilled;
         const title = isFilled
           ? `TEXT scene ${index + 1}; click to edit, drag to copy`
           : `Blank TEXT slot in scene ${index + 1}; click to select, then Capture to create`;
         return `
           <button
-            class="arrangement-cell arrangement-text-cell ${isFilled ? "filled" : ""} ${isArrangementTextClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            class="arrangement-cell arrangement-text-cell ${isFilled ? "filled" : ""} clip-readiness-${contract.readiness.status} ${isArrangementTextClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
             type="button"
             data-arr-text="true"
             data-arr-step="${index}"
+            data-clip-kind="${ARRANGEMENT_CLIP_KINDS.text}"
+            data-clip-readiness="${escapeHtml(contract.readiness.status)}"
             draggable="${canDragCopy ? "true" : "false"}"
-            title="${escapeHtml(title)}"
+            title="${escapeHtml(`${title}; ${contract.readiness.label}`)}"
           >
             ${isFilled ? "T" : ""}
           </button>
@@ -6678,19 +7014,22 @@ function renderArrangementDrumRow() {
     ${drumClips
       .map((clip, index) => {
         const drumClip = normalizeDrumClip(clip);
-        const isFilled = drumClipHasNotes(drumClip);
+        const contract = getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.drum, drumClip, { stepIndex: index });
+        const isFilled = contract.filled;
         const canDragCopy = isFilled;
         const title = isFilled
           ? `DRUM scene ${index + 1}; click to edit, drag to copy`
           : `Blank DRUM slot in scene ${index + 1}; click to select, then Capture to create`;
         return `
           <button
-            class="arrangement-cell arrangement-drum-cell ${isFilled ? "filled" : ""} ${isArrangementDrumClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
+            class="arrangement-cell arrangement-drum-cell ${isFilled ? "filled" : ""} clip-readiness-${contract.readiness.status} ${isArrangementDrumClipSelected(index) ? "selected" : ""} ${transport?.active && arrangement.step === index ? "playing" : ""}"
             type="button"
             data-arr-drums="true"
             data-arr-step="${index}"
+            data-clip-kind="${ARRANGEMENT_CLIP_KINDS.drum}"
+            data-clip-readiness="${escapeHtml(contract.readiness.status)}"
             draggable="${canDragCopy ? "true" : "false"}"
-            title="${escapeHtml(title)}"
+            title="${escapeHtml(`${title}; ${contract.readiness.label}`)}"
           >
             ${isFilled ? "D" : ""}
           </button>
@@ -13932,7 +14271,16 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
   captureArrangementEdit(`Pasted scene ${sourceStep + 1} to ${targetStep + 1}`);
   arrangement.clips[targetStep] = cloneArrangementStep(sourceClips);
   if (Array.isArray(arrangement.textClips)) {
-    arrangement.textClips[targetStep] = normalizeTextClip(cloneArrangementHistoryPayload(arrangement.textClips[sourceStep]));
+    arrangement.textClips[targetStep] = cloneArrangementClipForKind(
+      ARRANGEMENT_CLIP_KINDS.text,
+      arrangement.textClips[sourceStep],
+    );
+  }
+  if (Array.isArray(arrangement.drumClips)) {
+    arrangement.drumClips[targetStep] = cloneArrangementClipForKind(
+      ARRANGEMENT_CLIP_KINDS.drum,
+      arrangement.drumClips[sourceStep],
+    );
   }
   if (Array.isArray(arrangement.sceneColors)) {
     arrangement.sceneColors[targetStep] = getArrangementSceneColorIndex(sourceStep);
@@ -13950,8 +14298,10 @@ function copyArrangementSection(sourceStepIndex, targetStepIndex) {
     }
   });
   window.freemixRender?.updateArrangementTextCell?.(targetStep);
+  window.freemixRender?.updateArrangementDrumCell?.(targetStep);
   window.freemixRender?.updateTextOverlay?.();
   window.freemixRender?.updateTextEditor?.();
+  window.freemixRender?.updateDrumEditor?.();
   setStatus(`Section ${sourceStep + 1} pasted to ${targetStep + 1}`);
 
   if (window.freemixRender?.updateArrangementGrid) {
@@ -14012,50 +14362,40 @@ function refreshArrangementCommandUi(stepIndex, statusMessage = "", options = {}
 }
 
 function captureSelectedArrangementSlots() {
-  const sceneStep = getSelectedArrangementSceneStep();
-  const textSteps = sceneStep === null ? getSelectedTextClipSteps() : [];
-  const drumSteps = sceneStep === null ? getSelectedDrumClipSteps() : [];
-  const targets = sceneStep !== null
-    ? tracks.map((track) => ({ track, stepIndex: sceneStep }))
-    : getSelectedArrangementClipTargets();
-  const hasTextTargets = textSteps.length > 0;
-  const hasDrumTargets = drumSteps.length > 0;
-
-  if (!targets.length && !hasTextTargets && !hasDrumTargets) {
+  const targets = getArrangementCommandTargetsFromSelection();
+  if (!targets.length) {
     setStatus("Select a clip slot first", true);
     return false;
   }
 
-  const blockedTargets = targets.filter(({ track }) => !!track?.locked || !!track?.frozen);
-  const capturableTargets = targets.filter(({ track }) => !!track?.source && !track.locked && !track.frozen);
-  if (!capturableTargets.length && !hasTextTargets && !hasDrumTargets) {
+  const blockedTargets = targets.filter(arrangementCommandTargetIsLocked);
+  const capturableTargets = targets.filter(arrangementCommandTargetCanCapture);
+  if (!capturableTargets.length) {
     setStatus(blockedTargets.length ? "Unlock or unfreeze the selected track first" : "Load a source on the selected track first", true);
     return false;
   }
 
   captureArrangementEdit("Captured selected arrangement slot");
-  textSteps.forEach((targetStep) => {
-    ensureArrangementTextClip(targetStep);
-  });
-  drumSteps.forEach((targetStep) => {
-    ensureArrangementDrumClip(targetStep);
-  });
-  capturableTargets.forEach(({ track, stepIndex }) => {
-    arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
-    arrangement.clips[stepIndex][track.id] = captureTrackClip(track);
-  });
+  capturableTargets.forEach(captureArrangementCommandTarget);
 
-  const targetStep = capturableTargets[0]?.stepIndex ?? textSteps[0] ?? drumSteps[0];
-  const captureCount = capturableTargets.length + textSteps.length + drumSteps.length;
+  const targetStep = capturableTargets[0]?.stepIndex;
+  const captureCount = capturableTargets.length;
   refreshArrangementCommandUi(
     targetStep,
     `${captureCount} clip${captureCount === 1 ? "" : "s"} captured`,
-    { selectScene: sceneStep !== null },
+    { selectScene: getSelectedArrangementSceneStep() !== null },
   );
-  textSteps.forEach((stepIndex) => selectedTextClipSteps.add(stepIndex));
-  selectedTextClipStep = textSteps.at(-1) ?? selectedTextClipStep;
-  drumSteps.forEach((stepIndex) => selectedDrumClipSteps.add(stepIndex));
-  selectedDrumClipStep = drumSteps.at(-1) ?? selectedDrumClipStep;
+  capturableTargets.forEach((target) => {
+    if (target.kind === ARRANGEMENT_CLIP_KINDS.text) {
+      selectedTextClipSteps.add(target.stepIndex);
+      selectedTextClipStep = target.stepIndex;
+    } else if (target.kind === ARRANGEMENT_CLIP_KINDS.drum) {
+      selectedDrumClipSteps.add(target.stepIndex);
+      selectedDrumClipStep = target.stepIndex;
+    } else if (target.trackId) {
+      selectedArrangementClipKeys.add(getArrangementClipSelectionKey(target.trackId, target.stepIndex));
+    }
+  });
   renderArrangementClipSelection();
   return true;
 }
@@ -14083,17 +14423,64 @@ function copySelectedArrangementScene() {
         trackId,
         trackName: getTrackById(trackId)?.name || trackId,
         stepIndex: sceneStep,
-        clip: cloneArrangementClip(clip),
+        clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, clip),
       }));
-    arrangementClipboardTextClip = cloneTextClip(getArrangementTextClip(sceneStep));
+    arrangementClipboardTextClip = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, getArrangementTextClip(sceneStep));
     arrangementClipboardTextClips = arrangementClipboardTextClip
-      ? [{ stepIndex: sceneStep, clip: cloneTextClip(arrangementClipboardTextClip) }]
+      ? [{ stepIndex: sceneStep, clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, arrangementClipboardTextClip) }]
       : [];
-    arrangementClipboardDrumClip = cloneDrumClip(getArrangementDrumClip(sceneStep));
+    arrangementClipboardDrumClip = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, getArrangementDrumClip(sceneStep));
     arrangementClipboardDrumClips = arrangementClipboardDrumClip
-      ? [{ stepIndex: sceneStep, clip: cloneDrumClip(arrangementClipboardDrumClip) }]
+      ? [{ stepIndex: sceneStep, clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, arrangementClipboardDrumClip) }]
       : [];
     setStatus(`Scene ${sceneStep + 1} copied`);
+    return true;
+  }
+
+  const commandTargets = getArrangementCommandTargetsFromSelection({ includeSceneTargets: false });
+  if (commandTargets.length) {
+    const copiedEntries = commandTargets.map(createArrangementClipboardEntry).filter(Boolean);
+    if (!copiedEntries.length) {
+      setStatus("No selected clip to copy", true);
+      return false;
+    }
+
+    const copiedKinds = new Set(copiedEntries.map((entry) => entry.kind));
+    arrangementClipboardKind = copiedKinds.size === 1
+      ? copiedEntries[0].kind === ARRANGEMENT_CLIP_KINDS.av
+        ? "clips"
+        : copiedEntries[0].kind
+      : "clips";
+    arrangementClipboardClips = copiedEntries
+      .filter((entry) => entry.kind === ARRANGEMENT_CLIP_KINDS.av)
+      .map((entry) => ({
+        trackId: entry.trackId,
+        trackName: entry.trackName,
+        stepIndex: entry.stepIndex,
+        clip: cloneArrangementClipForKind(entry.kind, entry.clip),
+      }));
+    arrangementClipboardTextClips = copiedEntries
+      .filter((entry) => entry.kind === ARRANGEMENT_CLIP_KINDS.text)
+      .map((entry) => ({
+        stepIndex: entry.stepIndex,
+        clip: cloneArrangementClipForKind(entry.kind, entry.clip),
+      }));
+    arrangementClipboardTextClip = cloneArrangementClipForKind(
+      ARRANGEMENT_CLIP_KINDS.text,
+      arrangementClipboardTextClips[0]?.clip,
+    );
+    arrangementClipboardDrumClips = copiedEntries
+      .filter((entry) => entry.kind === ARRANGEMENT_CLIP_KINDS.drum)
+      .map((entry) => ({
+        stepIndex: entry.stepIndex,
+        clip: cloneArrangementClipForKind(entry.kind, entry.clip),
+      }));
+    arrangementClipboardDrumClip = cloneArrangementClipForKind(
+      ARRANGEMENT_CLIP_KINDS.drum,
+      arrangementClipboardDrumClips[0]?.clip,
+    );
+    arrangementClipboardStep = null;
+    setStatus(`${copiedEntries.length} clip${copiedEntries.length === 1 ? "" : "s"} copied`);
     return true;
   }
 
@@ -14107,9 +14494,9 @@ function copySelectedArrangementScene() {
     arrangementClipboardKind = "text";
     arrangementClipboardTextClips = selectedTextClips.map((entry) => ({
       stepIndex: entry.stepIndex,
-      clip: cloneTextClip(entry.clip),
+      clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, entry.clip),
     }));
-    arrangementClipboardTextClip = cloneTextClip(arrangementClipboardTextClips[0]?.clip);
+    arrangementClipboardTextClip = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, arrangementClipboardTextClips[0]?.clip);
     arrangementClipboardClips = [];
     arrangementClipboardDrumClip = null;
     arrangementClipboardDrumClips = [];
@@ -14133,9 +14520,9 @@ function copySelectedArrangementScene() {
     arrangementClipboardKind = "drum";
     arrangementClipboardDrumClips = selectedDrumClips.map((entry) => ({
       stepIndex: entry.stepIndex,
-      clip: cloneDrumClip(entry.clip),
+      clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, entry.clip),
     }));
-    arrangementClipboardDrumClip = cloneDrumClip(arrangementClipboardDrumClips[0]?.clip);
+    arrangementClipboardDrumClip = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, arrangementClipboardDrumClips[0]?.clip);
     arrangementClipboardClips = [];
     arrangementClipboardTextClip = null;
     arrangementClipboardTextClips = [];
@@ -14168,7 +14555,7 @@ function copySelectedArrangementScene() {
     trackId: entry.trackId,
     trackName: entry.trackName,
     stepIndex: entry.stepIndex,
-    clip: cloneArrangementClip(entry.clip),
+    clip: cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, entry.clip),
   }));
   arrangementClipboardTextClip = null;
   arrangementClipboardTextClips = [];
@@ -14198,24 +14585,24 @@ function pasteArrangementClipboardToScene(targetStep) {
   if (arrangementClipboardKind === "scene") {
     arrangement.clips[resolvedStep] = {};
     arrangementClipboardClips.forEach((source) => {
-      arrangement.clips[resolvedStep][source.trackId] = cloneArrangementClip(source.clip);
+      arrangement.clips[resolvedStep][source.trackId] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, source.clip);
     });
     if (Array.isArray(arrangement.textClips)) {
-      arrangement.textClips[resolvedStep] = cloneTextClip(arrangementClipboardTextClip);
+      arrangement.textClips[resolvedStep] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, arrangementClipboardTextClip);
     }
     if (Array.isArray(arrangement.drumClips)) {
-      arrangement.drumClips[resolvedStep] = cloneDrumClip(arrangementClipboardDrumClip);
+      arrangement.drumClips[resolvedStep] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, arrangementClipboardDrumClip);
     }
   } else {
     arrangement.clips[resolvedStep] = arrangement.clips[resolvedStep] || {};
     arrangementClipboardClips.forEach((source) => {
-      arrangement.clips[resolvedStep][source.trackId] = cloneArrangementClip(source.clip);
+      arrangement.clips[resolvedStep][source.trackId] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, source.clip);
     });
-    if (arrangementClipboardKind === "text" && Array.isArray(arrangement.textClips)) {
-      arrangement.textClips[resolvedStep] = cloneTextClip(arrangementClipboardTextClip);
+    if ((arrangementClipboardKind === "text" || arrangementClipboardTextClip || arrangementClipboardTextClips.length) && Array.isArray(arrangement.textClips)) {
+      arrangement.textClips[resolvedStep] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.text, arrangementClipboardTextClip);
     }
-    if (arrangementClipboardKind === "drum" && Array.isArray(arrangement.drumClips)) {
-      arrangement.drumClips[resolvedStep] = cloneDrumClip(arrangementClipboardDrumClip);
+    if ((arrangementClipboardKind === "drum" || arrangementClipboardDrumClip || arrangementClipboardDrumClips.length) && Array.isArray(arrangement.drumClips)) {
+      arrangement.drumClips[resolvedStep] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.drum, arrangementClipboardDrumClip);
     }
   }
 
@@ -14227,6 +14614,72 @@ function pasteArrangementClipboardToSelectedScene() {
   const sceneStep = getSelectedArrangementSceneStep();
   if (sceneStep !== null) {
     return pasteArrangementClipboardToScene(sceneStep);
+  }
+
+  const mixedCommandTargets = getArrangementCommandTargetsFromSelection({ includeSceneTargets: false });
+  const mixedKinds = new Set(mixedCommandTargets.map((target) => target.kind));
+  if (mixedCommandTargets.length && mixedKinds.size > 1) {
+    const unlockedTargets = mixedCommandTargets.filter((target) => !arrangementCommandTargetIsLocked(target));
+    if (!unlockedTargets.length) {
+      setStatus("Unlock or unfreeze the selected track first", true);
+      return false;
+    }
+
+    const pastedTargets = [];
+    captureArrangementEdit("Pasted copied clips");
+    Array.from(mixedKinds).forEach((kind) => {
+      const targetsForKind = unlockedTargets.filter((target) => target.kind === kind);
+      const entriesForKind = getClipboardEntriesForKind(kind).filter((entry) => entry.clip);
+      if (!targetsForKind.length || !entriesForKind.length) {
+        return;
+      }
+
+      if (kind === ARRANGEMENT_CLIP_KINDS.av && targetsForKind.length === 1 && entriesForKind.length > 1) {
+        const targetStep = targetsForKind[0].stepIndex;
+        entriesForKind.forEach((entry) => {
+          const targetTrackId = getTrackById(entry.trackId) ? entry.trackId : targetsForKind[0].trackId;
+          if (setArrangementClipAtTarget(targetTrackId, targetStep, entry.clip)) {
+            pastedTargets.push({ ...targetsForKind[0], trackId: targetTrackId, stepIndex: targetStep });
+          }
+        });
+        return;
+      }
+
+      if (targetsForKind.length === 1 && entriesForKind.length > 1) {
+        const startStep = targetsForKind[0].stepIndex;
+        entriesForKind.forEach((entry, index) => {
+          const targetStep = getArrangementStepIndex(startStep + index);
+          if (targetStep === null) {
+            return;
+          }
+          const target = { ...targetsForKind[0], stepIndex: targetStep };
+          if (pasteClipboardEntryToTarget(entry, target)) {
+            pastedTargets.push(target);
+          }
+        });
+        return;
+      }
+
+      targetsForKind.forEach((target, index) => {
+        const entry = entriesForKind[index] || entriesForKind[0];
+        if (pasteClipboardEntryToTarget(entry, target)) {
+          pastedTargets.push(target);
+        }
+      });
+    });
+
+    if (!pastedTargets.length) {
+      arrangementUndoStack.pop();
+      setStatus("No matching copied clips for the selected slots", true);
+      return false;
+    }
+
+    refreshArrangementCommandUi(
+      pastedTargets[0].stepIndex,
+      `${pastedTargets.length} clip${pastedTargets.length === 1 ? "" : "s"} pasted`,
+    );
+    renderArrangementClipSelection();
+    return true;
   }
 
   const selectedTextSteps = getSelectedTextClipSteps();
@@ -14252,7 +14705,7 @@ function pasteArrangementClipboardToSelectedScene() {
         if (targetStep === null || !entry.clip) {
           return;
         }
-        setArrangementTextClip(targetStep, cloneTextClip(entry.clip));
+        setArrangementClipAtTarget(TEXT_TRACK_ID, targetStep, entry.clip);
         pastedSteps.push(targetStep);
       });
     } else {
@@ -14261,7 +14714,7 @@ function pasteArrangementClipboardToSelectedScene() {
         if (!entry?.clip) {
           return;
         }
-        setArrangementTextClip(targetStep, cloneTextClip(entry.clip));
+        setArrangementClipAtTarget(TEXT_TRACK_ID, targetStep, entry.clip);
         pastedSteps.push(targetStep);
       });
     }
@@ -14297,7 +14750,7 @@ function pasteArrangementClipboardToSelectedScene() {
         if (targetStep === null || !entry.clip) {
           return;
         }
-        setArrangementDrumClip(targetStep, cloneDrumClip(entry.clip));
+        setArrangementClipAtTarget(DRUM_TRACK_ID, targetStep, entry.clip);
         pastedSteps.push(targetStep);
       });
     } else {
@@ -14306,7 +14759,7 @@ function pasteArrangementClipboardToSelectedScene() {
         if (!entry?.clip) {
           return;
         }
-        setArrangementDrumClip(targetStep, cloneDrumClip(entry.clip));
+        setArrangementClipAtTarget(DRUM_TRACK_ID, targetStep, entry.clip);
         pastedSteps.push(targetStep);
       });
     }
@@ -14339,20 +14792,17 @@ function pasteArrangementClipboardToSelectedScene() {
   if (arrangementClipboardClips.length === 1) {
     const source = arrangementClipboardClips[0];
     targets.forEach(({ track, stepIndex }) => {
-      arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
-      arrangement.clips[stepIndex][track.id] = cloneArrangementClip(source.clip);
+      setArrangementClipAtTarget(track.id, stepIndex, source.clip);
     });
   } else if (targets.length === arrangementClipboardClips.length) {
     targets.forEach(({ track, stepIndex }, index) => {
       const source = arrangementClipboardClips[index];
-      arrangement.clips[stepIndex] = arrangement.clips[stepIndex] || {};
-      arrangement.clips[stepIndex][track.id] = cloneArrangementClip(source.clip);
+      setArrangementClipAtTarget(track.id, stepIndex, source.clip);
     });
   } else {
     const targetStep = targets[0].stepIndex;
     arrangementClipboardClips.forEach((source) => {
-      arrangement.clips[targetStep] = arrangement.clips[targetStep] || {};
-      arrangement.clips[targetStep][source.trackId] = cloneArrangementClip(source.clip);
+      setArrangementClipAtTarget(source.trackId, targetStep, source.clip);
     });
   }
   refreshArrangementCommandUi(targets[0].stepIndex, "Clip pasted");
@@ -14379,6 +14829,30 @@ function deleteSelectedArrangementScene() {
     return true;
   }
 
+  const commandTargets = getArrangementCommandTargetsFromSelection({ includeSceneTargets: false });
+  if (commandTargets.length) {
+    const lockedTargets = commandTargets.filter((target) => arrangementCommandTargetIsLocked(target) && target.hasClips);
+    if (lockedTargets.length) {
+      setStatus("Unlock or unfreeze selected tracks before deleting clips", true);
+      return false;
+    }
+
+    const filledTargets = commandTargets.filter((target) => target.hasClips);
+    if (!filledTargets.length) {
+      setStatus("Selected clip slot is already empty");
+      return false;
+    }
+
+    captureArrangementEdit("Deleted selected clip");
+    filledTargets.forEach(deleteArrangementCommandTarget);
+    refreshArrangementCommandUi(
+      filledTargets[0].stepIndex,
+      `${filledTargets.length} clip${filledTargets.length === 1 ? "" : "s"} deleted`,
+    );
+    renderArrangementClipSelection();
+    return true;
+  }
+
   const selectedTextSteps = getSelectedTextClipSteps();
   if (selectedTextSteps.length) {
     const filledTextSteps = selectedTextSteps.filter((stepIndex) => getArrangementTextClip(stepIndex));
@@ -14388,7 +14862,7 @@ function deleteSelectedArrangementScene() {
     }
 
     captureArrangementEdit("Deleted selected text");
-    filledTextSteps.forEach((stepIndex) => setArrangementTextClip(stepIndex, null));
+    filledTextSteps.forEach((stepIndex) => clearArrangementClipAtTarget(TEXT_TRACK_ID, stepIndex));
     selectedTextClipStep = null;
     selectedTextClipSteps = new Set(selectedTextSteps);
     refreshArrangementCommandUi(
@@ -14408,7 +14882,7 @@ function deleteSelectedArrangementScene() {
     }
 
     captureArrangementEdit("Deleted selected drums");
-    filledDrumSteps.forEach((stepIndex) => setArrangementDrumClip(stepIndex, null));
+    filledDrumSteps.forEach((stepIndex) => clearArrangementClipAtTarget(DRUM_TRACK_ID, stepIndex));
     selectedDrumClipStep = null;
     selectedDrumClipSteps = new Set(selectedDrumSteps);
     refreshArrangementCommandUi(
@@ -14439,10 +14913,7 @@ function deleteSelectedArrangementScene() {
 
   captureArrangementEdit("Deleted selected clip");
   filledTargets.forEach(({ track, stepIndex }) => {
-    delete arrangement.clips[stepIndex][track.id];
-    if (!Object.keys(arrangement.clips[stepIndex]).length) {
-      arrangement.clips[stepIndex] = {};
-    }
+    clearArrangementClipAtTarget(track.id, stepIndex);
   });
   refreshArrangementCommandUi(
     filledTargets[0].stepIndex,
@@ -14504,20 +14975,24 @@ function getArrangementClipDragTarget(trackId, stepIndex) {
   }
 
   if (trackId === "__text") {
+    const clip = getArrangementClipAtTarget(TEXT_TRACK_ID, sourceStep);
     return {
       type: "text",
       track: null,
       stepIndex: sourceStep,
-      clip: getArrangementTextClip(sourceStep),
+      clip,
+      contract: getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.text, clip, { stepIndex: sourceStep }),
     };
   }
 
   if (trackId === "__drums") {
+    const clip = getArrangementClipAtTarget(DRUM_TRACK_ID, sourceStep);
     return {
       type: "drum",
       track: null,
       stepIndex: sourceStep,
-      clip: getArrangementDrumClip(sourceStep),
+      clip,
+      contract: getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.drum, clip, { stepIndex: sourceStep }),
     };
   }
 
@@ -14530,7 +15005,11 @@ function getArrangementClipDragTarget(trackId, stepIndex) {
     type: "track",
     track,
     stepIndex: sourceStep,
-    clip: arrangement?.clips?.[sourceStep]?.[track.id] || null,
+    clip: getArrangementClipAtTarget(track.id, sourceStep),
+    contract: getArrangementClipContract(ARRANGEMENT_CLIP_KINDS.av, getArrangementClipAtTarget(track.id, sourceStep), {
+      track,
+      stepIndex: sourceStep,
+    }),
   };
 }
 
@@ -14554,7 +15033,7 @@ function getArrangementDragCell(target) {
 
 function beginArrangementClipDragCopy(trackId, stepIndex) {
   const source = getArrangementClipDragTarget(trackId, stepIndex);
-  if (!source?.clip) {
+  if (!source?.contract?.filled) {
     return false;
   }
 
@@ -14611,7 +15090,7 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
     }
 
     captureArrangementEdit(`Copied TEXT clip to scene ${target.stepIndex + 1}`);
-    setArrangementTextClip(target.stepIndex, cloneTextClip(source.clip));
+    setArrangementClipAtTarget(TEXT_TRACK_ID, target.stepIndex, source.clip);
     refreshArrangementHasClipsState();
     selectArrangementStep(target.stepIndex);
     selectArrangementTextClip(target.stepIndex);
@@ -14638,7 +15117,7 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
     }
 
     captureArrangementEdit(`Copied DRUM clip to scene ${target.stepIndex + 1}`);
-    setArrangementDrumClip(target.stepIndex, cloneDrumClip(source.clip));
+    setArrangementClipAtTarget(DRUM_TRACK_ID, target.stepIndex, source.clip);
     refreshArrangementHasClipsState();
     selectArrangementStep(target.stepIndex);
     selectArrangementDrumClip(target.stepIndex);
@@ -14663,8 +15142,7 @@ function dropArrangementClipDragCopy(sourceTrackId, sourceStepIndex, targetTrack
   }
 
   captureArrangementEdit(`Copied ${source.track.name} clip to scene ${target.stepIndex + 1}`);
-  arrangement.clips[target.stepIndex] = arrangement.clips[target.stepIndex] || {};
-  arrangement.clips[target.stepIndex][target.track.id] = cloneArrangementClip(source.clip);
+  setArrangementClipAtTarget(target.track.id, target.stepIndex, source.clip);
   refreshArrangementHasClipsState();
   selectArrangementStep(target.stepIndex);
 
@@ -14712,7 +15190,16 @@ function copyCurrentArrangementSectionToAll() {
 
     arrangement.clips[index] = cloneArrangementStep(sourceStep);
     if (Array.isArray(arrangement.textClips)) {
-      arrangement.textClips[index] = normalizeTextClip(cloneArrangementHistoryPayload(arrangement.textClips[sourceStepIndex]));
+      arrangement.textClips[index] = cloneArrangementClipForKind(
+        ARRANGEMENT_CLIP_KINDS.text,
+        arrangement.textClips[sourceStepIndex],
+      );
+    }
+    if (Array.isArray(arrangement.drumClips)) {
+      arrangement.drumClips[index] = cloneArrangementClipForKind(
+        ARRANGEMENT_CLIP_KINDS.drum,
+        arrangement.drumClips[sourceStepIndex],
+      );
     }
     if (Array.isArray(arrangement.sceneColors)) {
       arrangement.sceneColors[index] = getArrangementSceneColorIndex(sourceStepIndex);
@@ -14738,6 +15225,7 @@ function copyCurrentArrangementSectionToAll() {
             window.freemixRender.updateArrangementCell(track, stepIndex);
           });
           window.freemixRender.updateArrangementTextCell?.(stepIndex);
+          window.freemixRender.updateArrangementDrumCell?.(stepIndex);
         });
     } else {
       window.freemixRender.updateArrangementGrid();
@@ -14941,6 +15429,7 @@ window.isArrangementSceneSelected = isArrangementSceneSelected;
 window.copyCurrentArrangementSectionToAll = copyCurrentArrangementSectionToAll;
 window.freemixSyncArrangementTrackHeights = syncArrangementTrackHeights;
 window.freemixGetSelectedEditTargetLabel = getSelectedEditTargetLabel;
+window.freemixGetSelectedEditTargetModel = getSelectedEditTargetModel;
 window.freemixArrangementStepHasClips = arrangementStepHasClips;
 window.freemixCanDragCopyArrangementStep = canDragCopyArrangementStep;
 window.freemixBeginArrangementClipDragCopy = beginArrangementClipDragCopy;
@@ -15004,12 +15493,18 @@ function updateArrangementStepCount(event) {
   }
   if (Array.isArray(previousArrangement?.textClips)) {
     for (let index = 0; index < Math.min(previousArrangement.textClips.length, arrangement.textClips.length); index += 1) {
-      arrangement.textClips[index] = normalizeTextClip(previousArrangement.textClips[index]);
+      arrangement.textClips[index] = cloneArrangementClipForKind(
+        ARRANGEMENT_CLIP_KINDS.text,
+        previousArrangement.textClips[index],
+      );
     }
   }
   if (Array.isArray(previousArrangement?.drumClips)) {
     for (let index = 0; index < Math.min(previousArrangement.drumClips.length, arrangement.drumClips.length); index += 1) {
-      arrangement.drumClips[index] = normalizeDrumClip(previousArrangement.drumClips[index]);
+      arrangement.drumClips[index] = cloneArrangementClipForKind(
+        ARRANGEMENT_CLIP_KINDS.drum,
+        previousArrangement.drumClips[index],
+      );
     }
   }
   refreshArrangementHasClipsState();
@@ -15307,12 +15802,11 @@ function refreshArrangementHasClipsState(targetArrangement = arrangement) {
     if (!step || typeof step !== "object" || Array.isArray(step)) {
       return false;
     }
-    return Object.keys(step).length > 0;
+    return Object.values(step).some((clip) => isArrangementClipFilledForKind(ARRANGEMENT_CLIP_KINDS.av, clip));
   }) || (Array.isArray(targetArrangement.textClips) && targetArrangement.textClips.some((clip) => {
-    const textClip = normalizeTextClip(clip);
-    return !!textClip?.fields?.some((field) => String(field.text || "").trim());
+    return isArrangementClipFilledForKind(ARRANGEMENT_CLIP_KINDS.text, clip);
   })) || (Array.isArray(targetArrangement.drumClips) && targetArrangement.drumClips.some((clip) => {
-    return drumClipHasNotes(clip);
+    return isArrangementClipFilledForKind(ARRANGEMENT_CLIP_KINDS.drum, clip);
   }));
 
   return arrangementHasClips;
@@ -15428,6 +15922,7 @@ function captureTrackSessionSnapshot(track) {
 function captureSessionSnapshot(name = "") {
   return {
     version: SESSION_SCHEMA_VERSION,
+    clipContractVersion: CLIP_CONTRACT_VERSION,
     app: "freemix-vm-420",
     name: normalizeSessionName(name || getCurrentSessionName() || "Untitled Session"),
     savedAt: new Date().toISOString(),
@@ -15907,7 +16402,10 @@ function cloneArrangementClip(clip) {
 
 function cloneArrangementStep(step) {
   return Object.fromEntries(
-    Object.entries(step).map(([trackId, clip]) => [trackId, cloneArrangementClip(clip)]),
+    Object.entries(step).map(([trackId, clip]) => [
+      trackId,
+      cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, clip),
+    ]),
   );
 }
 
@@ -15918,6 +16416,195 @@ function cloneTextClip(clip) {
 function cloneDrumClip(clip) {
   return normalizeDrumClip(cloneArrangementHistoryPayload(clip));
 }
+
+function normalizeArrangementClipKind(kind) {
+  if (kind === ARRANGEMENT_CLIP_KINDS.text || kind === TEXT_TRACK_ID || kind === "text") {
+    return ARRANGEMENT_CLIP_KINDS.text;
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.drum || kind === DRUM_TRACK_ID || kind === "__drums" || kind === "drum") {
+    return ARRANGEMENT_CLIP_KINDS.drum;
+  }
+
+  return ARRANGEMENT_CLIP_KINDS.av;
+}
+
+function getArrangementClipKindLabel(kind) {
+  return ARRANGEMENT_CLIP_KIND_LABELS[normalizeArrangementClipKind(kind)] || ARRANGEMENT_CLIP_KIND_LABELS.av;
+}
+
+function normalizeArrangementClipForKind(kind, clip, fallback = null) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.text) {
+    return normalizeTextClip(clip);
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return normalizeDrumClip(clip);
+  }
+
+  return clip ? normalizeClipState(clip, fallback || {}) : null;
+}
+
+function cloneArrangementClipForKind(kind, clip) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.text) {
+    return cloneTextClip(clip);
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return cloneDrumClip(clip);
+  }
+
+  return cloneArrangementClip(clip);
+}
+
+function isArrangementClipFilledForKind(kind, clip) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.text) {
+    const textClip = normalizeTextClip(clip);
+    return !!textClip?.fields?.some((field) => String(field.text || "").trim());
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return drumClipHasNotes(clip);
+  }
+
+  const avClip = normalizeClipState(clip || {});
+  return !!avClip?.source?.mediaUrl || !!avClip?.source?.url;
+}
+
+function getArrangementClipReadinessForKind(kind, clip, options = {}) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  const normalizedClip = normalizeArrangementClipForKind(normalizedKind, clip, options.fallback || null);
+  if (!isArrangementClipFilledForKind(normalizedKind, normalizedClip)) {
+    return ARRANGEMENT_CLIP_READINESS.empty;
+  }
+
+  if (normalizedKind === ARRANGEMENT_CLIP_KINDS.av) {
+    if (!normalizedClip?.source?.mediaUrl && !normalizedClip?.source?.url) {
+      return ARRANGEMENT_CLIP_READINESS["missing-source"];
+    }
+
+    const track = options.track || null;
+    if (track?.frozenBounce?.url && track?.frozen) {
+      return ARRANGEMENT_CLIP_READINESS.bounced;
+    }
+  }
+
+  return ARRANGEMENT_CLIP_READINESS.ready;
+}
+
+function getArrangementClipContract(kind, clip, options = {}) {
+  const normalizedKind = normalizeArrangementClipKind(kind);
+  const normalizedClip = normalizeArrangementClipForKind(normalizedKind, clip, options.fallback || null);
+  const readiness = getArrangementClipReadinessForKind(normalizedKind, normalizedClip, options);
+  return {
+    contractVersion: CLIP_CONTRACT_VERSION,
+    kind: normalizedKind,
+    label: getArrangementClipKindLabel(normalizedKind),
+    trackId: options.track?.id || options.trackId || null,
+    stepIndex: Number.isInteger(Number(options.stepIndex)) ? Number(options.stepIndex) : null,
+    clip: normalizedClip,
+    filled: readiness.status !== "empty",
+    readiness,
+  };
+}
+
+function getArrangementClipTargetKind(trackId) {
+  if (trackId === TEXT_TRACK_ID) {
+    return ARRANGEMENT_CLIP_KINDS.text;
+  }
+
+  if (trackId === DRUM_TRACK_ID || trackId === "__drums") {
+    return ARRANGEMENT_CLIP_KINDS.drum;
+  }
+
+  return ARRANGEMENT_CLIP_KINDS.av;
+}
+
+function getArrangementClipAtTarget(trackId, stepIndex) {
+  const kind = getArrangementClipTargetKind(trackId);
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return null;
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.text) {
+    return getArrangementTextClip(resolvedStep);
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return getArrangementDrumClip(resolvedStep);
+  }
+
+  const track = getTrackById(trackId);
+  return track ? getArrangementStepClip(track, resolvedStep) : null;
+}
+
+function setArrangementClipAtTarget(trackId, stepIndex, clip) {
+  const kind = getArrangementClipTargetKind(trackId);
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.text) {
+    return setArrangementTextClip(resolvedStep, cloneArrangementClipForKind(kind, clip));
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return setArrangementDrumClip(resolvedStep, cloneArrangementClipForKind(kind, clip));
+  }
+
+  const track = getTrackById(trackId);
+  if (!track) {
+    return false;
+  }
+
+  arrangement.clips[resolvedStep] = arrangement.clips[resolvedStep] || {};
+  arrangement.clips[resolvedStep][track.id] = cloneArrangementClipForKind(kind, clip);
+  return true;
+}
+
+function clearArrangementClipAtTarget(trackId, stepIndex) {
+  const kind = getArrangementClipTargetKind(trackId);
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  if (resolvedStep === null) {
+    return false;
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.text) {
+    return setArrangementTextClip(resolvedStep, null);
+  }
+
+  if (kind === ARRANGEMENT_CLIP_KINDS.drum) {
+    return setArrangementDrumClip(resolvedStep, null);
+  }
+
+  const track = getTrackById(trackId);
+  if (!track || !arrangement?.clips?.[resolvedStep]) {
+    return false;
+  }
+
+  delete arrangement.clips[resolvedStep][track.id];
+  if (!Object.keys(arrangement.clips[resolvedStep]).length) {
+    arrangement.clips[resolvedStep] = {};
+  }
+  return true;
+}
+
+window.freemixClipEngine = {
+  version: CLIP_CONTRACT_VERSION,
+  kinds: ARRANGEMENT_CLIP_KINDS,
+  getContract: getArrangementClipContract,
+  getClip: getArrangementClipAtTarget,
+  setClip: setArrangementClipAtTarget,
+  clearClip: clearArrangementClipAtTarget,
+  cloneClip: cloneArrangementClipForKind,
+  isFilled: isArrangementClipFilledForKind,
+  getReadiness: getArrangementClipReadinessForKind,
+};
 
 function queueTrackSearch(track, query) {
   window.clearTimeout(track.searchTimer);
@@ -16355,7 +17042,8 @@ function canRemoveTrack() {
 }
 
 function trackHasArrangementClips(trackId) {
-  return Array.isArray(arrangement?.clips) && arrangement.clips.some((step) => !!step?.[trackId]);
+  return Array.isArray(arrangement?.clips) &&
+    arrangement.clips.some((step) => isArrangementClipFilledForKind(ARRANGEMENT_CLIP_KINDS.av, step?.[trackId]));
 }
 
 function duplicateTrack(trackOrId) {
@@ -16392,7 +17080,7 @@ function duplicateTrack(trackOrId) {
   if (Array.isArray(arrangement?.clips)) {
     arrangement.clips.forEach((step) => {
       if (step?.[sourceTrack.id]) {
-        step[nextTrack.id] = cloneArrangementClip(step[sourceTrack.id]);
+        step[nextTrack.id] = cloneArrangementClipForKind(ARRANGEMENT_CLIP_KINDS.av, step[sourceTrack.id]);
       }
     });
   }
