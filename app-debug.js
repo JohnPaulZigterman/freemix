@@ -327,6 +327,18 @@
     return `${rendered}/${expected} buffers${pending}`;
   }
 
+  function getPlaybackFailureDiagnosticSummary() {
+    const failure = typeof window.freemixGetLastPlaybackFailureDiagnostics === "function"
+      ? window.freemixGetLastPlaybackFailureDiagnostics()
+      : null;
+    if (!failure) {
+      return "none";
+    }
+
+    const scene = failure.diagnostics?.arrangement?.step || "none";
+    return `${failure.reason || "playback failure"} at scene ${scene}`;
+  }
+
   function renderDiagnosticsPanel() {
     const selectedTarget = typeof window.freemixGetSelectedEditTargetLabel === "function"
       ? window.freemixGetSelectedEditTargetLabel()
@@ -343,6 +355,7 @@
       ["Media", getMediaDiagnosticSummary()],
       ["Audio", getAudioDiagnosticSummary()],
       ["Drums", getDrumDiagnosticSummary()],
+      ["Last failure", getPlaybackFailureDiagnosticSummary()],
       ["Exporting", typeof window.freemixIsExportingVideo === "function" ? window.freemixIsExportingVideo() : false],
       ["Arrangement clips", typeof hasArrangementClips === "function" ? hasArrangementClips() : false],
     ];

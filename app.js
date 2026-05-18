@@ -716,7 +716,7 @@ let arrangementPrerollRevealTimer = null;
 let arrangementLookaheadRevealTimer = null;
 let arrangementLookaheadPrepareKey = null;
 let arrangementLookaheadPreparePromise = null;
-let arrangementMediaReadinessVideos = [];
+let lastPlaybackFailureDiagnostics = null;
 const arrangementLookaheadRevealTimers = new Map();
 const arrangementLookaheadPrepareKeys = new Set();
 if (appState.transport && typeof appState.transport === "object") {
@@ -1783,7 +1783,11 @@ function holdTrackVisualUntilCleanFrame(track) {
 
   track.__awaitingCleanVisualFrame = true;
   setTrackPlaybackPhase(track, PLAYBACK_PHASES.cueing, { mediaStatus: "prerolling" });
-  setTrackBlackout(track, true);
+  const playbackVideo = getTrackVideo(track);
+  const preparingStandby = playbackVideo === track.__prerollStandbyVideo;
+  if (!preparingStandby) {
+    setTrackBlackout(track, true);
+  }
 }
 
 function revealTrackCleanVisual(track) {
@@ -3102,7 +3106,7 @@ function triggerPianoRollEventForTrack(track, playbackState, event, eventKey, be
   const eventPlaybackState = createPianoRollEventPlaybackState(playbackState, event);
   track.__transportClockCorrectionPulse = null;
   track.__transportClockCorrectionUntil = null;
-  triggerTrack(track, eventPlaybackState, sessionToken);
+  launchTrackPianoRollEvent(track, eventPlaybackState, sessionToken);
   schedulePianoRollNoteGate(track, event, eventKey, beatMs, contextKey, sessionToken);
 }
 
@@ -3291,6 +3295,30 @@ function getTrackPlaybackState(track, overrideState) {
   }
 
   return baseTrack;
+}
+
+function getPlaybackSafeTrackState(track, overrideState = null) {
+  const baseTrack = getTrackById(track?.id) || track;
+  if (!baseTrack || typeof baseTrack !== "object") {
+    return null;
+  }
+
+  const playbackState = getTrackPlaybackState(baseTrack, overrideState);
+  if (!playbackState || typeof playbackState !== "object") {
+    return null;
+  }
+
+  return normalizeClipState(playbackState, baseTrack);
+}
+
+function getPlaybackSafeArrangementClip(track, stepIndex = arrangement?.step) {
+  const clip = getArrangementStepClip(track, stepIndex);
+  if (!clip || typeof clip !== "object" || Array.isArray(clip)) {
+    return null;
+  }
+
+  const baseTrack = getTrackById(track?.id) || track;
+  return normalizeClipState(clip, baseTrack || {});
 }
 
 function isBaseTrackPlaybackState(track, playbackState) {
@@ -3845,6 +3873,10 @@ function silenceTrackForPreroll(track, video) {
     video.volume = 0;
   }
 
+  if (video === track?.__prerollStandbyVideo) {
+    return;
+  }
+
   if (track?.audio?.output?.gain) {
     track.audio.output.gain.value = 0;
   }
@@ -4113,27 +4145,9 @@ function waitForPresentedVideoFrame(video, options = {}) {
 }
 
 function clearArrangementMediaReadinessVideos() {
-  arrangementMediaReadinessVideos.forEach((video) => {
-    if (!video) {
-      return;
-    }
-
-    try {
-      video.pause();
-    } catch {
-      // Best effort cleanup for warm-up media.
-    }
-
-    try {
-      video.removeAttribute("src");
-      video.load?.();
-    } catch {
-      // Best effort cleanup for warm-up media.
-    }
-
-    video.remove?.();
-  });
-  arrangementMediaReadinessVideos = [];
+  // Readiness warm-up videos are now short-lived and cleaned up inside
+  // prepareArrangementMediaReadinessTarget(). Keep this function as a stable
+  // stop/cleanup boundary for callers that reset playback.
 }
 
 function getArrangementMediaReadinessTargets() {
@@ -4145,7 +4159,7 @@ function getArrangementMediaReadinessTargets() {
   const seen = new Set();
   arrangement.clips.forEach((_, stepIndex) => {
     tracks.forEach((track) => {
-      const clip = getArrangementStepClip(track, stepIndex);
+      const clip = getPlaybackSafeArrangementClip(track, stepIndex);
       const playbackClip = getTrackFrozenBounceState(track, clip) || clip;
       const sourceUrl = getTrackPlaybackSourceUrl(track, playbackClip);
       if (!playbackClip || !sourceUrl) {
@@ -4171,58 +4185,326 @@ function getArrangementMediaReadinessTargets() {
   return targets;
 }
 
+function getArrangementPlaybackPreflightIssues() {
+  const issues = [];
+  if (!arrangement.enabled || !hasArrangementClips()) {
+    return issues;
+  }
+
+  if (!Array.isArray(arrangement.clips) || arrangement.clips.length === 0) {
+    issues.push({
+      reason: "missing-arrangement",
+      message: "Arrangement has no playable scenes",
+    });
+    return issues;
+  }
+
+  tracks.forEach((track) => {
+    if (!track?.id) {
+      issues.push({
+        reason: "missing-track-id",
+        message: "A track is missing its playback id",
+      });
+      return;
+    }
+
+    arrangement.clips.forEach((_, stepIndex) => {
+      const rawClip = getArrangementStepClip(track, stepIndex);
+      if (!rawClip) {
+        return;
+      }
+
+      const clip = getPlaybackSafeArrangementClip(track, stepIndex);
+      if (!clip) {
+        issues.push({
+          reason: "invalid-clip",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} has invalid clip data`,
+        });
+        return;
+      }
+
+      const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
+      if (!clip.source?.mediaUrl && !clip.source?.url) {
+        issues.push({
+          reason: "missing-source",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} is missing media`,
+        });
+        return;
+      }
+
+      if (!sourceUrl) {
+        issues.push({
+          reason: "unroutable-source",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} media route is unavailable`,
+        });
+        return;
+      }
+
+      try {
+        new URL(sourceUrl, window.location.href);
+      } catch {
+        issues.push({
+          reason: "invalid-source-url",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} has an invalid media URL`,
+        });
+        return;
+      }
+
+      if (!Number.isFinite(Number(clip.startTime)) || Number(clip.startTime) < 0) {
+        issues.push({
+          reason: "invalid-anchor",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} has an invalid anchor`,
+        });
+        return;
+      }
+
+      const video = ensureTrackVideoElementForPlayback(track, clip);
+      if (!video) {
+        issues.push({
+          reason: "missing-video-element",
+          trackId: track.id,
+          trackName: track.name,
+          stepIndex,
+          message: `${track.name || "Track"} scene ${stepIndex + 1} has no playback surface`,
+        });
+      }
+    });
+  });
+
+  return issues;
+}
+
+function runArrangementPlaybackPreflight() {
+  const issues = getArrangementPlaybackPreflightIssues();
+  if (!issues.length) {
+    setStatus("Arrangement preflight passed");
+    return true;
+  }
+
+  const firstIssue = issues[0];
+  console.warn("Arrangement playback preflight failed", issues);
+  setStatus(`Arrangement preflight failed: ${firstIssue.message}`, true);
+  return false;
+}
+
+function getMediaElementDiagnostics(video) {
+  if (!video) {
+    return {
+      present: false,
+    };
+  }
+
+  return {
+    present: true,
+    readyState: video.readyState,
+    networkState: video.networkState,
+    paused: !!video.paused,
+    ended: !!video.ended,
+    seeking: !!video.seeking,
+    muted: !!video.muted,
+    volume: Number(video.volume),
+    currentTime: Number(video.currentTime),
+    duration: Number(video.duration),
+    src: video.currentSrc || video.src || video.getAttribute?.("src") || "",
+    error: video.error
+      ? {
+        code: video.error.code,
+        message: video.error.message || "",
+      }
+      : null,
+  };
+}
+
+function getTrackPlaybackDiagnostics(track, stepIndex = arrangement?.step) {
+  if (!track) {
+    return null;
+  }
+
+  const resolvedStep = getArrangementStepIndex(stepIndex);
+  const arrangementClip = resolvedStep === null ? null : getPlaybackSafeArrangementClip(track, resolvedStep);
+  const liveState = getPlaybackSafeTrackState(track) || track;
+  const playbackState = arrangement.enabled && hasArrangementClips()
+    ? arrangementClip
+    : liveState;
+  const video = getTrackVideo(track);
+  const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+  const audio = track.audio || null;
+  return {
+    id: track.id,
+    name: track.name,
+    scene: resolvedStep === null ? null : resolvedStep + 1,
+    hasArrangementClip: !!arrangementClip,
+    hasPlaybackState: !!playbackState,
+    sourceUrl,
+    timingMode: normalizeClipTimingMode(playbackState?.timingMode, track.timingMode),
+    anchor: Number(playbackState?.startTime),
+    density: playbackState?.retriggersPerBar,
+    transport: {
+      active: !!transport?.active,
+      sessionToken: transport?.sessionToken ?? null,
+      primed: track.__transportPrimedFor === transport?.sessionToken,
+      stepMs: Number(track.stepMs),
+      nextTriggerAt: Number(track.nextTriggerAt),
+      lastRetriggerPulse: Number(track.__lastRetriggerPulse),
+      timingNudgeMs: getTrackTimingNudgeMs(track),
+    },
+    launch: {
+      intent: track.__lastLaunchIntent || null,
+      stage: track.__lastLaunchStage || null,
+      pulseIndex: track.__lastLaunchPulseIndex ?? null,
+    },
+    lookahead: {
+      prerollFor: track.__lookaheadPrerollFor ?? null,
+      prerollStep: Number.isFinite(Number(track.__lookaheadPrerollStep)) ? Number(track.__lookaheadPrerollStep) + 1 : null,
+      prerollBarStartAt: Number(track.__lookaheadPrerollBarStartAt),
+      revealedFor: track.__lookaheadRevealedFor ?? null,
+      revealedStep: Number.isFinite(Number(track.__lookaheadRevealedStep)) ? Number(track.__lookaheadRevealedStep) + 1 : null,
+      missedFor: track.__missedPreparedEntranceFor ?? null,
+      missedStep: Number.isFinite(Number(track.__missedPreparedEntranceStep)) ? Number(track.__missedPreparedEntranceStep) + 1 : null,
+      status: track.lookaheadStatus || null,
+    },
+    media: getMediaElementDiagnostics(video),
+    audio: {
+      status: track.audioFxStatus || null,
+      route: audio?.route || null,
+      hasGraph: hasLiveTrackAudioGraph(track, video),
+      contextState: audioContext?.state || null,
+      webAudioDisabled: !!webAudioDisabled,
+      outputGain: Number(audio?.output?.gain?.value),
+    },
+    phase: track.playbackPhase || null,
+    mediaStatus: track.mediaStatus || null,
+  };
+}
+
+function getPlaybackDiagnostics() {
+  const resolvedStep = getArrangementStepIndex(
+    transport?.active && Number.isFinite(Number(transport.arrangementStep))
+      ? transport.arrangementStep
+      : arrangement?.step,
+  );
+  return {
+    generatedAt: new Date().toISOString(),
+    status: statusPill?.textContent || "",
+    arrangement: {
+      enabled: !!arrangement.enabled,
+      step: resolvedStep === null ? null : resolvedStep + 1,
+      stepCount: Array.isArray(arrangement.clips) ? arrangement.clips.length : 0,
+      hasClips: hasArrangementClips(),
+    },
+    transport: transport
+      ? {
+        active: !!transport.active,
+        sessionToken: transport.sessionToken ?? null,
+        bootToken: startTransport.bootToken ?? null,
+        startedAt: Number(transport.startedAt),
+        nextBeatAt: Number(transport.nextBeatAt),
+        beatIndex: Number(transport.beatIndex),
+        beatMs: getTransportBeatMs(transport),
+        beatsPerBar: getTransportBeatsPerBar(transport),
+        arrangementStep: Number.isFinite(Number(transport.arrangementStep)) ? Number(transport.arrangementStep) + 1 : null,
+        strictHaltRequested: !!transport.__strictHaltRequested,
+      }
+      : null,
+    tracks: tracks.map((track) => getTrackPlaybackDiagnostics(track, resolvedStep ?? arrangement?.step)),
+  };
+}
+
+function capturePlaybackFailureDiagnostics(reason = "playback failure", details = {}) {
+  try {
+    lastPlaybackFailureDiagnostics = {
+      generatedAt: new Date().toISOString(),
+      reason: typeof reason === "string" ? reason : "playback failure",
+      details: details && typeof details === "object" ? { ...details } : {},
+      diagnostics: getPlaybackDiagnostics(),
+    };
+  } catch (error) {
+    lastPlaybackFailureDiagnostics = {
+      generatedAt: new Date().toISOString(),
+      reason: typeof reason === "string" ? reason : "playback failure",
+      details: details && typeof details === "object" ? { ...details } : {},
+      diagnosticsError: error?.message || String(error),
+    };
+  }
+
+  window.freemixLastPlaybackFailureDiagnostics = lastPlaybackFailureDiagnostics;
+  return lastPlaybackFailureDiagnostics;
+}
+
+function getLastPlaybackFailureDiagnostics() {
+  return lastPlaybackFailureDiagnostics;
+}
+
+window.freemixGetPlaybackDiagnostics = getPlaybackDiagnostics;
+window.freemixGetLastPlaybackFailureDiagnostics = getLastPlaybackFailureDiagnostics;
+
 async function prepareArrangementMediaReadinessTarget(target, sessionToken) {
+  let video = null;
   if (!target?.sourceUrl || startTransport.bootToken !== sessionToken) {
     return false;
   }
 
-  const video = document.createElement("video");
-  video.muted = true;
-  video.volume = 0;
-  video.preload = "auto";
-  video.playsInline = true;
-  video.setAttribute("playsinline", "");
-  video.setAttribute("aria-hidden", "true");
-  video.style.position = "fixed";
-  video.style.left = "-2px";
-  video.style.top = "-2px";
-  video.style.width = "1px";
-  video.style.height = "1px";
-  video.style.opacity = "0";
-  video.style.pointerEvents = "none";
-  video.style.zIndex = "-1";
-  document.body?.appendChild(video);
-  arrangementMediaReadinessVideos.push(video);
-
-  setVideoCorsPolicy(video, target.sourceUrl);
-  setMediaElementSource(video, target.sourceUrl);
-  loadMediaElementOnlyIfEmpty(video);
-
-  await waitForTrackMetadata(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
-  if (startTransport.bootToken !== sessionToken || video.error) {
-    return false;
-  }
-
-  await waitForTrackReady(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
-  if (startTransport.bootToken !== sessionToken || video.error || video.readyState < 2) {
-    return false;
-  }
-
-  const anchorTime = safeStartTime(target.clip, video);
-  if (Number.isFinite(anchorTime)) {
-    try {
-      video.currentTime = anchorTime;
-      await awaitVideoSeek(video, anchorTime, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
-    } catch {
-      // Some streams do not seek cleanly during warm-up; live playback will retry on the real element.
-    }
-  }
-
-  if (startTransport.bootToken !== sessionToken) {
-    return false;
-  }
-
   try {
+    video = document.createElement("video");
+    video.muted = true;
+    video.volume = 0;
+    video.preload = "auto";
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("aria-hidden", "true");
+    video.style.position = "fixed";
+    video.style.left = "-2px";
+    video.style.top = "-2px";
+    video.style.width = "1px";
+    video.style.height = "1px";
+    video.style.opacity = "0";
+    video.style.pointerEvents = "none";
+    video.style.zIndex = "-1";
+    document.body?.appendChild(video);
+
+    setVideoCorsPolicy(video, target.sourceUrl);
+    setMediaElementSource(video, target.sourceUrl);
+    loadMediaElementOnlyIfEmpty(video);
+
+    await waitForTrackMetadata(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+    if (startTransport.bootToken !== sessionToken || video.error) {
+      return false;
+    }
+
+    await waitForTrackReady(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+    if (startTransport.bootToken !== sessionToken || video.error || video.readyState < 2) {
+      return false;
+    }
+
+    const anchorTime = safeStartTime(target.clip, video);
+    if (Number.isFinite(anchorTime)) {
+      try {
+        video.currentTime = anchorTime;
+        await awaitVideoSeek(video, anchorTime, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+      } catch {
+        // Some streams do not seek cleanly during warm-up; live playback will retry on the real element.
+      }
+    }
+
+    if (startTransport.bootToken !== sessionToken) {
+      return false;
+    }
+
     await video.play();
     await Promise.race([
       waitForPresentedVideoFrame(video, {
@@ -4231,17 +4513,25 @@ async function prepareArrangementMediaReadinessTarget(target, sessionToken) {
       }),
       waitForVideoPlaybackAdvance(video, Number.isFinite(anchorTime) ? anchorTime : Number(video.currentTime) || 0, 0.006, ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS),
     ]);
+    return startTransport.bootToken === sessionToken && !video.error;
   } catch {
     return false;
   } finally {
     try {
-      video.pause();
+      video?.pause();
     } catch {
       // Best effort: readiness media is muted and hidden if pause fails.
     }
-  }
 
-  return startTransport.bootToken === sessionToken && !video.error;
+    try {
+      video?.removeAttribute("src");
+      video?.load?.();
+    } catch {
+      // Best effort cleanup for temporary warm-up media.
+    }
+
+    video?.remove?.();
+  }
 }
 
 async function prepareArrangementMediaReadiness(sessionToken) {
@@ -4414,6 +4704,48 @@ function getPrerollStateForLead(clip, video, leadMs) {
     anchorTime,
     exact: anchorTime - startTime >= Math.min(mediaLeadSeconds, 0.025),
   };
+}
+
+function ensureTrackLookaheadVideoElement(track, playbackState = null) {
+  const activeVideo = ensureTrackVideoElementForPlayback(track, playbackState);
+  const cell = getTrackCell(track);
+  const nextSourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
+  const currentStep = getArrangementStepIndex(transport?.arrangementStep);
+  const currentClip = currentStep === null ? null : getArrangementStepClip(track, currentStep);
+  const currentSourceUrl = currentClip ? getTrackPlaybackSourceUrl(track, currentClip) : "";
+  const shouldUseStandby =
+    !!transport?.active &&
+    !!cell &&
+    !!activeVideo &&
+    !!nextSourceUrl &&
+    !!currentSourceUrl;
+
+  if (!shouldUseStandby) {
+    return activeVideo;
+  }
+
+  let standby = track.__standbyVideoElement;
+  if (!standby?.isConnected || standby.parentElement !== cell) {
+    standby = cell.querySelector(`.track-video[data-playback-role="standby"][data-track-id="${track.id}"]`);
+  }
+
+  if (!standby) {
+    standby = activeVideo.cloneNode(false);
+    standby.removeAttribute("id");
+    standby.dataset.trackId = track.id;
+    standby.preload = "auto";
+    standby.playsInline = true;
+    standby.setAttribute("playsinline", "");
+    standby.classList.add("track-video");
+    cell.appendChild(standby);
+  }
+
+  standby.muted = true;
+  standby.volume = 0;
+  setPlaybackVideoRole(standby, "standby");
+  track.__standbyVideoElement = standby;
+  track.__prerollStandbyVideo = standby;
+  return standby;
 }
 
 async function prepareArrangementStartPreroll(sessionToken, leadMs = ARRANGEMENT_START_PREROLL_MS) {
@@ -4644,7 +4976,7 @@ function revealArrangementPreroll(sessionToken) {
       flashTrackTrigger(track);
     } else {
       if (!isPianoRollTimingState(clip)) {
-        triggerTrack(track, revealState, sessionToken);
+        launchTrackSceneEntry(track, revealState, sessionToken);
       }
     }
 
@@ -4682,6 +5014,17 @@ function clearTrackArrangementLookahead(track) {
     return;
   }
 
+  const standby = track.__prerollStandbyVideo;
+  if (standby && standby !== track.__activeVideoElement) {
+    try {
+      standby.pause();
+    } catch {
+      // Best effort cleanup for abandoned prepared entrances.
+    }
+    setPlaybackVideoRole(standby, "standby");
+  }
+
+  track.__prerollStandbyVideo = null;
   track.__lookaheadPrerollFor = null;
   track.__lookaheadPrerollStep = null;
   track.__lookaheadPrerollBarStartAt = null;
@@ -4711,6 +5054,28 @@ function clearArrangementLookaheadPreroll(clearTracks = false) {
   if (clearTracks) {
     tracks.forEach(clearTrackArrangementLookahead);
   }
+}
+
+function requestStrictArrangementPlaybackHalt(reason = "arrangement playback lost sync", details = {}) {
+  if (!transport?.active || transport.__strictHaltRequested) {
+    return;
+  }
+
+  const message = reason && typeof reason === "string"
+    ? reason
+    : "arrangement playback lost sync";
+  transport.__strictHaltRequested = true;
+  const failureDiagnostics = capturePlaybackFailureDiagnostics(message, details);
+  console.warn("Strict arrangement playback halt", { reason: message, details, failureDiagnostics });
+  setStatus(`Playback stopped: ${message}`, true);
+  window.setTimeout(() => {
+    if (!transport?.active || !transport.__strictHaltRequested) {
+      return;
+    }
+
+    stopTransport(true);
+    setStatus(`Playback stopped: ${message}`, true);
+  }, 0);
 }
 
 function setTrackLookaheadStatus(track, status, details = {}) {
@@ -4765,9 +5130,13 @@ function scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken)
     if (arrangementLookaheadRevealTimer === nextTimer) {
       arrangementLookaheadRevealTimer = null;
     }
-    void waitUntilPerformanceTime(revealAt).then(() => {
-      revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
-    });
+    void waitUntilPerformanceTime(revealAt)
+      .then(() => {
+        revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
+      })
+      .catch((error) => {
+        console.warn("Arrangement lookahead reveal timer failed", error);
+      });
   }, delayMs);
   arrangementLookaheadRevealTimers.set(timerKey, nextTimer);
   arrangementLookaheadRevealTimer = nextTimer;
@@ -4785,6 +5154,7 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
 
   let revealedAny = false;
   tracks.forEach((track) => {
+    try {
     if (
       track.__lookaheadPrerollFor !== sessionToken ||
       track.__lookaheadPrerollStep !== resolvedStep ||
@@ -4793,7 +5163,7 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
       return;
     }
 
-    const clip = getArrangementStepClip(track, resolvedStep);
+    const clip = getPlaybackSafeArrangementClip(track, resolvedStep);
     const sourceUrl = getTrackPlaybackSourceUrl(track, clip);
     const video = getTrackVideo(track);
     const playbackSignature = getPlaybackStateSignature(clip, sourceUrl);
@@ -4818,7 +5188,15 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
       track.__missedPreparedEntranceFor = sessionToken;
       track.__missedPreparedEntranceStep = resolvedStep;
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      if (video && typeof video.pause === "function") {
+        video.pause();
+      }
       setTrackBlackout(track, true);
+      requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} media was not armed on time`, {
+        trackId: track?.id,
+        trackName: track?.name,
+        reason: "not-ready-at-reveal",
+      });
       return;
     }
 
@@ -4852,6 +5230,7 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     track.__lookaheadRevealedStep = resolvedStep;
     track.__lookaheadRevealedBarStartAt = barStartAt;
     track.__lookaheadRevealedPulse = pulseIndex;
+    track.__skipTransportSyncUntil = performance.now() + TRANSPORT_CLOCK_CORRECTION_MIN_WINDOW_MS;
     setTrackLookaheadStatus(track, "revealed", {
       scene: resolvedStep + 1,
       targetInMs: Math.round(barStartAt - revealAt),
@@ -4867,12 +5246,33 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     track.__missedPreparedEntranceStep = null;
     flashTrackTrigger(track);
     revealedAny = true;
+    } catch (error) {
+      console.warn(`Arrangement lookahead reveal skipped for ${track?.name || "track"}`, error);
+      clearTrackArrangementLookahead(track);
+      const failedVideo = getTrackVideo(track);
+      if (failedVideo && typeof failedVideo.pause === "function") {
+        failedVideo.pause();
+      }
+      setTrackBlackout(track, true);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+        mediaStatus: "failed",
+        details: { reason: "lookahead-reveal-error" },
+      });
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} media reveal failed`, {
+        trackId: track?.id,
+        trackName: track?.name,
+        reason: "lookahead-reveal-error",
+      });
+    }
   });
 
   return revealedAny;
 }
 
 async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepIndex, barStartAt, sessionToken, lookaheadKey) {
+  clip = normalizeClipState(clip, getTrackById(track?.id) || track || {});
   const video = ensureTrackVideoElementForPlayback(track, clip);
   if (!video) {
     return false;
@@ -4881,6 +5281,12 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   const failLookahead = (reason = "failed") => {
     const retryCount = Number(track.__lookaheadRetryCount) || 0;
     const remainingMs = barStartAt - performance.now();
+    const canRetry =
+      startTransport.bootToken === sessionToken &&
+      transport?.active &&
+      transport.sessionToken === sessionToken &&
+      remainingMs > ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS + ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS &&
+      retryCount < ARRANGEMENT_LOOKAHEAD_MAX_RETRIES;
     setTrackLookaheadStatus(track, "failed", {
       scene: stepIndex + 1,
       targetInMs: Math.round(remainingMs),
@@ -4888,13 +5294,7 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
       retries: retryCount,
     });
     clearTrackArrangementLookahead(track);
-    if (
-      startTransport.bootToken === sessionToken &&
-      transport?.active &&
-      transport.sessionToken === sessionToken &&
-      remainingMs > ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS + ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS &&
-      retryCount < ARRANGEMENT_LOOKAHEAD_MAX_RETRIES
-    ) {
+    if (canRetry) {
       track.__lookaheadRetryCount = retryCount + 1;
       setTrackLookaheadStatus(track, "retrying", {
         scene: stepIndex + 1,
@@ -4902,26 +5302,26 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
         reason,
         retries: retryCount + 1,
       });
-      window.setTimeout(() => {
-        if (
-          startTransport.bootToken !== sessionToken ||
-          !transport?.active ||
-          transport.sessionToken !== sessionToken ||
-          performance.now() >= barStartAt
-        ) {
-          return;
-        }
+      return new Promise((resolve) => {
+        window.setTimeout(() => {
+          if (
+            startTransport.bootToken !== sessionToken ||
+            !transport?.active ||
+            transport.sessionToken !== sessionToken ||
+            performance.now() >= barStartAt
+          ) {
+            resolve(false);
+            return;
+          }
 
-        void prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepIndex, barStartAt, sessionToken, lookaheadKey)
-          .then((prepared) => {
-            if (prepared) {
-              scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken);
-            }
-          })
-          .catch((error) => {
-            console.warn(error);
-          });
-      }, ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS);
+          void prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepIndex, barStartAt, sessionToken, lookaheadKey)
+            .then(resolve)
+            .catch((error) => {
+              console.warn(error);
+              resolve(false);
+            });
+        }, ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS);
+      });
     }
     return false;
   };
@@ -5047,13 +5447,13 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
   }
 
   silenceTrackForPreroll(track, video);
+  let launchPlayPromise = null;
   try {
-    await video.play();
+    launchPlayPromise = video.play();
   } catch {
     return failLookahead("timed-play-failed");
   }
 
-  silenceTrackForPreroll(track, video);
   track.__transportPrimedFor = sessionToken;
   track.__lookaheadPrerollFor = sessionToken;
   track.__lookaheadPrerollStep = stepIndex;
@@ -5068,6 +5468,22 @@ async function prepareArrangementLookaheadTarget(track, clip, sourceUrl, stepInd
     currentTime: Number(video.currentTime.toFixed(3)),
     retries: Number(track.__lookaheadRetryCount) || 0,
   });
+  scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken);
+  try {
+    if (launchPlayPromise && typeof launchPlayPromise.then === "function") {
+      await launchPlayPromise;
+    }
+  } catch {
+    return failLookahead("timed-play-failed");
+  }
+
+  if (
+    track.__lookaheadPrerollFor === sessionToken &&
+    track.__lookaheadPrerollStep === stepIndex &&
+    track.__lookaheadPrerollSignature === getPlaybackStateSignature(clip, sourceUrl)
+  ) {
+    silenceTrackForPreroll(track, video);
+  }
   return true;
 }
 
@@ -5095,15 +5511,22 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
   const currentStep = getArrangementStepIndex(transport.arrangementStep);
   const targets = tracks
     .map((track) => {
-      const currentClip = currentStep === null ? null : getArrangementStepClip(track, currentStep);
-      const currentSourceUrl = currentClip?.source?.mediaUrl || null;
-      const nextClip = getArrangementStepClip(track, resolvedStep);
-      const nextSourceUrl = nextClip?.source?.mediaUrl || getTrackPlaybackSourceUrl(track, nextClip);
+      const currentClip = currentStep === null ? null : getPlaybackSafeArrangementClip(track, currentStep);
+      const currentSourceUrl = currentClip ? getTrackPlaybackSourceUrl(track, currentClip) : null;
+      const nextClip = getPlaybackSafeArrangementClip(track, resolvedStep);
+      const nextSourceUrl = nextClip ? getTrackPlaybackSourceUrl(track, nextClip) : null;
+      if (!nextClip || !nextSourceUrl) {
+        return null;
+      }
+
+      const preparedSignature = getPlaybackStateSignature(nextClip, nextSourceUrl);
       if (
-        !nextClip ||
-        !nextSourceUrl ||
         currentSourceUrl ||
-        track.__lookaheadPrerollFor === sessionToken ||
+        (
+          track.__lookaheadPrerollFor === sessionToken &&
+          track.__lookaheadPrerollStep === resolvedStep &&
+          track.__lookaheadPrerollSignature === preparedSignature
+        ) ||
         track.__lookaheadPrerollKey === lookaheadKey
       ) {
         return null;
@@ -5117,7 +5540,6 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
     return;
   }
 
-  scheduleArrangementLookaheadReveal(resolvedStep, barStartAt, sessionToken);
   arrangementLookaheadPrepareKey = lookaheadKey;
   arrangementLookaheadPrepareKeys.add(lookaheadKey);
   arrangementLookaheadPreparePromise = Promise.all(
@@ -5126,12 +5548,24 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
     ),
   )
     .then((results) => {
-      if (results.some(Boolean)) {
+      const preparedCount = results.filter(Boolean).length;
+      if (preparedCount !== targets.length) {
+        requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} media could not be prepared`, {
+          preparedCount,
+          targetCount: targets.length,
+        });
+        return;
+      }
+
+      if (preparedCount > 0) {
         setStatus(`Scene ${resolvedStep + 1}: clips armed`);
       }
     })
     .catch((error) => {
       console.warn(error);
+      requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} media preparation failed`, {
+        reason: "lookahead-prepare-error",
+      });
     })
     .finally(() => {
       arrangementLookaheadPrepareKeys.delete(lookaheadKey);
@@ -5162,16 +5596,16 @@ function prepareInitialFutureArrangementEntrances(sessionToken, startAt, barMs) 
   }
 
   tracks.forEach((track) => {
-    const startingClip = getArrangementStepClip(track, startStep);
-    const startingSourceUrl = startingClip?.source?.mediaUrl || null;
+    const startingClip = getPlaybackSafeArrangementClip(track, startStep);
+    const startingSourceUrl = startingClip ? getTrackPlaybackSourceUrl(track, startingClip) : null;
     if (startingSourceUrl) {
       return;
     }
 
     for (let offset = 1; offset <= arrangementLength; offset += 1) {
       const futureStep = (startStep + offset) % arrangementLength;
-      const futureClip = getArrangementStepClip(track, futureStep);
-      const futureSourceUrl = futureClip?.source?.mediaUrl || null;
+      const futureClip = getPlaybackSafeArrangementClip(track, futureStep);
+      const futureSourceUrl = futureClip ? getTrackPlaybackSourceUrl(track, futureClip) : null;
       if (!futureSourceUrl) {
         continue;
       }
@@ -5707,7 +6141,7 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
     return;
   }
 
-  const playbackState = getTrackPlaybackState(track) || track;
+  const playbackState = getPlaybackSafeTrackState(track) || track;
   const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
   if (!sourceUrl) {
     return;
@@ -5727,7 +6161,7 @@ async function primeTrackForTransport(track, sessionToken = startTransport.bootT
     return;
   }
 
-  const primingState = getTrackPlaybackState(track) || track;
+  const primingState = getPlaybackSafeTrackState(track) || track;
   const primingSourceUrl = getTrackPlaybackSourceUrl(track, primingState);
   const parkedAtAnchor = await parkVideoAtAnchor(video, primingState, track);
   if (startTransport.bootToken !== sessionToken) {
@@ -9279,7 +9713,7 @@ window.freemixPreviewSelectedPianoRollNote = async (event) => {
   const previewToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   track.__pianoRollAuditionToken = previewToken;
   const eventPlaybackState = createPianoRollEventPlaybackState(previewClip, noteEvent);
-  triggerTrack(track, eventPlaybackState, transport?.sessionToken);
+  launchTrackPianoRollEvent(track, eventPlaybackState, transport?.sessionToken);
 
   const durationMs = Math.max(
     90,
@@ -10542,6 +10976,10 @@ async function startTransport() {
       }
 
       if (arrangement.enabled && hasArrangementClips()) {
+        if (!runArrangementPlaybackPreflight()) {
+          return;
+        }
+
         const arrangementReady = await prepareArrangementMediaReadiness(startToken);
         if (startTransport.bootToken !== startToken || !arrangementReady) {
           return;
@@ -10552,11 +10990,11 @@ async function startTransport() {
         tracks
           .filter((track) => {
             if (arrangement.enabled && hasArrangementClips()) {
-              const arrangementClip = getArrangementStepClip(track, arrangement.step);
+              const arrangementClip = getPlaybackSafeArrangementClip(track, arrangement.step);
               return !!arrangementClip && !!getTrackPlaybackSourceUrl(track, arrangementClip);
             }
 
-            return !!getTrackPlaybackSourceUrl(track);
+            return !!getTrackPlaybackSourceUrl(track, getPlaybackSafeTrackState(track) || track);
           })
           .map((track) =>
             {
@@ -11152,8 +11590,8 @@ function startTransportWithState(sessionToken = startTransport.bootToken, option
     const video = track.__preparedPlaybackVideo?.isConnected ? track.__preparedPlaybackVideo : getTrackVideo(track);
     const playbackState =
       arrangement.enabled && hasArrangementClips()
-        ? getArrangementStepClip(track, arrangement.step)
-        : getTrackPlaybackState(track) || track;
+        ? getPlaybackSafeArrangementClip(track, arrangement.step)
+        : getPlaybackSafeTrackState(track) || track;
     const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
 
     if (!video || !sourceUrl) {
@@ -11461,15 +11899,14 @@ function getExportPreflightIssue(mode = "clip") {
 
     const hasPlayableArrangementClip = exportTimeline.stepIndexes.some((stepIndex) =>
       tracks.some((track) => {
-        const step = arrangement?.clips?.[stepIndex];
-        const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
+        const clip = getPlaybackSafeArrangementClip(track, stepIndex);
         return !!getTrackPlaybackSourceUrl(track, clip);
       }),
     );
     return hasPlayableArrangementClip || exportTimeline.stepIndexes.some((stepIndex) => textClipHasVisibleText(getArrangementTextClip(stepIndex))) ? "" : "Arrangement has no playable media";
   }
 
-  const hasPlayableTrack = tracks.some((track) => !!getTrackPlaybackSourceUrl(track, getTrackPlaybackState(track) || track));
+  const hasPlayableTrack = tracks.some((track) => !!getTrackPlaybackSourceUrl(track, getPlaybackSafeTrackState(track) || track));
   return hasPlayableTrack || textClipHasVisibleText(getArrangementTextClip(arrangement?.step)) ? "" : "Load a source before exporting";
 }
 
@@ -12876,8 +13313,7 @@ function trackHasArrangementExportSource(track, exportTimeline = createExportTim
   }
 
   return exportTimeline.stepIndexes.some((stepIndex) => {
-    const step = arrangement.clips[stepIndex];
-    const clip = step?.[track.id] ? normalizeClipState(step[track.id], track) : null;
+    const clip = getPlaybackSafeArrangementClip(track, stepIndex);
     return !!getTrackPlaybackSourceUrl(track, clip);
   });
 }
@@ -12911,7 +13347,7 @@ async function exportComposition(mode = "clip") {
       return trackHasArrangementExportSource(track, exportTimeline);
     }
 
-    const renderState = getTrackRenderState(track);
+    const renderState = getPlaybackSafeTrackState(track, getTrackRenderState(track)) || getTrackRenderState(track);
     return track.source || renderState?.source;
   });
   const hasExportText = requestedExportMode === "arrangement"
@@ -13243,6 +13679,7 @@ function tickTransport() {
     return;
   }
 
+  try {
   if (transport.sessionToken !== startTransport.bootToken) {
     if (transport.frameId) {
       cancelAnimationFrame(transport.frameId);
@@ -13282,8 +13719,16 @@ function tickTransport() {
     playArrangementDrums(now, currentStep, currentStepStartAt, barMs);
   }
 
+  if (!transport?.active || transport.__strictHaltRequested) {
+    return;
+  }
+
   tracks.forEach((track) => {
-    const playbackState = getTrackPlaybackState(track) || track;
+    let playbackFrameStage = "start";
+    try {
+    playbackFrameStage = "state";
+    const playbackState = getPlaybackSafeTrackState(track) || track;
+    playbackFrameStage = "source";
     const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
     const isPianoRoll = isPianoRollTimingState(playbackState);
 
@@ -13292,10 +13737,12 @@ function tickTransport() {
     }
 
     if (track.__transportPrimedFor !== transport.sessionToken) {
+      playbackFrameStage = "prime";
       ensureTransportTrackPrimed(track, transport.sessionToken);
       return;
     }
 
+    playbackFrameStage = "video";
     const video = getTrackVideo(track);
     if (!video || video.readyState < 1 || video.networkState === 0) {
       return;
@@ -13303,6 +13750,7 @@ function tickTransport() {
 
     const activePlaybackState = playbackState;
     if (isPianoRoll) {
+      playbackFrameStage = "piano-roll";
       const pianoContextKey = `${transport.sessionToken}:${arrangementTransportActive ? "arr" : "live"}:${currentStep}:${elapsedBars}`;
       playPianoRollEventsForTrack(
         track,
@@ -13316,6 +13764,7 @@ function tickTransport() {
       return;
     }
 
+    playbackFrameStage = "pulse";
     const pulseIndex = getTrackPulseIndex(track, now);
     if (pulseIndex === null) {
       return;
@@ -13345,13 +13794,58 @@ function tickTransport() {
         activePlaybackState,
         pulseIndex,
         beatsPerBar,
-        beatMs,
-      );
-      triggerTrack(track, eventPlaybackState, transport.sessionToken);
+          beatMs,
+        );
+      playbackFrameStage = "trigger";
+      retriggerTrackOnPulse(track, eventPlaybackState, transport.sessionToken, pulseIndex);
+      if (Number(track.__skipTransportSyncUntil) > now) {
+        return;
+      }
+      playbackFrameStage = "sync-after-trigger";
       syncTrackVideoToTransportClock(track, eventPlaybackState, now, pulseIndex);
       return;
     }
+    if (Number(track.__skipTransportSyncUntil) > now) {
+      return;
+    }
+    playbackFrameStage = "sync";
     syncTrackVideoToTransportClock(track, activePlaybackState, now, pulseIndex);
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+      const launchStage = error?.launchStage || track?.__lastLaunchStage || "";
+      const launchIntent = track?.__lastLaunchIntent || "";
+      const failureStage = playbackFrameStage === "trigger" && launchStage
+        ? `trigger:${launchIntent ? `${launchIntent}:` : ""}${launchStage}`
+        : playbackFrameStage;
+      console.warn(`Transport track frame failed for ${track?.name || track?.id || "track"} at ${failureStage}`, error);
+      clearTrackArrangementLookahead(track);
+      const failedVideo = getTrackVideo(track);
+      if (failedVideo && typeof failedVideo.pause === "function") {
+        failedVideo.pause();
+      }
+      setTrackBlackout(track, true);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+        mediaStatus: "failed",
+        details: {
+          reason: "transport-track-frame-error",
+          stage: failureStage,
+          intent: launchIntent,
+          pulseIndex: track?.__lastLaunchPulseIndex,
+          message: errorMessage,
+        },
+      });
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      requestStrictArrangementPlaybackHalt(`${track?.name || "track"} playback failed at ${failureStage}`, {
+        trackId: track?.id,
+        trackName: track?.name,
+        reason: "transport-track-frame-error",
+        stage: failureStage,
+        intent: launchIntent,
+        pulseIndex: track?.__lastLaunchPulseIndex,
+        message: errorMessage,
+      });
+    }
   });
 
   const beatCatchupLimit = Math.max(
@@ -13378,14 +13872,86 @@ function tickTransport() {
   }
 
   transport.frameId = requestAnimationFrame(tickTransport);
+  } catch (error) {
+    console.warn("Transport tick failed", error);
+    requestStrictArrangementPlaybackHalt("transport tick failed", {
+      reason: "transport-tick-error",
+    });
+  }
 }
 
-function triggerTrack(track, clip = track, transportSessionToken = transport?.sessionToken) {
+function runTrackLaunchStage(track, stage, operation) {
+  if (!track || typeof operation !== "function") {
+    return undefined;
+  }
+
+  track.__lastLaunchStage = stage;
+  try {
+    return operation();
+  } catch (error) {
+    error.launchStage = stage;
+    throw error;
+  }
+}
+
+function clearTrackLaunchMarkers(track) {
+  if (!track) {
+    return;
+  }
+
+  track.__warmLaunchFor = null;
+  track.__prerollRevealFor = null;
+  track.__prerollPlaybackSignature = null;
+  track.__prerollRevealCanSkipSeek = false;
+}
+
+function applyTrackLaunchState(track, video, playbackState, options = {}) {
+  const includeVideoFx = options.videoFx !== false;
+  const includeBlend = options.blend !== false;
+  const includeOpacity = options.opacity !== false;
+
+  runTrackLaunchStage(track, "apply-volume", () => applyTrackVolume(track, playbackState));
+  runTrackLaunchStage(track, "apply-audio-fx", () => applyTrackFx(track, playbackState));
+  if (includeVideoFx) {
+    runTrackLaunchStage(track, "apply-video-fx", () => applyVideoFx(track, playbackState));
+  }
+  if (includeBlend) {
+    runTrackLaunchStage(track, "apply-blend", () => applyTrackBlend(track, playbackState));
+  }
+  if (includeOpacity) {
+    runTrackLaunchStage(track, "apply-opacity", () => applyTrackOpacity(track, playbackState));
+  }
+  runTrackLaunchStage(track, "apply-pitch-speed", () => {
+    applyTrackPitchAndSpeed(track, playbackState);
+    applyVideoPitchAndSpeed(video, playbackState);
+  });
+}
+
+function launchTrackSceneEntry(track, clip, transportSessionToken = transport?.sessionToken) {
+  return triggerTrack(track, clip, transportSessionToken, { intent: "scene-entry" });
+}
+
+function retriggerTrackOnPulse(track, clip, transportSessionToken = transport?.sessionToken, pulseIndex = null) {
+  return triggerTrack(track, clip, transportSessionToken, { intent: "beat-retrigger", pulseIndex });
+}
+
+function launchTrackPianoRollEvent(track, clip, transportSessionToken = transport?.sessionToken) {
+  return triggerTrack(track, clip, transportSessionToken, { intent: "piano-roll" });
+}
+
+function launchTrackPreview(track, clip, transportSessionToken = transport?.sessionToken) {
+  return triggerTrack(track, clip, transportSessionToken, { intent: "preview" });
+}
+
+function triggerTrack(track, clip = track, transportSessionToken = transport?.sessionToken, launchOptions = {}) {
   if (transport?.active && transportSessionToken && track.__transportPrimedFor !== transportSessionToken) {
     return;
   }
 
-  const playbackState = getTrackPlaybackState(track, clip) || track;
+  track.__lastLaunchIntent = launchOptions?.intent || "direct";
+  track.__lastLaunchPulseIndex = Number.isFinite(Number(launchOptions?.pulseIndex)) ? Number(launchOptions.pulseIndex) : null;
+  track.__lastLaunchStage = "start";
+  const playbackState = getPlaybackSafeTrackState(track, clip) || track;
   const sourceUrl = getTrackPlaybackSourceUrl(track, playbackState);
   if (!sourceUrl) {
     return;
@@ -13396,16 +13962,14 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     return;
   }
 
-  setVideoCorsPolicy(video, sourceUrl);
+  runTrackLaunchStage(track, "set-cors", () => setVideoCorsPolicy(video, sourceUrl));
   const sourceChanged = !!sourceUrl && !mediaElementHasSource(video, sourceUrl);
   if (sourceChanged) {
-    holdTrackVisualUntilCleanFrame(track);
+    runTrackLaunchStage(track, "hold-visual", () => holdTrackVisualUntilCleanFrame(track));
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
-    track.__prerollRevealFor = null;
-    track.__prerollPlaybackSignature = null;
-    track.__prerollRevealCanSkipSeek = false;
-    setMediaElementSource(video, sourceUrl);
+    clearTrackLaunchMarkers(track);
+    runTrackLaunchStage(track, "set-source", () => setMediaElementSource(video, sourceUrl));
   }
 
   const playbackSignature = getPlaybackStateSignature(playbackState, sourceUrl);
@@ -13416,7 +13980,7 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
   });
   const requiresFxRoute = shouldRouteAudioThroughFx(track, playbackState);
   if (requiresFxRoute) {
-    prepareTrackAudioFxForPlayback(track, playbackState);
+    runTrackLaunchStage(track, "prepare-audio-fx", () => prepareTrackAudioFxForPlayback(track, playbackState));
   }
 
   const canFastRetrigger =
@@ -13426,22 +13990,20 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     !video.paused &&
     !video.ended;
   if (!canFastRetrigger || track.__lastPlaybackSignature !== playbackSignature) {
-    holdTrackVisualUntilCleanFrame(track);
+    runTrackLaunchStage(track, "hold-visual", () => holdTrackVisualUntilCleanFrame(track));
   }
   const hasStableAudioRoute =
     !requiresFxRoute ||
     (!webAudioDisabled && audioContext?.state === "running" && hasLiveTrackAudioGraph(track, video));
   if (canFastRetrigger && hasStableAudioRoute && track.__lastPlaybackSignature === playbackSignature) {
-    safeSetCurrentTime(video, playbackState, track, { force: true });
-    applyTrackVolume(track, playbackState);
-    applyTrackFx(track, playbackState);
-    applyTrackPitchAndSpeed(track, playbackState);
-    track.__warmLaunchFor = null;
-    track.__prerollRevealFor = null;
-    track.__prerollPlaybackSignature = null;
-    track.__prerollRevealCanSkipSeek = false;
-    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    runTrackLaunchStage(track, "seek-anchor", () => safeSetCurrentTime(video, playbackState, track, { force: true }));
+    applyTrackLaunchState(track, video, playbackState, { videoFx: false, blend: false, opacity: false });
+    clearTrackLaunchMarkers(track);
+    runTrackLaunchStage(track, "reveal-frame", () => {
+      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    });
     flashTrackTrigger(track);
+    track.__lastLaunchStage = "complete";
     return;
   }
 
@@ -13453,29 +14015,24 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     !video.paused &&
     !video.ended;
   if (canRevealWarmLaunch) {
-    prepareTrackAudioFxForPlayback(track, playbackState);
+    runTrackLaunchStage(track, "prepare-audio-fx", () => prepareTrackAudioFxForPlayback(track, playbackState));
     const canRevealPrerollWithoutSeek =
       track.__prerollRevealFor === transportSessionToken &&
       track.__prerollPlaybackSignature === playbackSignature &&
       track.__prerollRevealCanSkipSeek;
     if (!canRevealPrerollWithoutSeek) {
-      safeSetCurrentTime(video, playbackState, track, { force: true });
+      runTrackLaunchStage(track, "seek-anchor", () => safeSetCurrentTime(video, playbackState, track, { force: true }));
     }
-    applyTrackVolume(track, playbackState);
-    applyTrackFx(track, playbackState);
-    applyVideoFx(track, playbackState);
-    applyTrackBlend(track, playbackState);
-    applyTrackOpacity(track, playbackState);
-    applyTrackPitchAndSpeed(track, playbackState);
+    applyTrackLaunchState(track, video, playbackState);
     track.__lastPlaybackSignature = playbackSignature;
-    track.__warmLaunchFor = null;
-    track.__prerollRevealFor = null;
-    track.__prerollPlaybackSignature = null;
-    track.__prerollRevealCanSkipSeek = false;
+    clearTrackLaunchMarkers(track);
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
-    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    runTrackLaunchStage(track, "reveal-frame", () => {
+      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    });
     flashTrackTrigger(track);
+    track.__lastLaunchStage = "complete";
     return;
   }
 
@@ -13486,14 +14043,9 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__pendingPlaybackFrame = null;
   }
 
-  setupTrackAudio(track, video, playbackState);
-  prepareTrackAudioFxForPlayback(track, playbackState);
-  applyTrackVolume(track, playbackState);
-  applyTrackFx(track, playbackState);
-  applyVideoFx(track, playbackState);
-  applyTrackBlend(track, playbackState);
-  applyTrackOpacity(track, playbackState);
-  applyTrackPitchAndSpeed(track, playbackState);
+  runTrackLaunchStage(track, "setup-audio", () => setupTrackAudio(track, video, playbackState));
+  runTrackLaunchStage(track, "prepare-audio-fx", () => prepareTrackAudioFxForPlayback(track, playbackState));
+  applyTrackLaunchState(track, video, playbackState);
 
   const canLaunchFromParkedAnchor =
     !!transport?.active &&
@@ -13501,37 +14053,41 @@ function triggerTrack(track, clip = track, transportSessionToken = transport?.se
     track.__parkedAtAnchorFor === transportSessionToken &&
     track.__parkedPlaybackSignature === playbackSignature &&
     isVideoParkedAtAnchor(video, playbackState, 0.035);
-  if (canLaunchFromParkedAnchor && launchParkedVideo(video, track, playbackState, playbackToken)) {
+  const didLaunchParked = canLaunchFromParkedAnchor
+    ? runTrackLaunchStage(track, "launch-parked", () => launchParkedVideo(video, track, playbackState, playbackToken))
+    : false;
+  if (canLaunchFromParkedAnchor && didLaunchParked) {
     track.__lastPlaybackSignature = playbackSignature;
     track.__parkedAtAnchorFor = null;
     track.__parkedPlaybackSignature = null;
-    track.__warmLaunchFor = null;
-    track.__prerollRevealFor = null;
-    track.__prerollPlaybackSignature = null;
-    track.__prerollRevealCanSkipSeek = false;
+    clearTrackLaunchMarkers(track);
     flashTrackTrigger(track);
+    track.__lastLaunchStage = "complete";
     return;
   }
 
-  safeSetCurrentTime(video, playbackState, track, { force: true });
+  runTrackLaunchStage(track, "seek-anchor", () => safeSetCurrentTime(video, playbackState, track, { force: true }));
   track.__lastPlaybackSignature = playbackSignature;
 
   if (canFastRetrigger) {
-    track.__warmLaunchFor = null;
-    track.__prerollRevealFor = null;
-    track.__prerollPlaybackSignature = null;
-    track.__prerollRevealCanSkipSeek = false;
-    void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    clearTrackLaunchMarkers(track);
+    runTrackLaunchStage(track, "reveal-frame", () => {
+      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+    });
     flashTrackTrigger(track);
+    track.__lastLaunchStage = "complete";
     return;
   }
 
   if (typeof video.pause === "function") {
-    video.pause();
+    runTrackLaunchStage(track, "pause-before-play", () => video.pause());
   }
-  void attemptVideoPlay(video, track, playbackState, playbackToken);
+  runTrackLaunchStage(track, "async-play", () => {
+    void attemptVideoPlay(video, track, playbackState, playbackToken);
+  });
 
   flashTrackTrigger(track);
+  track.__lastLaunchStage = "complete";
 }
 
 function previewTrack(track) {
@@ -13548,7 +14104,7 @@ function previewTrack(track) {
     return;
   }
 
-  triggerTrack(track, playbackState);
+  launchTrackPreview(track, playbackState);
   window.setTimeout(() => {
     const video = getTrackVideo(track);
     if (video && !transport?.active) {
@@ -14253,7 +14809,7 @@ function applyVideoFx(track, state = track) {
   const contrast = 1 + tube * 0.45 + Math.max(clamp(Number(fxState.eqMid), -12, 12), 0) * 0.018;
   const saturate = 0.92 + lowLift * 0.25 + highLift * 0.18 + tube * 0.75;
   const blur = reverb * 2.2 + highCut * 1.4 + midCut * 0.6;
-  const hue = state.fx.eqMid * 1.6;
+  const hue = clamp(Number(fxState.eqMid), -12, 12) * 1.6;
 
   cell.style.setProperty("--delay-ghost", delay.toFixed(2));
   cell.style.setProperty("--reverb-glow", reverb.toFixed(2));
@@ -15967,10 +16523,23 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     activeClipCount += 1;
   }
   tracks.forEach((track) => {
-    const clip = getArrangementStepClip(track, resolvedStep);
+    try {
+    const clip = getPlaybackSafeArrangementClip(track, resolvedStep);
     const playbackClip = getTrackFrozenBounceState(track, clip) || clip;
     if (!clip || !playbackClip?.source) {
       const video = getTrackVideo(track);
+      const hasIntentionalLookaheadPreroll =
+        track.__lookaheadPrerollFor === transport?.sessionToken &&
+        Number.isFinite(Number(track.__lookaheadPrerollBarStartAt)) &&
+        Number(track.__lookaheadPrerollBarStartAt) > performance.now();
+      if (hasIntentionalLookaheadPreroll) {
+        setTrackBlackout(track, true);
+        setTrackPlaybackPhase(track, PLAYBACK_PHASES.prerolling, { mediaStatus: "prerolling" });
+        track.lastStep = -1;
+        track.nextTriggerAt = Number.POSITIVE_INFINITY;
+        return;
+      }
+
       if (video && typeof video.pause === "function") {
         video.pause();
       }
@@ -16011,10 +16580,19 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     if (missedPreparedEntrance) {
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
       track.__lastRetriggerPulse = null;
+      const missedVideo = getTrackVideo(track);
+      if (missedVideo && typeof missedVideo.pause === "function") {
+        missedVideo.pause();
+      }
       setTrackBlackout(track, true);
       setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
         mediaStatus: "failed",
         details: { reason: "missed-prepared-entrance" },
+      });
+      requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} media missed its start`, {
+        trackId: track?.id,
+        trackName: track?.name,
+        reason: "missed-prepared-entrance",
       });
       return;
     }
@@ -16047,7 +16625,27 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
         getTransportBeatsPerBar(transport),
         getTransportBeatMs(transport),
       );
-      triggerTrack(track, eventClip, transport.sessionToken);
+      launchTrackSceneEntry(track, eventClip, transport.sessionToken);
+    }
+    } catch (error) {
+      console.warn(`Arrangement step update skipped for ${track?.name || "track"}`, error);
+      clearTrackArrangementLookahead(track);
+      const failedVideo = getTrackVideo(track);
+      if (failedVideo && typeof failedVideo.pause === "function") {
+        failedVideo.pause();
+      }
+      setTrackBlackout(track, true);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+        mediaStatus: "failed",
+        details: { reason: "arrangement-step-error" },
+      });
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      requestStrictArrangementPlaybackHalt(`scene ${resolvedStep + 1} step update failed`, {
+        trackId: track?.id,
+        trackName: track?.name,
+        reason: "arrangement-step-error",
+      });
     }
   });
 
@@ -17746,6 +18344,8 @@ window.freemixPlaybackEngine = Object.freeze({
   getRetriggerPlaybackEventForPulse,
   getRetriggerPlaybackStateForPulse,
   applyAutomationAtBeat,
+  getPlaybackDiagnostics,
+  getLastPlaybackFailureDiagnostics,
   normalizeClipState,
   normalizeClipTimingMode,
   normalizePianoRollNotes,

@@ -5992,3 +5992,235 @@ html[data-theme="aero"] .video-matrix {
     inset 0 0 30px rgba(0, 0, 0, 0.84),
     0 18px 36px rgba(1, 20, 28, 0.52);
 }
+/* Responsive resilience pass
+   Desktop keeps the hardware-console layout above these breakpoints. Below them,
+   the app becomes a scrollable stacked workstation instead of a clipped panel. */
+@media (max-width: 900px), (max-height: 680px) {
+  html,
+  body {
+    display: block;
+    align-items: stretch;
+    justify-content: flex-start;
+    height: auto;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .app-shell {
+    width: min(100%, calc(100vw - 8px));
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .player-panel,
+  .workstation,
+  .performance-grid {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .workstation {
+    min-height: calc(100dvh - 48px);
+  }
+
+  .transport {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .transport .meter {
+    grid-column: 1 / -1;
+  }
+
+  .export-button,
+  .transport-button,
+  .control-field,
+  .bpm-field,
+  .arrangement-bars-control {
+    min-width: 0;
+  }
+
+  .video-matrix {
+    width: min(100%, 720px);
+    max-height: 42vh;
+  }
+
+  .arrangement-track-inline {
+    grid-template-columns: 1fr;
+  }
+
+  .arrangement-column {
+    padding-top: 0;
+  }
+
+  .arrangement-panel {
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  .arrangement-step-labels,
+  .arrangement-track-row {
+    min-width: max(100%, calc(var(--arr-label-width) + (var(--arrangement-steps) * 42px)));
+  }
+
+  .arrangement-grid {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .control-column,
+  .control-bank {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .track-tool-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .track-channel-row--top,
+  .track-channel-row--bottom {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .track-source {
+    grid-template-columns: minmax(120px, 1fr) repeat(2, minmax(44px, auto)) minmax(120px, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    padding: 0;
+  }
+
+  .app-shell {
+    width: 100%;
+    min-height: 100dvh;
+    padding: 2px;
+  }
+
+  .brand-row {
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .brand-title {
+    flex: 1 1 100%;
+    text-align: center;
+  }
+
+  .file-menu,
+  .theme-menu,
+  .status-pill {
+    flex: 1 1 auto;
+  }
+
+  .theme-menu {
+    min-width: 150px;
+  }
+
+  .status-pill {
+    max-width: none;
+    justify-content: center;
+  }
+
+  .search-panel {
+    left: 4px;
+    right: 4px;
+    width: auto;
+    max-width: none;
+  }
+
+  .source-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .transport {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .transport .meter,
+  .transport-status {
+    grid-column: 1 / -1;
+  }
+
+  .video-matrix {
+    width: 100%;
+    max-height: none;
+    border-width: 4px;
+  }
+
+  .track-tool-row,
+  .track-channel-row--top,
+  .track-channel-row--bottom,
+  .track-source,
+  .fx-chain {
+    grid-template-columns: 1fr;
+  }
+
+  .track-tool-row .track-toggle,
+  .track-tool-row .track-action,
+  .track-source .track-toggle,
+  .track-source .source-action,
+  .track-channel-row .control-field,
+  .track-channel-row .track-toggle,
+  .fx-module {
+    min-height: 28px;
+  }
+
+  .arrangement-header,
+  .arrangement-tools,
+  .arrangement-edit-tools,
+  .arrangement-mode-tools {
+    align-items: stretch;
+  }
+
+  .arrangement-scene-colors {
+    width: 100%;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  :root {
+    --arr-label-width: 44px;
+  }
+
+  .app-shell {
+    border-width: 1px;
+    border-radius: 0;
+  }
+
+  .player-panel {
+    padding: 2px;
+  }
+
+  .transport-button,
+  .export-button,
+  .arrangement-action,
+  .track-action,
+  .track-toggle,
+  .source-action,
+  .control-field,
+  .bpm-field,
+  .arrangement-bars-control {
+    font-size: 0.58rem;
+  }
+
+  .arrangement-step-labels,
+  .arrangement-track-row {
+    min-width: max(100%, calc(var(--arr-label-width) + (var(--arrangement-steps) * 38px)));
+  }
+
+  .arrangement-cell {
+    min-height: 30px;
+  }
+
+  .video-matrix {
+    border-radius: 8px;
+  }
+}

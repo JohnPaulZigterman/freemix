@@ -58,17 +58,17 @@
       </section>
     </main>
 
-    <script src="app-state.js"></script>
-    <script src="app.js"></script>
-    <script src="app-render.js"></script>
-    <script src="app-events.js"></script>
+    <script src="app-state.js?v=20260518-hardening"></script>
+    <script src="app.js?v=20260518-hardening"></script>
+    <script src="app-render.js?v=20260518-hardening"></script>
+    <script src="app-events.js?v=20260518-hardening"></script>
     <script>
       const __searchParams = new URLSearchParams(window.location.search);
       const __debugMode = ["1", "true"].includes(__searchParams.get("debug"));
       if (__debugMode || window.__freemixLocalDebug === true) {
         window.freemixDebugEnabled = true;
         const debugScript = document.createElement("script");
-        debugScript.src = "app-debug.js";
+        debugScript.src = "app-debug.js?v=20260518-hardening";
         document.body.appendChild(debugScript);
       } else {
         window.freemixDebugEnabled = false;
