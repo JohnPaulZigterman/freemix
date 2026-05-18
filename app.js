@@ -11343,18 +11343,80 @@ function getTrackExportFilter(track, state = null) {
 }
 
 function getExportCanvasDimensions(targetRect = null) {
-  const width = Number.isFinite(targetRect?.width)
-    ? Math.max(1, Math.floor(targetRect.width))
-    : EXPORT_CANVAS_MAX_WIDTH;
-  const height = Number.isFinite(targetRect?.height)
-    ? Math.max(1, Math.floor(targetRect.height))
-    : EXPORT_CANVAS_MAX_HEIGHT;
-  if (width >= height) {
-    const scale = Math.min(1, EXPORT_CANVAS_MAX_WIDTH / width, EXPORT_CANVAS_MAX_HEIGHT / height);
-    return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))];
+  return [EXPORT_CANVAS_MAX_WIDTH, EXPORT_CANVAS_MAX_HEIGHT];
+}
+
+function getExportContainRect(videoWidth, videoHeight, width, height) {
+  const safeVideoWidth = Math.max(1, Number(videoWidth) || 1);
+  const safeVideoHeight = Math.max(1, Number(videoHeight) || 1);
+  const scale = Math.min(width / safeVideoWidth, height / safeVideoHeight);
+  const drawWidth = safeVideoWidth * scale;
+  const drawHeight = safeVideoHeight * scale;
+  return {
+    drawWidth,
+    drawHeight,
+    offsetX: (width - drawWidth) / 2,
+    offsetY: (height - drawHeight) / 2,
+  };
+}
+
+function waitForAnimationFrame() {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(resolve);
+  });
+}
+
+function waitForExportVideoReady(video, timeoutMs = 900) {
+  if (!video || video.readyState >= 2) {
+    return Promise.resolve(true);
   }
 
-  return [Math.max(1, Math.floor(width)), Math.max(1, Math.floor(height))];
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      video.removeEventListener("loadeddata", finish);
+      video.removeEventListener("canplay", finish);
+      video.removeEventListener("seeked", finish);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve(video.readyState >= 2);
+    };
+    const timeoutId = window.setTimeout(finish, timeoutMs);
+    video.addEventListener("loadeddata", finish, { once: true });
+    video.addEventListener("canplay", finish, { once: true });
+    video.addEventListener("seeked", finish, { once: true });
+  });
+}
+
+async function primeExportCanvasForRecording(renderTracks, canvasSession, canvasVideoTrack = null) {
+  const activeVideos = (Array.isArray(renderTracks) ? renderTracks : [])
+    .map((track) => {
+      const frameState = getExportFrameTrackState(track);
+      if (!frameState || !getTrackPlaybackSourceUrl(track, frameState)) {
+        return null;
+      }
+      return getTrackVideo(track);
+    })
+    .filter(Boolean);
+
+  await Promise.all(activeVideos.map((video) => waitForExportVideoReady(video)));
+
+  for (let frameIndex = 0; frameIndex < 3; frameIndex += 1) {
+    canvasSession?.drawFrame?.();
+    if (typeof canvasVideoTrack?.requestFrame === "function") {
+      canvasVideoTrack.requestFrame();
+    }
+    await waitForAnimationFrame();
+  }
 }
 
 function getCurrentExportLocalBeat() {
@@ -11406,11 +11468,7 @@ function drawTrackFrame(context, track, width, height, state = null) {
 
   const videoWidth = video.videoWidth;
   const videoHeight = video.videoHeight;
-  const scale = Math.max(width / videoWidth, height / videoHeight);
-  const drawWidth = videoWidth * scale;
-  const drawHeight = videoHeight * scale;
-  const offsetX = (width - drawWidth) / 2;
-  const offsetY = (height - drawHeight) / 2;
+  const { drawWidth, drawHeight, offsetX, offsetY } = getExportContainRect(videoWidth, videoHeight, width, height);
 
   context.globalAlpha = getTrackExportOpacity(track, state);
   context.globalCompositeOperation = getExportBlendMode(track, state);
@@ -11589,11 +11647,7 @@ function drawTrackBounceFrame(context, track, state, width, height) {
 
   const videoWidth = video.videoWidth;
   const videoHeight = video.videoHeight;
-  const scale = Math.max(width / videoWidth, height / videoHeight);
-  const drawWidth = videoWidth * scale;
-  const drawHeight = videoHeight * scale;
-  const offsetX = (width - drawWidth) / 2;
-  const offsetY = (height - drawHeight) / 2;
+  const { drawWidth, drawHeight, offsetX, offsetY } = getExportContainRect(videoWidth, videoHeight, width, height);
 
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
@@ -12680,9 +12734,6 @@ async function exportComposition(mode = "clip") {
       });
     };
 
-    const durationMs = exportTimeline.durationMs;
-    recorder.start(200);
-
     renderExportFrame = () => {
       if (!canvasSession) {
         return;
@@ -12693,12 +12744,6 @@ async function exportComposition(mode = "clip") {
       }
     };
 
-    renderExportFrame();
-    exportFramePump = createExportVideoFramePump(renderTracks, renderExportFrame);
-    renderTimerId = window.setInterval(
-      renderExportFrame,
-      Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)),
-    );
     const startResult = startTransport();
     if (startResult && typeof startResult.then === "function") {
       await startResult;
@@ -12707,6 +12752,17 @@ async function exportComposition(mode = "clip") {
     if (!transport?.active) {
       throw new Error("Playback failed to start");
     }
+
+    await primeExportCanvasForRecording(renderTracks, canvasSession, canvasVideoTrack);
+
+    const durationMs = exportTimeline.durationMs;
+    recorder.start(200);
+    renderExportFrame();
+    exportFramePump = createExportVideoFramePump(renderTracks, renderExportFrame);
+    renderTimerId = window.setInterval(
+      renderExportFrame,
+      Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)),
+    );
 
     const exportLabel = exportMode === "arrangement" ? "arrangement" : "clip";
     setStatus(`Exporting ${exportLabel}...`);
