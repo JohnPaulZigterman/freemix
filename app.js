@@ -48,11 +48,13 @@ const LIVE_CONTROL_UPDATE_DEBOUNCE_MS = 45;
 const LIVE_CONTROL_STATE_PERSIST_DEBOUNCE_MS = 220;
 const ARRANGEMENT_START_PREROLL_MS = 900;
 const ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS = 0;
-const ARRANGEMENT_PREROLL_REVEAL_TIMER_LEAD_MS = 0;
+const ARRANGEMENT_PREROLL_REVEAL_TIMER_LEAD_MS = 32;
 const ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS = 260;
 const ARRANGEMENT_FINAL_PREROLL_LEAD_MS = 720;
 const ARRANGEMENT_COLD_START_BURN_IN_MS = 1600;
 const ARRANGEMENT_COLD_START_BURN_IN_MIN_FRAMES = 8;
+const ARRANGEMENT_MEDIA_READY_BATCH_SIZE = 3;
+const ARRANGEMENT_MEDIA_READY_TIMEOUT_MS = 3600;
 const ARRANGEMENT_STEP_LOOKAHEAD_MS = 8000;
 const ARRANGEMENT_STEP_LOOKAHEAD_MIN_MS = 220;
 const ARRANGEMENT_LOOKAHEAD_RETRY_DELAY_MS = 90;
@@ -157,6 +159,7 @@ let metronomeGain = null;
 const EXPORT_FRAME_RATE = 30;
 const EXPORT_CANVAS_MAX_WIDTH = 1280;
 const EXPORT_CANVAS_MAX_HEIGHT = 720;
+const EXPORT_FALLBACK_START_LEAD_MS = 120;
 const EXPORT_BLEND_MODE_MAP = Object.freeze({
   normal: "source-over",
   screen: "screen",
@@ -713,6 +716,7 @@ let arrangementPrerollRevealTimer = null;
 let arrangementLookaheadRevealTimer = null;
 let arrangementLookaheadPrepareKey = null;
 let arrangementLookaheadPreparePromise = null;
+let arrangementMediaReadinessVideos = [];
 const arrangementLookaheadRevealTimers = new Map();
 const arrangementLookaheadPrepareKeys = new Set();
 if (appState.transport && typeof appState.transport === "object") {
@@ -4108,6 +4112,181 @@ function waitForPresentedVideoFrame(video, options = {}) {
   });
 }
 
+function clearArrangementMediaReadinessVideos() {
+  arrangementMediaReadinessVideos.forEach((video) => {
+    if (!video) {
+      return;
+    }
+
+    try {
+      video.pause();
+    } catch {
+      // Best effort cleanup for warm-up media.
+    }
+
+    try {
+      video.removeAttribute("src");
+      video.load?.();
+    } catch {
+      // Best effort cleanup for warm-up media.
+    }
+
+    video.remove?.();
+  });
+  arrangementMediaReadinessVideos = [];
+}
+
+function getArrangementMediaReadinessTargets() {
+  if (!arrangement.enabled || !hasArrangementClips() || !Array.isArray(arrangement.clips)) {
+    return [];
+  }
+
+  const targets = [];
+  const seen = new Set();
+  arrangement.clips.forEach((_, stepIndex) => {
+    tracks.forEach((track) => {
+      const clip = getArrangementStepClip(track, stepIndex);
+      const playbackClip = getTrackFrozenBounceState(track, clip) || clip;
+      const sourceUrl = getTrackPlaybackSourceUrl(track, playbackClip);
+      if (!playbackClip || !sourceUrl) {
+        return;
+      }
+
+      const signature = `${track.id}|${getPlaybackStateSignature(playbackClip, sourceUrl)}`;
+      if (seen.has(signature)) {
+        return;
+      }
+
+      seen.add(signature);
+      targets.push({
+        track,
+        clip: playbackClip,
+        sourceUrl,
+        stepIndex,
+        signature,
+      });
+    });
+  });
+
+  return targets;
+}
+
+async function prepareArrangementMediaReadinessTarget(target, sessionToken) {
+  if (!target?.sourceUrl || startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  const video = document.createElement("video");
+  video.muted = true;
+  video.volume = 0;
+  video.preload = "auto";
+  video.playsInline = true;
+  video.setAttribute("playsinline", "");
+  video.setAttribute("aria-hidden", "true");
+  video.style.position = "fixed";
+  video.style.left = "-2px";
+  video.style.top = "-2px";
+  video.style.width = "1px";
+  video.style.height = "1px";
+  video.style.opacity = "0";
+  video.style.pointerEvents = "none";
+  video.style.zIndex = "-1";
+  document.body?.appendChild(video);
+  arrangementMediaReadinessVideos.push(video);
+
+  setVideoCorsPolicy(video, target.sourceUrl);
+  setMediaElementSource(video, target.sourceUrl);
+  loadMediaElementOnlyIfEmpty(video);
+
+  await waitForTrackMetadata(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+  if (startTransport.bootToken !== sessionToken || video.error) {
+    return false;
+  }
+
+  await waitForTrackReady(video, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+  if (startTransport.bootToken !== sessionToken || video.error || video.readyState < 2) {
+    return false;
+  }
+
+  const anchorTime = safeStartTime(target.clip, video);
+  if (Number.isFinite(anchorTime)) {
+    try {
+      video.currentTime = anchorTime;
+      await awaitVideoSeek(video, anchorTime, ARRANGEMENT_MEDIA_READY_TIMEOUT_MS);
+    } catch {
+      // Some streams do not seek cleanly during warm-up; live playback will retry on the real element.
+    }
+  }
+
+  if (startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  try {
+    await video.play();
+    await Promise.race([
+      waitForPresentedVideoFrame(video, {
+        minMediaTime: Number.isFinite(anchorTime) ? anchorTime : null,
+        timeoutMs: ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS,
+      }),
+      waitForVideoPlaybackAdvance(video, Number.isFinite(anchorTime) ? anchorTime : Number(video.currentTime) || 0, 0.006, ARRANGEMENT_PREROLL_ADVANCE_CONFIRM_MS),
+    ]);
+  } catch {
+    return false;
+  } finally {
+    try {
+      video.pause();
+    } catch {
+      // Best effort: readiness media is muted and hidden if pause fails.
+    }
+  }
+
+  return startTransport.bootToken === sessionToken && !video.error;
+}
+
+async function prepareArrangementMediaReadiness(sessionToken) {
+  if (!arrangement.enabled || !hasArrangementClips()) {
+    clearArrangementMediaReadinessVideos();
+    return true;
+  }
+
+  clearArrangementMediaReadinessVideos();
+  const targets = getArrangementMediaReadinessTargets();
+  if (!targets.length) {
+    return true;
+  }
+
+  setStatus(`Preparing arrangement clips 0/${targets.length}...`);
+  let preparedCount = 0;
+  let failedCount = 0;
+  for (let index = 0; index < targets.length; index += ARRANGEMENT_MEDIA_READY_BATCH_SIZE) {
+    if (startTransport.bootToken !== sessionToken) {
+      return false;
+    }
+
+    const batch = targets.slice(index, index + ARRANGEMENT_MEDIA_READY_BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map((target) => prepareArrangementMediaReadinessTarget(target, sessionToken).catch(() => false)),
+    );
+    preparedCount += results.filter(Boolean).length;
+    failedCount += results.filter((result) => !result).length;
+    setStatus(`Preparing arrangement clips ${Math.min(index + batch.length, targets.length)}/${targets.length}...`);
+  }
+
+  if (startTransport.bootToken !== sessionToken) {
+    return false;
+  }
+
+  if (failedCount > 0) {
+    setStatus(`Arrangement media not ready: ${failedCount} clip${failedCount === 1 ? "" : "s"} failed to arm`, true);
+    clearArrangementMediaReadinessVideos();
+    return false;
+  }
+
+  setStatus(`Arrangement media ready: ${preparedCount} clip${preparedCount === 1 ? "" : "s"} armed`);
+  return true;
+}
+
 async function burnInArrangementPrerollTargets(preparedTargets, sessionToken, durationMs = ARRANGEMENT_COLD_START_BURN_IN_MS) {
   if (!Array.isArray(preparedTargets) || preparedTargets.length === 0 || startTransport.bootToken !== sessionToken) {
     return false;
@@ -4453,7 +4632,8 @@ function revealArrangementPreroll(sessionToken) {
       applyTrackBlend(track, revealState);
       applyTrackOpacity(track, revealState);
       applyTrackPitchAndSpeed(track, revealState);
-      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+      track.__awaitingCleanVisualFrame = false;
+      setTrackBlackout(track, false);
       track.__lastPlaybackSignature = playbackSignature;
       track.__warmLaunchFor = null;
       track.__prerollRevealFor = null;
@@ -4511,6 +4691,8 @@ function clearTrackArrangementLookahead(track) {
   track.__lookaheadRevealedStep = null;
   track.__lookaheadRevealedBarStartAt = null;
   track.__lookaheadRevealedPulse = null;
+  track.__missedPreparedEntranceFor = null;
+  track.__missedPreparedEntranceStep = null;
   track.__lookaheadRetryCount = 0;
 }
 
@@ -4576,13 +4758,16 @@ function scheduleArrangementLookaheadReveal(stepIndex, barStartAt, sessionToken)
     window.clearTimeout(existingTimer);
   }
 
-  const delayMs = Math.max(0, barStartAt - performance.now());
+  const revealAt = barStartAt;
+  const delayMs = Math.max(0, revealAt - ARRANGEMENT_PREROLL_REVEAL_TIMER_LEAD_MS - performance.now());
   const nextTimer = window.setTimeout(() => {
     arrangementLookaheadRevealTimers.delete(timerKey);
     if (arrangementLookaheadRevealTimer === nextTimer) {
       arrangementLookaheadRevealTimer = null;
     }
-    revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
+    void waitUntilPerformanceTime(revealAt).then(() => {
+      revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken);
+    });
   }, delayMs);
   arrangementLookaheadRevealTimers.set(timerKey, nextTimer);
   arrangementLookaheadRevealTimer = nextTimer;
@@ -4630,16 +4815,10 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
         reason: "not-ready-at-reveal",
       });
       clearTrackArrangementLookahead(track);
-      if (clip && sourceUrl && !isPianoRollTimingState(clip)) {
-        const revealState = getRetriggerPlaybackStateForPulse(
-          track,
-          clip,
-          0,
-          getTransportBeatsPerBar(transport),
-          getTransportBeatMs(transport),
-        );
-        triggerTrack(track, revealState, sessionToken);
-      }
+      track.__missedPreparedEntranceFor = sessionToken;
+      track.__missedPreparedEntranceStep = resolvedStep;
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      setTrackBlackout(track, true);
       return;
     }
 
@@ -4655,7 +4834,8 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     applyTrackPitchAndSpeed(track, revealState);
     applyVideoPitchAndSpeed(video, revealState);
     if (!isPianoRollTimingState(clip)) {
-      void revealTrackAfterPresentedFrame(track, video, track.__playbackToken);
+      track.__awaitingCleanVisualFrame = false;
+      setTrackBlackout(track, false);
     }
 
     const pulseIndex = getTrackPulseIndex(track, barStartAt);
@@ -4683,6 +4863,8 @@ function revealArrangementLookaheadPreroll(stepIndex, barStartAt, sessionToken) 
     track.__lookaheadPrerollBarStartAt = null;
     track.__lookaheadPrerollSignature = null;
     track.__lookaheadPrerollKey = null;
+    track.__missedPreparedEntranceFor = null;
+    track.__missedPreparedEntranceStep = null;
     flashTrackTrigger(track);
     revealedAny = true;
   });
@@ -4935,6 +5117,7 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
     return;
   }
 
+  scheduleArrangementLookaheadReveal(resolvedStep, barStartAt, sessionToken);
   arrangementLookaheadPrepareKey = lookaheadKey;
   arrangementLookaheadPrepareKeys.add(lookaheadKey);
   arrangementLookaheadPreparePromise = Promise.all(
@@ -4943,13 +5126,8 @@ function prepareUpcomingArrangementStepPreroll(stepIndex, barStartAt, sessionTok
     ),
   )
     .then((results) => {
-      if (
-        startTransport.bootToken === sessionToken &&
-        transport?.active &&
-        transport.sessionToken === sessionToken &&
-        results.some(Boolean)
-      ) {
-        scheduleArrangementLookaheadReveal(resolvedStep, barStartAt, sessionToken);
+      if (results.some(Boolean)) {
+        setStatus(`Scene ${resolvedStep + 1}: clips armed`);
       }
     })
     .catch((error) => {
@@ -10363,6 +10541,13 @@ async function startTransport() {
         }
       }
 
+      if (arrangement.enabled && hasArrangementClips()) {
+        const arrangementReady = await prepareArrangementMediaReadiness(startToken);
+        if (startTransport.bootToken !== startToken || !arrangementReady) {
+          return;
+        }
+      }
+
       await Promise.all(
         tracks
           .filter((track) => {
@@ -11062,6 +11247,8 @@ function resetTrackPlaybackOutput(track) {
   track.__prerollRevealFor = null;
   track.__prerollPlaybackSignature = null;
   track.__prerollRevealCanSkipSeek = false;
+  track.__missedPreparedEntranceFor = null;
+  track.__missedPreparedEntranceStep = null;
   track.__lastTransportClockCorrectionAt = 0;
   track.__lastTransportClockCorrectionPulse = null;
   track.__transportClockCorrectionPulse = null;
@@ -11130,6 +11317,7 @@ function stopTransport(resetVideos = true, bumpToken = true) {
   startTransport.runningPromise = null;
   clearArrangementPrerollRevealTimer();
   clearArrangementLookaheadPreroll(true);
+  clearArrangementMediaReadinessVideos();
 
   if (startTimeControlTrackers.size > 0) {
     startTimeControlTrackers.forEach((frameId) => {
@@ -11343,20 +11531,61 @@ function getTrackExportFilter(track, state = null) {
 }
 
 function getExportCanvasDimensions(targetRect = null) {
-  return [EXPORT_CANVAS_MAX_WIDTH, EXPORT_CANVAS_MAX_HEIGHT];
+  const rectWidth = Number(targetRect?.width);
+  const rectHeight = Number(targetRect?.height);
+  const projectAspect = rectWidth > 1 && rectHeight > 1
+    ? rectWidth / rectHeight
+    : EXPORT_CANVAS_MAX_WIDTH / EXPORT_CANVAS_MAX_HEIGHT;
+  let width = EXPORT_CANVAS_MAX_WIDTH;
+  let height = Math.round(width / projectAspect);
+
+  if (height > EXPORT_CANVAS_MAX_HEIGHT) {
+    height = EXPORT_CANVAS_MAX_HEIGHT;
+    width = Math.round(height * projectAspect);
+  }
+
+  const evenWidth = Math.max(2, width - (width % 2));
+  const evenHeight = Math.max(2, height - (height % 2));
+  return [evenWidth, evenHeight];
+}
+
+function getExportStageScale(targetRect = null, width = EXPORT_CANVAS_MAX_WIDTH, height = EXPORT_CANVAS_MAX_HEIGHT) {
+  const rectWidth = Number(targetRect?.width);
+  const rectHeight = Number(targetRect?.height);
+  const scaleX = rectWidth > 1 ? width / rectWidth : 1;
+  const scaleY = rectHeight > 1 ? height / rectHeight : scaleX;
+  const scale = Math.min(scaleX, scaleY);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
 function getExportContainRect(videoWidth, videoHeight, width, height) {
   const safeVideoWidth = Math.max(1, Number(videoWidth) || 1);
   const safeVideoHeight = Math.max(1, Number(videoHeight) || 1);
-  const scale = Math.min(width / safeVideoWidth, height / safeVideoHeight);
-  const drawWidth = safeVideoWidth * scale;
-  const drawHeight = safeVideoHeight * scale;
+  const safeCanvasWidth = Math.max(1, Number(width) || EXPORT_CANVAS_MAX_WIDTH);
+  const safeCanvasHeight = Math.max(1, Number(height) || EXPORT_CANVAS_MAX_HEIGHT);
+  const targetWidth = safeCanvasWidth;
+  const targetHeight = safeCanvasHeight;
+  const sourceAspect = safeVideoWidth / safeVideoHeight;
+  const targetAspect = targetWidth / targetHeight;
+  let drawWidth = targetWidth;
+  let drawHeight = targetHeight;
+
+  if (sourceAspect > targetAspect) {
+    drawHeight = targetHeight;
+    drawWidth = targetHeight * sourceAspect;
+  } else {
+    drawWidth = targetWidth;
+    drawHeight = targetWidth / sourceAspect;
+  }
+
+  drawWidth = Math.max(1, Math.floor(drawWidth));
+  drawHeight = Math.max(1, Math.floor(drawHeight));
+
   return {
     drawWidth,
     drawHeight,
-    offsetX: (width - drawWidth) / 2,
-    offsetY: (height - drawHeight) / 2,
+    offsetX: Math.floor((targetWidth - drawWidth) / 2),
+    offsetY: Math.floor((targetHeight - drawHeight) / 2),
   };
 }
 
@@ -11364,6 +11593,26 @@ function waitForAnimationFrame() {
   return new Promise((resolve) => {
     window.requestAnimationFrame(resolve);
   });
+}
+
+async function waitUntilPerformanceTime(targetTime) {
+  const safeTarget = Number(targetTime);
+  if (!Number.isFinite(safeTarget)) {
+    await waitForAnimationFrame();
+    return performance.now();
+  }
+
+  let remaining = safeTarget - performance.now();
+  while (remaining > 4) {
+    await new Promise((resolve) => window.setTimeout(resolve, Math.max(0, remaining - 2)));
+    remaining = safeTarget - performance.now();
+  }
+
+  if (remaining > 0) {
+    await new Promise((resolve) => window.setTimeout(resolve, remaining));
+  }
+
+  return performance.now();
 }
 
 function waitForExportVideoReady(video, timeoutMs = 900) {
@@ -11434,6 +11683,40 @@ function getCurrentExportLocalBeat() {
   return (Math.max(0, performance.now() - transport.startedAt) % barMs) / beatMs;
 }
 
+function syncExportArrangementStepToRecordingClock(exportTimeline, exportStartAt, frameNow = performance.now()) {
+  if (
+    !exportTimeline ||
+    !transport?.active ||
+    !arrangement.enabled ||
+    !Array.isArray(exportTimeline.stepIndexes) ||
+    exportTimeline.stepIndexes.length === 0 ||
+    !Number.isFinite(Number(exportStartAt))
+  ) {
+    return;
+  }
+
+  const beatMs = getTransportBeatMs(transport);
+  const barMs = beatMs * getTransportBeatsPerBar(transport);
+  if (!Number.isFinite(barMs) || barMs <= 0) {
+    return;
+  }
+
+  const elapsed = Math.max(0, Number(frameNow) - Number(exportStartAt));
+  const relativeStep = Math.min(
+    exportTimeline.stepIndexes.length - 1,
+    Math.max(0, Math.floor((elapsed + 0.5) / barMs)),
+  );
+  const stepIndex = getArrangementStepIndex(exportTimeline.stepIndexes[relativeStep]);
+  if (stepIndex === null) {
+    return;
+  }
+
+  const stepStartAt = Number(exportStartAt) + relativeStep * barMs;
+  if (arrangement.step !== stepIndex || transport.arrangementStep !== stepIndex) {
+    updateArrangementStep(stepIndex, stepStartAt, true);
+  }
+}
+
 function getExportFrameTrackState(track) {
   if (!track) {
     return null;
@@ -11470,17 +11753,43 @@ function drawTrackFrame(context, track, width, height, state = null) {
   const videoHeight = video.videoHeight;
   const { drawWidth, drawHeight, offsetX, offsetY } = getExportContainRect(videoWidth, videoHeight, width, height);
 
+  context.save();
+  context.beginPath();
+  context.rect(0, 0, width, height);
+  context.clip();
   context.globalAlpha = getTrackExportOpacity(track, state);
   context.globalCompositeOperation = getExportBlendMode(track, state);
   context.filter = getTrackExportFilter(track, state);
-  context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(video, 0, 0, videoWidth, videoHeight, offsetX, offsetY, drawWidth, drawHeight);
+  context.restore();
 }
 
-function drawTextClipFrame(context, clip, width, height) {
+function getExportTextFontSize(field, width, height, targetRect = null) {
+  const size = clamp(Number(field?.size), 10, 72);
+  const viewportWidth = Math.max(1, Number(window.innerWidth) || Number(targetRect?.width) || width);
+  const liveFontSize = clamp((size / 8) * (viewportWidth / 100), 12, size);
+  return Math.max(8, liveFontSize * getExportStageScale(targetRect, width, height));
+}
+
+function getExportTextAnchor(xPercent) {
+  if (xPercent >= 66) {
+    return "right";
+  }
+  if (xPercent <= 34) {
+    return "left";
+  }
+  return "center";
+}
+
+function drawTextClipFrame(context, clip, width, height, targetRect = null) {
   const textClip = normalizeTextClip(clip);
   if (!textClip?.fields?.length) {
     return;
   }
+
+  const stageScale = getExportStageScale(targetRect, width, height);
 
   textClip.fields.forEach((field) => {
     const text = String(field.text || "").trim();
@@ -11489,35 +11798,46 @@ function drawTextClipFrame(context, clip, width, height) {
     }
 
     context.save();
-    const fontSize = Math.max(8, (clamp(Number(field.size), 10, 72) / 100) * height);
+    const fontSize = getExportTextFontSize(field, width, height, targetRect);
     context.globalAlpha = clamp(Number(field.opacity), 0, 1);
     context.font = `${field.italic ? "italic " : ""}${field.bold ? "900" : "500"} ${fontSize}px ${field.font}`;
-    context.textAlign = field.align;
     context.textBaseline = "middle";
     context.fillStyle = field.color || TEXT_DEFAULT_COLOR;
     context.lineJoin = "round";
-    context.lineWidth = field.stroke ? clamp(Number(field.strokeWidth), 0, 8) * Math.max(1, width / 640) : 0;
+    context.lineWidth = field.stroke ? clamp(Number(field.strokeWidth), 0, 8) * stageScale : 0;
     context.strokeStyle = field.strokeColor || TEXT_DEFAULT_STROKE_COLOR;
     context.shadowColor = field.shadow ? field.shadowColor || TEXT_DEFAULT_SHADOW_COLOR : "transparent";
-    context.shadowBlur = field.shadow ? clamp(Number(field.shadowBlur), 0, 24) : 0;
-    context.shadowOffsetX = field.shadow ? clamp(Number(field.shadowX), -24, 24) : 0;
-    context.shadowOffsetY = field.shadow ? clamp(Number(field.shadowY), -24, 24) : 0;
+    context.shadowBlur = field.shadow ? clamp(Number(field.shadowBlur), 0, 24) * stageScale : 0;
+    context.shadowOffsetX = field.shadow ? clamp(Number(field.shadowX), -24, 24) * stageScale : 0;
+    context.shadowOffsetY = field.shadow ? clamp(Number(field.shadowY), -24, 24) * stageScale : 0;
 
-    const x = (clamp(Number(field.x), 0, 100) / 100) * width;
+    const xPercent = clamp(Number(field.x), 0, 100);
+    const x = (xPercent / 100) * width;
     const y = (clamp(Number(field.y), 0, 100) / 100) * height;
     const lines = text.split(/\r?\n/).slice(0, 6);
     const lineHeight = fontSize * 1.12;
     const startY = y - ((lines.length - 1) * lineHeight) / 2;
+    const measuredLines = lines.map((line) => ({
+      text: line,
+      width: context.measureText(line).width,
+    }));
+    const textBoxWidth = Math.max(1, ...measuredLines.map((line) => line.width));
+    const anchor = getExportTextAnchor(xPercent);
+    const boxLeft = anchor === "right" ? x - textBoxWidth : anchor === "center" ? x - textBoxWidth / 2 : x;
+    const align = TEXT_ALIGN_OPTIONS.includes(field.align) ? field.align : "center";
+    const drawX = align === "right" ? boxLeft + textBoxWidth : align === "center" ? boxLeft + textBoxWidth / 2 : boxLeft;
+    context.textAlign = align;
+
     lines.forEach((line, index) => {
       const lineY = startY + index * lineHeight;
       if (field.stroke && context.lineWidth > 0) {
-        context.strokeText(line, x, lineY);
+        context.strokeText(line, drawX, lineY);
       }
-      context.fillText(line, x, lineY);
+      context.fillText(line, drawX, lineY);
       if (field.underline) {
         const metrics = context.measureText(line);
         const underlineY = lineY + fontSize * 0.42;
-        const startX = field.align === "center" ? x - metrics.width / 2 : field.align === "right" ? x - metrics.width : x;
+        const startX = align === "center" ? drawX - metrics.width / 2 : align === "right" ? drawX - metrics.width : drawX;
         context.beginPath();
         context.moveTo(startX, underlineY);
         context.lineTo(startX + metrics.width, underlineY);
@@ -11533,6 +11853,9 @@ function drawTextClipFrame(context, clip, width, height) {
 function createExportCanvasSession() {
   const matrix = playerPanel?.querySelector(".video-matrix");
   const bounds = matrix?.getBoundingClientRect();
+  const stageRect = bounds
+    ? { width: bounds.width, height: bounds.height }
+    : null;
   const [width, height] = getExportCanvasDimensions(bounds);
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
@@ -11572,7 +11895,7 @@ function createExportCanvasSession() {
       }
     });
     if (isTextTrackActiveInMix()) {
-      drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height);
+      drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height, stageRect);
     }
 
     context.globalAlpha = 1;
@@ -11580,7 +11903,7 @@ function createExportCanvasSession() {
     context.filter = "none";
   };
 
-  return { canvas, context, width, height, drawFrame };
+  return { canvas, context, width, height, stageRect, drawFrame };
 }
 
 function createExportVideoFramePump(exportTracks, drawFrame) {
@@ -11649,11 +11972,17 @@ function drawTrackBounceFrame(context, track, state, width, height) {
   const videoHeight = video.videoHeight;
   const { drawWidth, drawHeight, offsetX, offsetY } = getExportContainRect(videoWidth, videoHeight, width, height);
 
+  context.save();
+  context.beginPath();
+  context.rect(0, 0, width, height);
+  context.clip();
   context.globalAlpha = 1;
   context.globalCompositeOperation = "source-over";
   context.filter = getExportVideoFilterForState(state);
-  context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
-  context.filter = "none";
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(video, 0, 0, videoWidth, videoHeight, offsetX, offsetY, drawWidth, drawHeight);
+  context.restore();
   return true;
 }
 
@@ -12615,6 +12944,8 @@ async function exportComposition(mode = "clip") {
   let canvasVideoTrack = null;
   let mediaStream = null;
   let renderExportFrame = null;
+  let exportRecordingStartAt = null;
+  let exportRecordingEndAt = null;
   let requestRecorderData = () => {};
   let stopRecorderForExport = () => {};
   let waitForFinalExportData = () => Promise.resolve();
@@ -12631,12 +12962,13 @@ async function exportComposition(mode = "clip") {
   });
   if (exportMode === "arrangement") {
     arrangement.enabled = true;
-    updateArrangementStep(exportTimeline.startStep, performance.now(), true);
+    arrangement.step = exportTimeline.startStep;
+    bindTracksToArrangementStep(exportTimeline.startStep);
   }
 
   try {
     canvasSession = createExportCanvasSession();
-    mediaStream = canvasSession.canvas.captureStream(EXPORT_FRAME_RATE);
+    mediaStream = canvasSession.canvas.captureStream(exportMode === "arrangement" ? 0 : EXPORT_FRAME_RATE);
     canvasVideoTrack = mediaStream.getVideoTracks()[0] || null;
     if (canvasVideoTrack && "contentHint" in canvasVideoTrack) {
       canvasVideoTrack.contentHint = "motion";
@@ -12738,6 +13070,13 @@ async function exportComposition(mode = "clip") {
       if (!canvasSession) {
         return;
       }
+      const frameNow = performance.now();
+      if (exportRecordingEndAt !== null && frameNow >= exportRecordingEndAt) {
+        return;
+      }
+      if (exportMode === "arrangement" && exportRecordingStartAt !== null) {
+        syncExportArrangementStepToRecordingClock(exportTimeline, exportRecordingStartAt, frameNow);
+      }
       canvasSession.drawFrame();
       if (typeof canvasVideoTrack?.requestFrame === "function") {
         canvasVideoTrack.requestFrame();
@@ -12754,9 +13093,24 @@ async function exportComposition(mode = "clip") {
     }
 
     await primeExportCanvasForRecording(renderTracks, canvasSession, canvasVideoTrack);
-
     const durationMs = exportTimeline.durationMs;
+    let exportStartAt = performance.now();
+    if (exportMode === "arrangement") {
+      const transportStartAt = Number(transport?.startedAt);
+      exportStartAt =
+        Number.isFinite(transportStartAt) && transportStartAt > performance.now() + 4
+          ? transportStartAt
+          : performance.now() + EXPORT_FALLBACK_START_LEAD_MS;
+      updateArrangementStep(exportTimeline.startStep, exportStartAt, true);
+      await waitUntilPerformanceTime(exportStartAt - ARRANGEMENT_PREROLL_REVEAL_ADVANCE_MS);
+      revealArrangementPreroll(transport.sessionToken);
+      await waitUntilPerformanceTime(exportStartAt);
+    }
+
     recorder.start(200);
+    exportStartAt = exportMode === "arrangement" ? exportStartAt : performance.now();
+    exportRecordingStartAt = exportStartAt;
+    exportRecordingEndAt = exportStartAt + durationMs;
     renderExportFrame();
     exportFramePump = createExportVideoFramePump(renderTracks, renderExportFrame);
     renderTimerId = window.setInterval(
@@ -12767,6 +13121,7 @@ async function exportComposition(mode = "clip") {
     const exportLabel = exportMode === "arrangement" ? "arrangement" : "clip";
     setStatus(`Exporting ${exportLabel}...`);
 
+    const exportStopDelayMs = Math.max(0, exportRecordingEndAt - performance.now());
     timerId = window.setTimeout(() => {
       if (!isExportingVideo) {
         return;
@@ -12778,14 +13133,14 @@ async function exportComposition(mode = "clip") {
         window.clearInterval(renderTimerId);
         renderTimerId = null;
       }
-    }, durationMs + 300);
+    }, exportStopDelayMs);
 
     await Promise.race([
       recorderStopped,
       new Promise((_, reject) => {
         timeoutId = window.setTimeout(() => {
           reject(new Error("Export timed out"));
-        }, durationMs + 12000);
+        }, exportStopDelayMs + 12000);
       }),
     ]);
     await waitForFinalExportData();
@@ -15641,14 +15996,28 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
       almostEqual(Number(track.__lookaheadRevealedBarStartAt), barStartAt, 3);
     const isAtOrAfterBarStart = performance.now() >= barStartAt - 1;
     const isPianoRoll = isPianoRollTimingState(playbackClip);
+    const missedPreparedEntrance =
+      track.__missedPreparedEntranceFor === transport?.sessionToken &&
+      track.__missedPreparedEntranceStep === resolvedStep;
     const shouldRetriggerNow =
       !!force &&
       !!transport?.active &&
       isAtOrAfterBarStart &&
+      !missedPreparedEntrance &&
       !isPianoRoll &&
       Number.isFinite(Number(track.stepMs)) &&
       track.stepMs > 0;
     resetTrackPulseCursor(track, barStartAt, { fireAtReference: !(shouldRetriggerNow || wasLookaheadRevealed) });
+    if (missedPreparedEntrance) {
+      track.nextTriggerAt = Number.POSITIVE_INFINITY;
+      track.__lastRetriggerPulse = null;
+      setTrackBlackout(track, true);
+      setTrackPlaybackPhase(track, PLAYBACK_PHASES.failed, {
+        mediaStatus: "failed",
+        details: { reason: "missed-prepared-entrance" },
+      });
+      return;
+    }
     if (isPianoRoll) {
       clearPianoRollGate(track);
       track.nextTriggerAt = Number.POSITIVE_INFINITY;
