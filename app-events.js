@@ -275,6 +275,16 @@
       return true;
     }
 
+    if (id === "toggleTextTrackButton") {
+      window.freemixToggleSpecialTrackVisibility?.("text");
+      return true;
+    }
+
+    if (id === "toggleDrumTrackButton") {
+      window.freemixToggleSpecialTrackVisibility?.("drum");
+      return true;
+    }
+
     return false;
   }
 

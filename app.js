@@ -189,6 +189,12 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
   "masterMuted",
   "metronomeEnabled",
   "arrangementStepCount",
+  "textTrackVisible",
+  "drumTrackVisible",
+  "textTrackMuted",
+  "textTrackSolo",
+  "drumTrackMuted",
+  "drumTrackSolo",
   "tracks",
   "arrangement",
   "trackSearchRequestCounter",
@@ -196,6 +202,12 @@ const APP_STATE_PROXY_KEYS = Object.freeze([
 ]);
 const APP_STATE_PROXY_DIRTY_KEYS = new Set([
   "arrangementStepCount",
+  "textTrackVisible",
+  "drumTrackVisible",
+  "textTrackMuted",
+  "textTrackSolo",
+  "drumTrackMuted",
+  "drumTrackSolo",
   "masterMuted",
   "metronomeEnabled",
   "userOnboarding",
@@ -235,6 +247,42 @@ const BLEND_MODE_OPTIONS = Object.entries(BLEND_MODES).map(([value, label]) => (
 const MAX_TRACK_COUNT = 4;
 const DEFAULT_TRACK_COUNT = 1;
 const TRACK_COLORS = ["green", "amber", "blue", "red"];
+const TRACK_COLOR_LABELS = Object.freeze({
+  green: "Green",
+  amber: "Amber",
+  blue: "Blue",
+  red: "Red",
+});
+const TRACK_HEIGHT_MODES = Object.freeze({
+  normal: "Normal",
+  compact: "Compact",
+  tall: "Tall",
+});
+const TRACK_CAPTURE_PRESETS = Object.freeze({
+  current: "Current",
+  dry: "Dry FX",
+  muted: "Muted",
+  performance: "Performance",
+});
+const TRACK_MANAGEMENT_CONTROLS = Object.freeze(
+  new Set([
+    "advanced",
+    "capturePreset",
+    "clearTrackLane",
+    "collapsed",
+    "duplicateTrack",
+    "freezeTrack",
+    "heightMode",
+    "lockTrack",
+    "moveTrackDown",
+    "moveTrackUp",
+    "muted",
+    "removeTrack",
+    "solo",
+    "timingNudgeMs",
+    "trackColor",
+  ]),
+);
 const TRACK_BLEND_DEFAULTS = ["normal", "screen", "difference", "add"];
 const TRACK_RETRIGGER_DEFAULTS = [1, 2, 4, 8];
 const RETRIGGER_LABELS = {
@@ -302,6 +350,7 @@ const TRACK_MEDIA_STATUS_LABELS = Object.freeze({
   "cors-limited": "CORS limited",
   empty: "Empty",
   failed: "Failed",
+  bounced: "Bounced",
   "fx-routed": "FX routed",
   "fx-unavailable": "FX unavailable",
   loading: "Loading",
@@ -317,6 +366,7 @@ const TRACK_MEDIA_READINESS_LABELS = Object.freeze({
   "audio-only": "Audio only",
   empty: "No media",
   failed: "Media failed",
+  bounced: "Bounced render",
   "fx-ready": "FX ready",
   limited: "Limited route",
   loading: "Loading media",
@@ -354,6 +404,7 @@ const TRACK_MEDIA_STATUS_READINESS = Object.freeze({
   "cors-limited": "limited",
   empty: "empty",
   failed: "failed",
+  bounced: "ready",
   "fx-routed": "fx-ready",
   "fx-unavailable": "limited",
   loading: "loading",
@@ -631,6 +682,12 @@ refreshArrangementHasClipsState(appState.arrangement);
 if (!appState.userOnboarding || !appState.userOnboarding.phase) {
   appState.userOnboarding = { phase: "seed", needsHint: true };
 }
+appState.textTrackVisible = appState.textTrackVisible !== false;
+appState.drumTrackVisible = appState.drumTrackVisible !== false;
+appState.textTrackMuted = !!appState.textTrackMuted;
+appState.textTrackSolo = !!appState.textTrackSolo;
+appState.drumTrackMuted = !!appState.drumTrackMuted;
+appState.drumTrackSolo = !!appState.drumTrackSolo;
 
 const tracks = appState.tracks;
 let arrangement = appState.arrangement;
@@ -668,6 +725,13 @@ function normalizeTrackPreferences(track) {
 
   track.showAdvanced = !!track.showAdvanced;
   track.collapsed = !!track.collapsed;
+  track.locked = !!track.locked;
+  track.frozen = !!track.frozen && !!track.frozenBounce?.url;
+  track.color = TRACK_COLORS.includes(track.color) ? track.color : TRACK_COLORS[0];
+  track.heightMode = Object.prototype.hasOwnProperty.call(TRACK_HEIGHT_MODES, track.heightMode) ? track.heightMode : "normal";
+  track.capturePreset = Object.prototype.hasOwnProperty.call(TRACK_CAPTURE_PRESETS, track.capturePreset) ? track.capturePreset : "current";
+  const timingNudge = Number(track.timingNudgeMs);
+  track.timingNudgeMs = Number.isFinite(timingNudge) ? clamp(timingNudge, -250, 250) : 0;
   track.solo = !!track.solo;
   track.muted = !!track.muted;
 
@@ -1085,6 +1149,12 @@ let selectedDrumClipSteps = new Set();
 let selectedArrangementSceneStep = null;
 let textToolbarCollapsed = false;
 let drumToolbarCollapsed = false;
+let textTrackVisible = appState.textTrackVisible !== false;
+let drumTrackVisible = appState.drumTrackVisible !== false;
+let textTrackMuted = !!appState.textTrackMuted;
+let textTrackSolo = !!appState.textTrackSolo;
+let drumTrackMuted = !!appState.drumTrackMuted;
+let drumTrackSolo = !!appState.drumTrackSolo;
 let drumMasterGain = null;
 let drumLimiter = null;
 let drumBusDrive = null;
@@ -1415,7 +1485,25 @@ window.freemixGetTrackById = getTrackById;
 window.freemixGetArrangementSceneColor = getArrangementSceneColor;
 
 function hasSoloTracksEnabled() {
-  return tracks.some((track) => !!track?.solo);
+  return tracks.some((track) => !!track?.solo) ||
+    (textTrackVisible && textTrackSolo) ||
+    (drumTrackVisible && drumTrackSolo);
+}
+
+function isTextTrackActiveInMix() {
+  if (!textTrackVisible || textTrackMuted) {
+    return false;
+  }
+
+  return !hasSoloTracksEnabled() || textTrackSolo;
+}
+
+function isDrumTrackActiveInMix() {
+  if (!drumTrackVisible || drumTrackMuted) {
+    return false;
+  }
+
+  return !hasSoloTracksEnabled() || drumTrackSolo;
 }
 
 function hasNonDefaultFx(track) {
@@ -2441,8 +2529,9 @@ function bindTracksToArrangementStep(stepIndex, options = {}) {
 
   tracks.forEach((track) => {
     const clip = target[track.id] ?? null;
+    const timingClip = getTrackFrozenBounceState(track, clip) || clip;
     track.arrangementClip = clip;
-    track.stepMs = isPianoRollTimingState(clip) ? 0 : getClipRetriggerStepMs(clip, barMs);
+    track.stepMs = isPianoRollTimingState(timingClip) ? 0 : getClipRetriggerStepMs(timingClip, barMs);
     if (shouldSyncTiming && Number.isFinite(track.stepMs) && track.stepMs > 0) {
       resetTrackPulseCursor(track, nextTriggerAt, { fireAtReference: true });
     }
@@ -2456,6 +2545,53 @@ function getClipRetriggerStepMs(clip, barMs) {
   }
 
   return Number(barMs) / normalizeRetriggersPerBar(clip.retriggersPerBar);
+}
+
+function getTrackTimingNudgeMs(track) {
+  const timingNudge = Number(track?.timingNudgeMs);
+  return Number.isFinite(timingNudge) ? clamp(timingNudge, -250, 250) : 0;
+}
+
+function getTrackFrozenBounceState(track, fallbackState = null) {
+  if (!track?.frozen || track.__bounceInProgress || !track.frozenBounce?.url) {
+    return null;
+  }
+
+  if (track.__frozenBounceState?.source?.mediaUrl === track.frozenBounce.url) {
+    return track.__frozenBounceState;
+  }
+
+  const fallback = fallbackState && typeof fallbackState === "object" ? fallbackState : track;
+  const bounceSource = {
+    ...(fallback?.source && typeof fallback.source === "object" ? fallback.source : {}),
+    identifier: `${track.id}-bounce`,
+    title: `${track.name || "Track"} bounce`,
+    creator: "Freemix bounce",
+    mediaFormat: "video/webm",
+    mediaUrl: track.frozenBounce.url,
+    durationSeconds: Math.max(0.1, Number(track.frozenBounce.durationMs || 0) / 1000),
+  };
+  track.__frozenBounceState = normalizeClipState({
+    source: bounceSource,
+    colorIndex: getArrangementClipColorIndex(fallback, arrangement?.step),
+    durationFilter: fallback?.durationFilter || track.durationFilter,
+    startTime: 0,
+    timingMode: CLIP_TIMING_MODES.retrigger,
+    pianoSnap: normalizePianoRollSnap(track.pianoSnap),
+    pianoRoot: normalizePianoRootNote(track.pianoRoot),
+    retriggersPerBar: 1,
+    notes: [],
+    automation: {},
+    volume: 1,
+    muted: false,
+    blendMode: normalizeBlendModeValue(fallback?.blendMode, track.blendMode),
+    opacity: Number.isFinite(Number(fallback?.opacity)) ? clamp(Number(fallback.opacity), 0, 1) : 1,
+    speed: 1,
+    pitch: 0,
+    fx: normalizeClipFx({}),
+  }, track);
+
+  return track.__frozenBounceState;
 }
 
 function getClipRetriggerStepBeats(clip, beatsPerBar = getTransportBeatsPerBar()) {
@@ -2774,6 +2910,11 @@ function getTrackActiveControlState(track) {
 
 function getTrackRenderState(track) {
   const arrangementClip = getArrangementStepClip(track, arrangement?.step);
+  const frozenState = getTrackFrozenBounceState(track, arrangementClip || track);
+  if (frozenState) {
+    return frozenState;
+  }
+
   if (arrangementClip) {
     return arrangementClip;
   }
@@ -2804,6 +2945,11 @@ function getTrackPlaybackState(track, overrideState) {
   const baseTrack = getTrackById(track?.id) || track;
   if (!baseTrack || typeof baseTrack !== "object") {
     return null;
+  }
+
+  const frozenState = getTrackFrozenBounceState(baseTrack, overrideState || baseTrack.arrangementClip || baseTrack);
+  if (frozenState) {
+    return frozenState;
   }
 
   const activeState = overrideState || getTrackActiveControlState(baseTrack);
@@ -6154,19 +6300,10 @@ function renderWorkstation() {
           </section>
           <div class="control-column">
             <div class="control-bank" aria-label="Track controls">
-            <div class="track-add-row">
-              <button
-                id="addTrackButton"
-                class="track-add-button"
-                type="button"
-                ${tracks.length >= MAX_TRACK_COUNT ? "disabled" : ""}
-              >
-                Add Track (${tracks.length}/${MAX_TRACK_COUNT})
-              </button>
-            </div>
+            ${renderTrackManagementRow()}
             ${tracks.map((track) => renderTrackControlRow(track)).join("")}
-            ${renderTextControlPanel()}
-            ${renderDrumControlPanel()}
+            ${textTrackVisible ? renderTextControlPanel() : ""}
+            ${drumTrackVisible ? renderDrumControlPanel() : ""}
           </div>
           </div>
         </div>
@@ -6186,6 +6323,39 @@ function renderWorkstation() {
   if (appState.userOnboarding?.needsHint) {
     showGuidance("Quick launch: load sample, seed bar, then press Play");
   }
+}
+
+function renderTrackManagementRow() {
+  return `
+    <div class="track-add-row track-management-row" aria-label="Track management">
+      <button
+        id="addTrackButton"
+        class="track-add-button track-management-button"
+        type="button"
+        ${tracks.length >= MAX_TRACK_COUNT ? "disabled" : ""}
+      >
+        Add A/V (${tracks.length}/${MAX_TRACK_COUNT})
+      </button>
+      <button
+        id="toggleTextTrackButton"
+        class="track-add-button track-management-button track-special-toggle ${textTrackVisible ? "active" : ""}"
+        type="button"
+        aria-pressed="${textTrackVisible}"
+        title="${textTrackVisible ? "Hide TEXT track" : "Show TEXT track"}"
+      >
+        TEXT ${textTrackVisible ? "Shown" : "Hidden"}
+      </button>
+      <button
+        id="toggleDrumTrackButton"
+        class="track-add-button track-management-button track-special-toggle ${drumTrackVisible ? "active" : ""}"
+        type="button"
+        aria-pressed="${drumTrackVisible}"
+        title="${drumTrackVisible ? "Hide DRUM track" : "Show DRUM track"}"
+      >
+        DRUM ${drumTrackVisible ? "Shown" : "Hidden"}
+      </button>
+    </div>
+  `;
 }
 
 function applyTrackControlVisibility(track) {
@@ -6543,20 +6713,23 @@ function renderArrangementGridRows() {
       `,
     )
     .join("");
-  return `${videoRows}
-    <div class="arrangement-track-row arrangement-text-row" data-track-id="${TEXT_TRACK_ID}">
+  const textRow = textTrackVisible
+    ? `<div class="arrangement-track-row arrangement-text-row" data-track-id="${TEXT_TRACK_ID}">
       <div class="arrangement-track-label text-track-label" title="Text overlay">
         ${TEXT_TRACK_LABEL}
       </div>
       ${renderArrangementTextRow()}
-    </div>
-    <div class="arrangement-track-row arrangement-drum-row" data-track-id="${DRUM_TRACK_ID}">
+    </div>`
+    : "";
+  const drumRow = drumTrackVisible
+    ? `<div class="arrangement-track-row arrangement-drum-row" data-track-id="${DRUM_TRACK_ID}">
       <div class="arrangement-track-label drum-track-label" title="Drum machine">
         ${DRUM_TRACK_LABEL}
       </div>
       ${renderArrangementDrumRow()}
-    </div>
-  `;
+    </div>`
+    : "";
+  return `${videoRows}${textRow}${drumRow}`;
 }
 
 function renderArrangementGrid() {
@@ -6611,7 +6784,7 @@ function getActiveTextClipForDisplay() {
 }
 
 function renderTextOverlay() {
-  const { clip } = getActiveTextClipForDisplay();
+  const { clip } = isTextTrackActiveInMix() ? getActiveTextClipForDisplay() : { clip: null };
   const fields = clip?.fields || [];
   return `
     <div class="text-overlay-layer" id="textOverlayLayer" aria-hidden="true">
@@ -7482,9 +7655,20 @@ function renderTrackControlRow(track) {
     .map((control) => renderTrackControlField(track, control))
     .join("");
   const activeChip = renderState.muted ? "" : " is-on";
+  const canRemove = tracks.length > 1;
+  const trackIndex = tracks.findIndex((item) => item.id === track.id);
+  const heightMode = Object.prototype.hasOwnProperty.call(TRACK_HEIGHT_MODES, track.heightMode) ? track.heightMode : "normal";
+  const trackStateClasses = [
+    track.color,
+    track.collapsed ? "is-collapsed" : "",
+    track.locked ? "is-locked" : "",
+    track.frozen ? "is-frozen" : "",
+    track.__bounceInProgress ? "is-bouncing" : "",
+    heightMode !== "normal" ? `is-height-${heightMode}` : "",
+  ].filter(Boolean).join(" ");
 
   return `
-    <article class="track-row ${track.color}${track.collapsed ? " is-collapsed" : ""}" data-track-row-id="${track.id}">
+    <article class="track-row ${trackStateClasses}" data-track-row-id="${track.id}">
       <div class="track-row-label">
         <div class="track-row-title">
           <button
@@ -7528,6 +7712,27 @@ function renderTrackControlRow(track) {
           <span class="track-state-chip" data-state="muted">Muted</span>
           <span class="track-state-chip" data-state="fx">FX</span>
           <button
+            class="track-state-chip ${track.locked ? "is-on" : ""}"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="lockTrack"
+            aria-pressed="${!!track.locked}"
+            title="${track.locked ? "Unlock editing" : "Lock against accidental edits"}"
+          >
+            Lock
+          </button>
+          <button
+            class="track-state-chip ${track.frozen ? "is-on" : ""}"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="freezeTrack"
+            aria-pressed="${!!track.frozen}"
+            ${track.__bounceInProgress ? "disabled" : ""}
+            title="${track.frozen ? "Unfreeze rendered bounce" : "Bounce this track to rendered media"}"
+          >
+            ${track.__bounceInProgress ? "Bouncing" : track.frozen ? "Unfreeze" : "Bounce"}
+          </button>
+          <button
             class="track-state-chip"
             type="button"
             data-track-control="${track.id}"
@@ -7538,9 +7743,20 @@ function renderTrackControlRow(track) {
           >
             Solo
           </button>
+          <button
+            class="track-state-chip track-remove-chip"
+            type="button"
+            data-track-control="${track.id}"
+            data-control="removeTrack"
+            ${canRemove ? "" : "disabled"}
+            title="${canRemove ? `Remove ${escapeHtml(track.name)}` : "Keep at least one A/V track"}"
+          >
+            Remove
+          </button>
         </div>
       </div>
       <div class="track-row-body">
+        ${renderTrackUtilityRow(track, trackIndex)}
         ${renderTrackMediaPrep(track, renderState)}
         <div class="track-channel-row track-channel-row--top">
           <div class="track-source">
@@ -7610,6 +7826,24 @@ function renderTextControlPanel() {
         <div class="track-state-chips" aria-label="Text layer states">
           <span class="track-state-chip${textClip ? " is-on" : ""}">Overlay</span>
           <span class="track-state-chip">Top Layer</span>
+          <button
+            class="track-state-chip ${textTrackMuted ? "is-on" : ""}"
+            type="button"
+            data-text-action="toggle-mute"
+            aria-pressed="${textTrackMuted}"
+            title="${textTrackMuted ? "Unmute TEXT layer" : "Mute TEXT layer"}"
+          >
+            ${textTrackMuted ? "Muted" : "On"}
+          </button>
+          <button
+            class="track-state-chip ${textTrackSolo ? "is-on" : ""}"
+            type="button"
+            data-text-action="toggle-solo"
+            aria-pressed="${textTrackSolo}"
+            title="Solo TEXT layer"
+          >
+            Solo
+          </button>
         </div>
       </div>
       <div class="track-row-body text-editor-body">
@@ -7767,6 +8001,24 @@ function renderDrumControlPanel() {
         <div class="track-state-chips" aria-label="Drum machine states">
           <span class="track-state-chip${drumClip ? " is-on" : ""}">Machine</span>
           <span class="track-state-chip">${stepCount} steps</span>
+          <button
+            class="track-state-chip ${drumTrackMuted ? "is-on" : ""}"
+            type="button"
+            data-drum-action="toggle-mute"
+            aria-pressed="${drumTrackMuted}"
+            title="${drumTrackMuted ? "Unmute DRUM track" : "Mute DRUM track"}"
+          >
+            ${drumTrackMuted ? "Muted" : "On"}
+          </button>
+          <button
+            class="track-state-chip ${drumTrackSolo ? "is-on" : ""}"
+            type="button"
+            data-drum-action="toggle-solo"
+            aria-pressed="${drumTrackSolo}"
+            title="Solo DRUM track"
+          >
+            Solo
+          </button>
         </div>
       </div>
       <div class="track-row-body drum-editor-body">
@@ -7789,6 +8041,42 @@ function renderDrumControlPanel() {
         </div>
       </div>
     </article>
+  `;
+}
+
+function renderTrackUtilityRow(track, trackIndex = -1) {
+  const heightMode = Object.prototype.hasOwnProperty.call(TRACK_HEIGHT_MODES, track.heightMode) ? track.heightMode : "normal";
+  const capturePreset = Object.prototype.hasOwnProperty.call(TRACK_CAPTURE_PRESETS, track.capturePreset) ? track.capturePreset : "current";
+  const timingNudge = getTrackTimingNudgeMs(track);
+  return `
+    <div class="track-tool-row" aria-label="${escapeHtml(track.name)} track tools">
+      <label class="control-field track-color-field">
+        <span>Color</span>
+        <select data-track-control="${track.id}" data-control="trackColor">
+          ${TRACK_COLORS.map((color) => `<option value="${color}" ${track.color === color ? "selected" : ""}>${TRACK_COLOR_LABELS[color] || color}</option>`).join("")}
+        </select>
+      </label>
+      <label class="control-field track-height-field">
+        <span>View</span>
+        <select data-track-control="${track.id}" data-control="heightMode">
+          ${Object.entries(TRACK_HEIGHT_MODES).map(([value, label]) => `<option value="${value}" ${heightMode === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <label class="control-field track-capture-field">
+        <span>Capture</span>
+        <select data-track-control="${track.id}" data-control="capturePreset">
+          ${Object.entries(TRACK_CAPTURE_PRESETS).map(([value, label]) => `<option value="${value}" ${capturePreset === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <label class="control-field compact-number track-nudge-field">
+        <span>Nudge ms</span>
+        <input type="number" min="-250" max="250" step="1" value="${timingNudge}" data-track-control="${track.id}" data-control="timingNudgeMs">
+      </label>
+      <button class="track-tool-button" type="button" data-track-control="${track.id}" data-control="moveTrackUp" ${trackIndex <= 0 ? "disabled" : ""}>Up</button>
+      <button class="track-tool-button" type="button" data-track-control="${track.id}" data-control="moveTrackDown" ${trackIndex < 0 || trackIndex >= tracks.length - 1 ? "disabled" : ""}>Down</button>
+      <button class="track-tool-button" type="button" data-track-control="${track.id}" data-control="duplicateTrack" ${tracks.length >= MAX_TRACK_COUNT ? "disabled" : ""}>Duplicate</button>
+      <button class="track-tool-button danger" type="button" data-track-control="${track.id}" data-control="clearTrackLane">Clear Lane</button>
+    </div>
   `;
 }
 
@@ -9033,6 +9321,84 @@ function handleTrackControl(event) {
   }
 
   const controlName = control.dataset.control;
+  if (controlName === "removeTrack") {
+    removeTrack(track.id);
+    return;
+  }
+
+  if (controlName === "duplicateTrack") {
+    duplicateTrack(track.id);
+    return;
+  }
+
+  if (controlName === "moveTrackUp") {
+    moveTrack(track.id, -1);
+    return;
+  }
+
+  if (controlName === "moveTrackDown") {
+    moveTrack(track.id, 1);
+    return;
+  }
+
+  if (controlName === "clearTrackLane") {
+    clearTrackLane(track.id);
+    return;
+  }
+
+  if (controlName === "lockTrack") {
+    track.locked = !track.locked;
+    updateTrackModeChips(track);
+    window.freemixRender?.updateTrackRow?.(track);
+    markAppStateDirty(true);
+    setStatus(`${track.name}: ${track.locked ? "locked" : "unlocked"}`);
+    return;
+  }
+
+  if (controlName === "freezeTrack") {
+    toggleTrackFreezeBounce(track);
+    return;
+  }
+
+  if (controlName === "trackColor") {
+    track.color = TRACK_COLORS.includes(control.value) ? control.value : track.color;
+    renderWorkstation();
+    markAppStateDirty(true);
+    setStatus(`${track.name}: color ${TRACK_COLOR_LABELS[track.color] || track.color}`);
+    return;
+  }
+
+  if (controlName === "heightMode") {
+    track.heightMode = Object.prototype.hasOwnProperty.call(TRACK_HEIGHT_MODES, control.value) ? control.value : "normal";
+    window.freemixRender?.updateTrackRow?.(track);
+    markAppStateDirty(true);
+    setStatus(`${track.name}: ${TRACK_HEIGHT_MODES[track.heightMode]} view`);
+    return;
+  }
+
+  if (controlName === "capturePreset") {
+    track.capturePreset = Object.prototype.hasOwnProperty.call(TRACK_CAPTURE_PRESETS, control.value) ? control.value : "current";
+    markAppStateDirty(true);
+    setStatus(`${track.name}: ${TRACK_CAPTURE_PRESETS[track.capturePreset]} capture`);
+    return;
+  }
+
+  if (controlName === "timingNudgeMs") {
+    const timingNudge = Number(control.value);
+    track.timingNudgeMs = Number.isFinite(timingNudge) ? clamp(timingNudge, -250, 250) : 0;
+    if (transport?.active) {
+      resetTrackPulseCursor(track, performance.now(), { fireAtReference: false });
+    }
+    markAppStateDirty();
+    return;
+  }
+
+  if ((track.locked || track.frozen) && !TRACK_MANAGEMENT_CONTROLS.has(controlName)) {
+    setStatus(`${track.name}: ${track.locked ? "locked" : "frozen"}`, true);
+    window.freemixRender?.updateTrackRow?.(track);
+    return;
+  }
+
   if (event.__freemixHandledAutomation) {
     return;
   }
@@ -9319,6 +9685,7 @@ function handleTrackControl(event) {
     track.solo = !track.solo;
     control.setAttribute("aria-pressed", String(track.solo));
     updateTrackModeChips(track);
+    tracks.forEach((item) => applyTrackVolume(item, getTrackPlaybackState(item) || item));
   }
 
   if (controlName === "advanced") {
@@ -9412,6 +9779,27 @@ function handleTextAction(action) {
     textToolbarCollapsed = !textToolbarCollapsed;
     window.freemixRender?.updateTextEditor?.();
     syncArrangementTrackHeights();
+    return true;
+  }
+
+  if (action === "toggle-mute") {
+    textTrackMuted = !textTrackMuted;
+    appState.textTrackMuted = textTrackMuted;
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
+    markAppStateDirty(true);
+    setStatus(`TEXT ${textTrackMuted ? "muted" : "on"}`);
+    return true;
+  }
+
+  if (action === "toggle-solo") {
+    textTrackSolo = !textTrackSolo;
+    appState.textTrackSolo = textTrackSolo;
+    window.freemixRender?.updateTextOverlay?.();
+    window.freemixRender?.updateTextEditor?.();
+    tracks.forEach((track) => applyTrackVolume(track, getTrackPlaybackState(track) || track));
+    markAppStateDirty(true);
+    setStatus(`TEXT solo ${textTrackSolo ? "on" : "off"}`);
     return true;
   }
 
@@ -9550,6 +9938,25 @@ function handleDrumAction(action) {
     drumToolbarCollapsed = !drumToolbarCollapsed;
     window.freemixRender?.updateDrumEditor?.();
     syncArrangementTrackHeights();
+    return true;
+  }
+
+  if (action === "toggle-mute") {
+    drumTrackMuted = !drumTrackMuted;
+    appState.drumTrackMuted = drumTrackMuted;
+    window.freemixRender?.updateDrumEditor?.();
+    markAppStateDirty(true);
+    setStatus(`DRUM ${drumTrackMuted ? "muted" : "on"}`);
+    return true;
+  }
+
+  if (action === "toggle-solo") {
+    drumTrackSolo = !drumTrackSolo;
+    appState.drumTrackSolo = drumTrackSolo;
+    window.freemixRender?.updateDrumEditor?.();
+    tracks.forEach((track) => applyTrackVolume(track, getTrackPlaybackState(track) || track));
+    markAppStateDirty(true);
+    setStatus(`DRUM solo ${drumTrackSolo ? "on" : "off"}`);
     return true;
   }
 
@@ -10767,7 +11174,9 @@ function createExportCanvasSession() {
         console.warn(`Export frame draw skipped for ${track?.name || "track"}`, error);
       }
     });
-    drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height);
+    if (isTextTrackActiveInMix()) {
+      drawTextClipFrame(context, getArrangementTextClip(arrangement?.step), width, height);
+    }
 
     context.globalAlpha = 1;
     context.globalCompositeOperation = "source-over";
@@ -10831,6 +11240,65 @@ function createExportVideoFramePump(exportTracks, drawFrame) {
       callbacks.clear();
     },
   };
+}
+
+function drawTrackBounceFrame(context, track, state, width, height) {
+  const video = getTrackVideo(track);
+  if (!video || !video.videoWidth || !video.videoHeight || video.readyState < 2) {
+    return false;
+  }
+
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+  const scale = Math.max(width / videoWidth, height / videoHeight);
+  const drawWidth = videoWidth * scale;
+  const drawHeight = videoHeight * scale;
+  const offsetX = (width - drawWidth) / 2;
+  const offsetY = (height - drawHeight) / 2;
+
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  context.filter = getExportVideoFilterForState(state);
+  context.drawImage(video, offsetX, offsetY, drawWidth, drawHeight);
+  context.filter = "none";
+  return true;
+}
+
+function createTrackBounceCanvasSession(track, state) {
+  const matrix = playerPanel?.querySelector(".video-matrix");
+  const bounds = matrix?.getBoundingClientRect();
+  const [width, height] = getExportCanvasDimensions(bounds);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas context unavailable");
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  canvas.style.position = "fixed";
+  canvas.style.inset = "0";
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.style.opacity = "0";
+  canvas.style.pointerEvents = "none";
+  canvas.style.zIndex = "-1";
+  document.body?.appendChild(canvas);
+
+  const drawFrame = () => {
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.filter = "none";
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = "black";
+    context.fillRect(0, 0, width, height);
+    drawTrackBounceFrame(context, track, state, width, height);
+    context.globalAlpha = 1;
+    context.globalCompositeOperation = "source-over";
+    context.filter = "none";
+  };
+
+  return { canvas, context, width, height, drawFrame };
 }
 
 function createExportAudioTap() {
@@ -10919,6 +11387,55 @@ function createExportAudioTap() {
   return { destination: null, disconnects: [], fallbackAudioTracks };
 }
 
+function createTrackBounceAudioTap(track, state) {
+  const fallbackAudioTracks = [];
+
+  if (audioContext && !webAudioDisabled && audioContext.state === "running") {
+    const video = getTrackVideo(track);
+    if (video) {
+      setupTrackAudio(track, video, state);
+      const output = track.audio?.output;
+      if (output) {
+        const destination = audioContext.createMediaStreamDestination();
+        const disconnects = [];
+        try {
+          output.connect(destination);
+          disconnects.push(() => {
+            try {
+              output.disconnect(destination);
+            } catch {
+              // Already disconnected.
+            }
+          });
+          activeExportAudioDestination = destination;
+          return { destination, disconnects, fallbackAudioTracks };
+        } catch (error) {
+          console.warn("Failed to connect bounce audio tap", error);
+        }
+      }
+    }
+    activeExportAudioDestination = null;
+  }
+
+  const video = getTrackVideo(track);
+  if (video && typeof video.captureStream === "function") {
+    try {
+      const videoStream = video.captureStream();
+      videoStream.getAudioTracks().forEach((audioTrack) => {
+        if (audioTrack) {
+          fallbackAudioTracks.push(audioTrack);
+        }
+      });
+    } catch (error) {
+      console.warn("Failed to capture bounce fallback audio", error);
+    }
+  }
+
+  return fallbackAudioTracks.length
+    ? { destination: null, disconnects: [], fallbackAudioTracks }
+    : null;
+}
+
 function releaseExportAudioTap(tap) {
   if (!tap) {
     return;
@@ -10945,6 +11462,275 @@ function releaseExportAudioTap(tap) {
   if (activeExportAudioDestination === tap.destination) {
     activeExportAudioDestination = null;
   }
+}
+
+function revokeTrackBounce(track) {
+  if (!track) {
+    return;
+  }
+
+  const bounceUrl = track.frozenBounce?.url;
+  if (bounceUrl && String(bounceUrl).startsWith("blob:")) {
+    try {
+      URL.revokeObjectURL(bounceUrl);
+    } catch {
+      // Blob URL already released.
+    }
+  }
+
+  track.frozenBounce = null;
+  track.__frozenBounceState = null;
+}
+
+async function bounceTrackToRenderedMedia(track) {
+  if (!track || track.__bounceInProgress) {
+    return false;
+  }
+
+  if (!window.MediaRecorder) {
+    setStatus("MediaRecorder not available in this browser", true);
+    return false;
+  }
+
+  if (!window.HTMLCanvasElement || !HTMLCanvasElement.prototype.captureStream) {
+    setStatus("Canvas capture not supported", true);
+    return false;
+  }
+
+  const sourceState = normalizeClipState(getTrackRenderState(track), track);
+  const sourceUrl = getTrackPlaybackSourceUrl(track, sourceState);
+  if (!sourceUrl) {
+    setStatus(`${track.name}: load media before bouncing`, true);
+    return false;
+  }
+
+  if (transport?.active) {
+    stopTransport(true);
+  }
+
+  track.__bounceInProgress = true;
+  track.frozen = false;
+  track.__frozenBounceState = null;
+  setTrackMediaStatus(track, "loading");
+  window.freemixRender?.updateTrackRow?.(track);
+  setStatus(`${track.name}: bouncing one bar...`);
+
+  let canvasSession = null;
+  let audioTap = null;
+  let mediaStream = null;
+  let recorder = null;
+  let canvasVideoTrack = null;
+  let renderTimerId = null;
+  let bounceFramePump = null;
+  let stopTimerId = null;
+  let recorderFinished;
+  const chunks = [];
+  const restoreArrangementStep = getArrangementStepIndex(arrangement?.step) ?? 0;
+  const restoreArrangementEnabled = !!arrangement.enabled;
+  const bounceStopped = new Promise((resolve, reject) => {
+    recorderFinished = { resolve, reject };
+  });
+
+  try {
+    const video = ensureTrackVideoElementForPlayback(track, sourceState);
+    if (!video) {
+      throw new Error("Track video unavailable");
+    }
+
+    setMediaElementSource(video, sourceUrl);
+    setVideoCorsPolicy(video, sourceUrl);
+    loadMediaElementOnlyIfEmpty(video);
+    await waitForTrackReady(video, AV_READY_TIMEOUT_MS * 2);
+    safeSetCurrentTime(video, sourceState, track);
+
+    if (!webAudioDisabled) {
+      await ensureAudioContext();
+    }
+
+    setupTrackAudio(track, video, sourceState);
+    applyTrackFx(track, sourceState);
+    applyVideoFx(track, sourceState);
+    applyTrackPitchAndSpeed(track, sourceState);
+    applyTrackVolume(track, sourceState);
+
+    canvasSession = createTrackBounceCanvasSession(track, sourceState);
+    mediaStream = canvasSession.canvas.captureStream(EXPORT_FRAME_RATE);
+    canvasVideoTrack = mediaStream.getVideoTracks()[0] || null;
+    if (canvasVideoTrack && "contentHint" in canvasVideoTrack) {
+      canvasVideoTrack.contentHint = "motion";
+    }
+
+    audioTap = createTrackBounceAudioTap(track, sourceState);
+    if (audioTap?.destination?.stream) {
+      audioTap.destination.stream.getAudioTracks().forEach((audioTrack) => {
+        if (audioTrack) {
+          mediaStream.addTrack(audioTrack);
+        }
+      });
+    } else if (Array.isArray(audioTap?.fallbackAudioTracks)) {
+      audioTap.fallbackAudioTracks.forEach((audioTrack) => {
+        if (audioTrack) {
+          mediaStream.addTrack(audioTrack);
+        }
+      });
+    }
+
+    const mimeType = isWebmTypeSupported();
+    recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        chunks.push(event.data);
+      }
+    };
+    recorder.onstop = () => {
+      recorderFinished?.resolve?.();
+      recorderFinished = null;
+    };
+    recorder.onerror = (event) => {
+      recorderFinished?.reject?.(event?.error || event || new Error("Bounce recorder error"));
+      recorderFinished = null;
+    };
+
+    const renderBounceFrame = () => {
+      canvasSession?.drawFrame?.();
+      if (typeof canvasVideoTrack?.requestFrame === "function") {
+        canvasVideoTrack.requestFrame();
+      }
+    };
+    renderBounceFrame();
+    recorder.start(200);
+    bounceFramePump = createExportVideoFramePump([track], renderBounceFrame);
+    renderTimerId = window.setInterval(renderBounceFrame, Math.max(16, Math.round(1000 / EXPORT_FRAME_RATE)));
+
+    const startResult = startTransport();
+    if (startResult && typeof startResult.then === "function") {
+      await startResult;
+    }
+    if (!transport?.active) {
+      throw new Error("Playback failed to start for bounce");
+    }
+
+    const timing = getTransportTimingFromState();
+    const durationMs = Math.max(1, timing.barMs);
+    stopTimerId = window.setTimeout(() => {
+      renderBounceFrame();
+      if (recorder && recorder.state === "recording") {
+        try {
+          recorder.requestData?.();
+        } catch {
+          // requestData is best effort.
+        }
+        recorder.stop();
+      }
+    }, durationMs + 300);
+
+    await Promise.race([
+      bounceStopped,
+      new Promise((_, reject) => {
+        window.setTimeout(() => reject(new Error("Bounce timed out")), durationMs + 10000);
+      }),
+    ]);
+
+    if (!chunks.length) {
+      throw new Error("No bounce data received");
+    }
+
+    revokeTrackBounce(track);
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const bounceUrl = URL.createObjectURL(blob);
+    track.frozenBounce = {
+      url: bounceUrl,
+      createdAt: new Date().toISOString(),
+      durationMs,
+      size: blob.size,
+      sourceTitle: sourceState.source?.title || track.source?.title || track.name,
+      signature: getPlaybackStateSignature(sourceState, sourceUrl),
+    };
+    track.__frozenBounceState = null;
+    track.frozen = true;
+    setTrackMediaStatus(track, "bounced");
+    renderWorkstation();
+    markAppStateDirty(true);
+    setStatus(`${track.name}: bounced and frozen`);
+    return true;
+  } catch (error) {
+    console.warn(error);
+    track.frozen = false;
+    revokeTrackBounce(track);
+    setTrackMediaStatus(track, sourceUrl ? "ready" : "empty");
+    window.freemixRender?.updateTrackRow?.(track);
+    setStatus(`${track.name}: bounce failed`, true);
+    return false;
+  } finally {
+    track.__bounceInProgress = false;
+    if (stopTimerId !== null) {
+      window.clearTimeout(stopTimerId);
+    }
+    if (renderTimerId !== null) {
+      window.clearInterval(renderTimerId);
+    }
+    bounceFramePump?.stop?.();
+    if (recorder && recorder.state === "recording") {
+      try {
+        recorder.stop();
+      } catch {
+        // Recorder already stopped.
+      }
+    }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((streamTrack) => streamTrack.stop?.());
+    }
+    if (canvasSession?.canvas) {
+      canvasSession.canvas.remove();
+    }
+    if (audioTap) {
+      releaseExportAudioTap(audioTap);
+    }
+    if (transport?.active) {
+      stopTransport(true);
+    } else {
+      stopVideosAfterExport();
+    }
+    arrangement.enabled = restoreArrangementEnabled;
+    updateArrangementStep(restoreArrangementStep, performance.now(), true);
+    if (track.frozen && track.frozenBounce?.url) {
+      setTrackMediaStatus(track, "bounced");
+      setStatus(`${track.name}: bounced and frozen`);
+    }
+    window.freemixRender?.updateTrackRow?.(track);
+  }
+}
+
+function unfreezeTrackBounce(track) {
+  if (!track) {
+    return false;
+  }
+
+  track.frozen = false;
+  revokeTrackBounce(track);
+  setTrackMediaStatus(track, getTrackPlaybackSourceUrl(track, getTrackRenderState(track)) ? "ready" : "empty");
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${track.name}: unfrozen`);
+  return true;
+}
+
+function toggleTrackFreezeBounce(track) {
+  if (!track) {
+    return false;
+  }
+
+  if (track.__bounceInProgress) {
+    setStatus(`${track.name}: bounce already running`, true);
+    return false;
+  }
+
+  if (track.frozen && track.frozenBounce?.url) {
+    return unfreezeTrackBounce(track);
+  }
+
+  void bounceTrackToRenderedMedia(track);
+  return true;
 }
 
 function ensureDrumAudioOutput() {
@@ -11326,7 +12112,7 @@ function resetDrumPulseCursor(stepIndex = arrangement?.step, barStartAt = perfor
 }
 
 function playArrangementDrums(now, currentStep, currentStepStartAt, barMs) {
-  if (!transport?.active || !audioContext || webAudioDisabled) {
+  if (!transport?.active || !audioContext || webAudioDisabled || !isDrumTrackActiveInMix()) {
     return;
   }
 
@@ -11791,7 +12577,7 @@ function tickTransport() {
 
     if (pulseIndex > track.__lastRetriggerPulse) {
       track.__lastRetriggerPulse = pulseIndex;
-      track.nextTriggerAt = transport.startedAt + (pulseIndex + 1) * track.stepMs;
+      track.nextTriggerAt = transport.startedAt + getTrackTimingNudgeMs(track) + (pulseIndex + 1) * track.stepMs;
       if (!isTrackAudibleInMix(track, activePlaybackState)) {
         return;
       }
@@ -12882,7 +13668,7 @@ function getAlignedTrackTriggerTime(track, referenceTime = performance.now(), op
     return Number.isFinite(referenceTime) ? referenceTime : performance.now();
   }
 
-  const transportStart = Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now();
+  const transportStart = (Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now()) + getTrackTimingNudgeMs(track);
   const delta = referenceTime - transportStart;
   if (!Number.isFinite(delta)) {
     return transportStart;
@@ -12907,7 +13693,7 @@ function getTrackPulseIndex(track, referenceTime = performance.now()) {
     return null;
   }
 
-  const transportStart = Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now();
+  const transportStart = (Number.isFinite(transport.startedAt) ? transport.startedAt : performance.now()) + getTrackTimingNudgeMs(track);
   if (referenceTime < transportStart - 1) {
     return null;
   }
@@ -12929,7 +13715,7 @@ function resetTrackPulseCursor(track, referenceTime = performance.now(), options
   }
 
   track.__lastRetriggerPulse = options.fireAtReference ? pulseIndex - 1 : pulseIndex;
-  track.nextTriggerAt = transport.startedAt + (track.__lastRetriggerPulse + 1) * track.stepMs;
+  track.nextTriggerAt = transport.startedAt + getTrackTimingNudgeMs(track) + (track.__lastRetriggerPulse + 1) * track.stepMs;
 }
 
 function syncTrackVideoToTransportClock(track, playbackState, referenceTime = performance.now(), pulseIndex = null) {
@@ -13019,7 +13805,8 @@ function updateTrackTriggerGrid(startAt = performance.now()) {
   const beatMs = getTransportBeatMs(transport);
   const barMs = beatMs * getTransportBeatsPerBar(transport);
   tracks.forEach((track) => {
-    const timingState = getTrackActiveControlState(track) || track;
+    const activeState = getTrackActiveControlState(track) || track;
+    const timingState = getTrackFrozenBounceState(track, activeState) || activeState;
     track.arrangementClip = null;
     const isPianoRoll = isPianoRollTimingState(timingState);
     track.stepMs = isPianoRoll ? 0 : getClipRetriggerStepMs(timingState, barMs);
@@ -13239,9 +14026,10 @@ function captureSelectedArrangementSlots() {
     return false;
   }
 
-  const capturableTargets = targets.filter(({ track }) => !!track?.source);
+  const blockedTargets = targets.filter(({ track }) => !!track?.locked || !!track?.frozen);
+  const capturableTargets = targets.filter(({ track }) => !!track?.source && !track.locked && !track.frozen);
   if (!capturableTargets.length && !hasTextTargets && !hasDrumTargets) {
-    setStatus("Load a source on the selected track first", true);
+    setStatus(blockedTargets.length ? "Unlock or unfreeze the selected track first" : "Load a source on the selected track first", true);
     return false;
   }
 
@@ -13275,6 +14063,12 @@ function captureSelectedArrangementSlots() {
 function copySelectedArrangementScene() {
   const sceneStep = getSelectedArrangementSceneStep();
   if (sceneStep !== null) {
+    const lockedSceneTracks = tracks.filter((track) => track.locked && arrangement?.clips?.[sceneStep]?.[track.id]);
+    if (lockedSceneTracks.length) {
+      setStatus("Unlock tracks before deleting their scene clips", true);
+      return false;
+    }
+
     if (!arrangementStepHasClips(sceneStep)) {
       setStatus("Selected scene is empty", true);
       return false;
@@ -13525,8 +14319,13 @@ function pasteArrangementClipboardToSelectedScene() {
     return true;
   }
 
-  const targets = getSelectedArrangementClipTargets();
+  const selectedTargets = getSelectedArrangementClipTargets();
+  const targets = selectedTargets.filter(({ track }) => !track.locked && !track.frozen);
   if (!targets.length) {
+    if (selectedTargets.length) {
+      setStatus("Unlock or unfreeze the selected track first", true);
+      return false;
+    }
     setStatus("Choose a clip slot first", true);
     return false;
   }
@@ -13623,6 +14422,12 @@ function deleteSelectedArrangementScene() {
   const targets = getSelectedArrangementClipTargets();
   if (!targets.length) {
     setStatus("Choose a clip first", true);
+    return false;
+  }
+
+  const lockedTargets = targets.filter(({ track, stepIndex }) => track.locked && arrangement?.clips?.[stepIndex]?.[track.id]);
+  if (lockedTargets.length) {
+    setStatus("Unlock the selected track before deleting clips", true);
     return false;
   }
 
@@ -14151,6 +14956,7 @@ window.freemixSelectArrangementStart = selectArrangementStart;
 window.freemixUndoArrangementEdit = undoArrangementEdit;
 window.freemixRedoArrangementEdit = redoArrangementEdit;
 window.freemixReconcileArrangementPlaybackConfidence = reconcileArrangementPlaybackConfidence;
+window.freemixToggleSpecialTrackVisibility = toggleSpecialTrackVisibility;
 
 function updateArrangementStepCount(event) {
   const nextLength = clamp(
@@ -14256,7 +15062,8 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
   }
   tracks.forEach((track) => {
     const clip = getArrangementStepClip(track, resolvedStep);
-    if (!clip || !clip.source) {
+    const playbackClip = getTrackFrozenBounceState(track, clip) || clip;
+    if (!clip || !playbackClip?.source) {
       const video = getTrackVideo(track);
       if (video && typeof video.pause === "function") {
         video.pause();
@@ -14282,7 +15089,7 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
       track.__lookaheadRevealedStep === resolvedStep &&
       almostEqual(Number(track.__lookaheadRevealedBarStartAt), barStartAt, 3);
     const isAtOrAfterBarStart = performance.now() >= barStartAt - 1;
-    const isPianoRoll = isPianoRollTimingState(clip);
+    const isPianoRoll = isPianoRollTimingState(playbackClip);
     const shouldRetriggerNow =
       !!force &&
       !!transport?.active &&
@@ -14302,7 +15109,7 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     if (wasLookaheadRevealed) {
       if (Number.isFinite(lookaheadRevealedPulse)) {
         track.__lastRetriggerPulse = lookaheadRevealedPulse;
-        track.nextTriggerAt = barStartAt + track.stepMs;
+        track.nextTriggerAt = barStartAt + getTrackTimingNudgeMs(track) + track.stepMs;
       }
       track.__lookaheadRevealedFor = null;
       track.__lookaheadRevealedStep = null;
@@ -14312,10 +15119,10 @@ function updateArrangementStep(stepIndex, barStartAt, force = false) {
     }
     if (shouldRetriggerNow) {
       track.__lastRetriggerPulse = 0;
-      track.nextTriggerAt = barStartAt + track.stepMs;
+      track.nextTriggerAt = barStartAt + getTrackTimingNudgeMs(track) + track.stepMs;
       const eventClip = getRetriggerPlaybackStateForPulse(
         track,
-        clip,
+        playbackClip,
         0,
         getTransportBeatsPerBar(transport),
         getTransportBeatMs(transport),
@@ -14593,6 +15400,11 @@ function captureTrackSessionSnapshot(track) {
     id: track.id,
     showAdvanced: !!track.showAdvanced,
     collapsed: !!track.collapsed,
+    locked: !!track.locked,
+    frozen: false,
+    heightMode: Object.prototype.hasOwnProperty.call(TRACK_HEIGHT_MODES, track.heightMode) ? track.heightMode : "normal",
+    capturePreset: Object.prototype.hasOwnProperty.call(TRACK_CAPTURE_PRESETS, track.capturePreset) ? track.capturePreset : "current",
+    timingNudgeMs: getTrackTimingNudgeMs(track),
     startTime: Number(track.startTime) || 0,
     timingMode: normalizeClipTimingMode(track.timingMode),
     pianoSnap: normalizePianoRollSnap(track.pianoSnap),
@@ -14625,6 +15437,12 @@ function captureSessionSnapshot(name = "") {
       metronomeEnabled: !!metronomeEnabled,
       masterMuted: !!masterMuted,
       arrangementStepCount,
+      textTrackVisible,
+      drumTrackVisible,
+      textTrackMuted,
+      textTrackSolo,
+      drumTrackMuted,
+      drumTrackSolo,
     },
     tracks: tracks.map(captureTrackSessionSnapshot),
     arrangement: {
@@ -14818,6 +15636,7 @@ function hydrateSessionSnapshot(rawSnapshot, options = {}) {
 
   if (options.disposeAudio !== false) {
     tracks.forEach(disposeTrackAudio);
+    tracks.forEach(revokeTrackBounce);
   }
 
   const nextTracks = Array.isArray(snapshot.tracks) && snapshot.tracks.length
@@ -14833,6 +15652,18 @@ function hydrateSessionSnapshot(rawSnapshot, options = {}) {
     : DEFAULT_TIME_SIGNATURE;
   metronomeEnabled = typeof snapshot.state?.metronomeEnabled === "boolean" ? snapshot.state.metronomeEnabled : true;
   masterMuted = !!snapshot.state?.masterMuted;
+  textTrackVisible = snapshot.state?.textTrackVisible !== false;
+  drumTrackVisible = snapshot.state?.drumTrackVisible !== false;
+  textTrackMuted = !!snapshot.state?.textTrackMuted;
+  textTrackSolo = !!snapshot.state?.textTrackSolo;
+  drumTrackMuted = !!snapshot.state?.drumTrackMuted;
+  drumTrackSolo = !!snapshot.state?.drumTrackSolo;
+  appState.textTrackVisible = textTrackVisible;
+  appState.drumTrackVisible = drumTrackVisible;
+  appState.textTrackMuted = textTrackMuted;
+  appState.textTrackSolo = textTrackSolo;
+  appState.drumTrackMuted = drumTrackMuted;
+  appState.drumTrackSolo = drumTrackSolo;
 
   const savedStepCount = Number(snapshot.state?.arrangementStepCount);
   const clipStepCount = Array.isArray(snapshot.arrangement?.clips) ? snapshot.arrangement.clips.length : null;
@@ -14930,6 +15761,7 @@ function newBlankSession() {
 
   stopTransport(false);
   tracks.forEach(disposeTrackAudio);
+  tracks.forEach(revokeTrackBounce);
   tracks.splice(0, tracks.length, ...createInitialTracks(DEFAULT_TRACK_COUNT));
   appState.tracks = tracks;
   refreshTrackLookup();
@@ -14937,6 +15769,18 @@ function newBlankSession() {
   appState.preferredTimeSignature = DEFAULT_TIME_SIGNATURE;
   metronomeEnabled = true;
   masterMuted = false;
+  textTrackVisible = true;
+  drumTrackVisible = true;
+  textTrackMuted = false;
+  textTrackSolo = false;
+  drumTrackMuted = false;
+  drumTrackSolo = false;
+  appState.textTrackVisible = textTrackVisible;
+  appState.drumTrackVisible = drumTrackVisible;
+  appState.textTrackMuted = textTrackMuted;
+  appState.textTrackSolo = textTrackSolo;
+  appState.drumTrackMuted = drumTrackMuted;
+  appState.drumTrackSolo = drumTrackSolo;
   arrangementStepCount = DEFAULT_ARRANGEMENT_STEPS;
   arrangementClipboardKind = null;
   arrangementClipboardTextClips = [];
@@ -15020,7 +15864,7 @@ function renderRecentSessionMenu() {
 }
 
 function captureTrackClip(track) {
-  return normalizeClipState({
+  const clip = normalizeClipState({
     source: track.source,
     colorIndex: getArrangementSceneColorIndex(arrangement?.step),
     durationFilter: track.durationFilter,
@@ -15039,6 +15883,22 @@ function captureTrackClip(track) {
     pitch: track.pitch,
     fx: { ...track.fx },
   }, track);
+
+  if (track.capturePreset === "dry") {
+    clip.fx = normalizeClipFx({});
+    clip.blendMode = TRACK_BLEND_DEFAULTS[0];
+    clip.opacity = 1;
+    clip.speed = 1;
+    clip.pitch = 0;
+  } else if (track.capturePreset === "muted") {
+    clip.muted = true;
+  } else if (track.capturePreset === "performance") {
+    clip.automation = {};
+    clip.notes = [];
+    clip.timingMode = CLIP_TIMING_MODES.retrigger;
+  }
+
+  return normalizeClipState(clip, track);
 }
 
 function cloneArrangementClip(clip) {
@@ -15409,6 +16269,11 @@ function createTrackTemplate(index) {
     id: `track-${paletteIndex + 1}`,
     showAdvanced: false,
     collapsed: false,
+    locked: false,
+    frozen: false,
+    heightMode: "normal",
+    capturePreset: "current",
+    timingNudgeMs: 0,
     startTime: 0,
     retriggersPerBar: TRACK_RETRIGGER_DEFAULTS[paletteIndex % TRACK_RETRIGGER_DEFAULTS.length],
     timingMode: DEFAULT_CLIP_TIMING_MODE,
@@ -15448,6 +16313,16 @@ function canAddTrack() {
   return tracks.length < MAX_TRACK_COUNT;
 }
 
+function getNextAvailableTrackIndex() {
+  for (let index = 0; index < MAX_TRACK_COUNT; index += 1) {
+    if (!TRACK_LOOKUP.has(`track-${index + 1}`)) {
+      return index;
+    }
+  }
+
+  return tracks.length;
+}
+
 function addTrack() {
   if (typeof clearGuidanceHint === "function") {
     clearGuidanceHint();
@@ -15462,7 +16337,7 @@ function addTrack() {
     stopTransport(false);
   }
 
-  const nextTrack = createTrackTemplate(tracks.length);
+  const nextTrack = createTrackTemplate(getNextAvailableTrackIndex());
   tracks.push(nextTrack);
   refreshTrackLookup();
   if (window.freemixTrackSourceCache && nextTrack.id) {
@@ -15475,8 +16350,225 @@ function addTrack() {
   return true;
 }
 
+function canRemoveTrack() {
+  return tracks.length > 1;
+}
+
+function trackHasArrangementClips(trackId) {
+  return Array.isArray(arrangement?.clips) && arrangement.clips.some((step) => !!step?.[trackId]);
+}
+
+function duplicateTrack(trackOrId) {
+  const sourceTrack = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  if (!sourceTrack) {
+    return false;
+  }
+
+  if (!canAddTrack()) {
+    setStatus("Max 4 tracks reached", true);
+    return false;
+  }
+
+  const nextTrack = createTrackTemplate(getNextAvailableTrackIndex());
+  const snapshot = captureTrackSessionSnapshot(sourceTrack);
+  Object.assign(nextTrack, JSON.parse(JSON.stringify(snapshot)), {
+    id: nextTrack.id,
+    name: `${sourceTrack.name || "Track"} Copy`.slice(0, TRACK_NAME_MAX_LENGTH),
+    frozen: false,
+    frozenBounce: null,
+    audio: null,
+    searchTimer: null,
+    searchRequestId: 0,
+    arrangementClip: null,
+    lastStep: -1,
+    nextTriggerAt: 0,
+    stepMs: 0,
+    playbackPhase: PLAYBACK_PHASES.idle,
+  });
+  normalizeTrackPreferences(nextTrack);
+  tracks.push(nextTrack);
+  refreshTrackLookup();
+
+  if (Array.isArray(arrangement?.clips)) {
+    arrangement.clips.forEach((step) => {
+      if (step?.[sourceTrack.id]) {
+        step[nextTrack.id] = cloneArrangementClip(step[sourceTrack.id]);
+      }
+    });
+  }
+
+  if (window.freemixTrackSourceCache) {
+    window.freemixTrackSourceCache[nextTrack.id] = JSON.parse(JSON.stringify(window.freemixTrackSourceCache[sourceTrack.id] || {}));
+  }
+
+  refreshArrangementHasClipsState();
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${sourceTrack.name || "Track"} duplicated`);
+  return true;
+}
+
+function moveTrack(trackOrId, direction) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  const fromIndex = tracks.findIndex((item) => item.id === track?.id);
+  const toIndex = fromIndex + Math.sign(Number(direction) || 0);
+  if (!track || fromIndex < 0 || toIndex < 0 || toIndex >= tracks.length) {
+    return false;
+  }
+
+  tracks.splice(fromIndex, 1);
+  tracks.splice(toIndex, 0, track);
+  refreshTrackLookup();
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${track.name}: moved ${toIndex < fromIndex ? "up" : "down"}`);
+  return true;
+}
+
+function clearTrackLane(trackOrId) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  if (!track) {
+    return false;
+  }
+
+  if (track.locked) {
+    setStatus(`${track.name}: unlock before clearing clips`, true);
+    return false;
+  }
+
+  if (!trackHasArrangementClips(track.id)) {
+    setStatus(`${track.name}: no clips to clear`);
+    return false;
+  }
+
+  if (window.confirm && !window.confirm(`Clear all arrangement clips on ${track.name || "this track"}?`)) {
+    setStatus("Clear lane cancelled");
+    return false;
+  }
+
+  captureArrangementEdit(`Cleared ${track.name} lane`);
+  arrangement.clips.forEach((step) => {
+    if (step && typeof step === "object") {
+      delete step[track.id];
+    }
+  });
+  selectedArrangementClipKeys = new Set(
+    Array.from(selectedArrangementClipKeys).filter((key) => parseArrangementClipSelectionKey(key)?.trackId !== track.id),
+  );
+  refreshArrangementHasClipsState();
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${track.name}: lane cleared`);
+  return true;
+}
+
+function removeTrack(trackOrId) {
+  const track = typeof trackOrId === "string" ? getTrackById(trackOrId) : trackOrId;
+  if (!track) {
+    return false;
+  }
+
+  if (track.locked) {
+    setStatus(`${track.name}: unlock before removing`, true);
+    return false;
+  }
+
+  if (!canRemoveTrack()) {
+    setStatus("Keep at least 1 A/V track", true);
+    return false;
+  }
+
+  const hasWork = !!track.source || trackHasArrangementClips(track.id);
+  if (
+    hasWork &&
+    window.confirm &&
+    !window.confirm(`Remove ${track.name || "this track"} and its arrangement clips?`)
+  ) {
+    setStatus("Track removal cancelled");
+    return false;
+  }
+
+  if (transport?.active) {
+    stopTransport(false);
+  }
+
+  resetTrackPlaybackOutput(track);
+  disposeTrackAudio(track);
+  revokeTrackBounce(track);
+
+  const trackIndex = tracks.findIndex((item) => item.id === track.id);
+  if (trackIndex < 0) {
+    return false;
+  }
+
+  tracks.splice(trackIndex, 1);
+  if (Array.isArray(arrangement?.clips)) {
+    arrangement.clips.forEach((step) => {
+      if (step && typeof step === "object") {
+        delete step[track.id];
+      }
+    });
+  }
+
+  selectedArrangementClipKeys = new Set(
+    Array.from(selectedArrangementClipKeys).filter((key) => parseArrangementClipSelectionKey(key)?.trackId !== track.id),
+  );
+  arrangementClipboardClips = arrangementClipboardClips.filter((clip) => clip.trackId !== track.id);
+  if ((arrangementClipboardKind === "clips" || arrangementClipboardKind === "scene") && arrangementClipboardClips.length === 0) {
+    arrangementClipboardKind = null;
+  }
+  if (window.freemixTrackSourceCache) {
+    delete window.freemixTrackSourceCache[track.id];
+  }
+
+  appState.tracks = tracks;
+  refreshTrackLookup();
+  refreshArrangementHasClipsState();
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${track.name || "Track"} removed`);
+  return true;
+}
+
+function toggleSpecialTrackVisibility(kind) {
+  const isTextTrack = kind === "text";
+  const isDrumTrack = kind === "drum";
+  if (!isTextTrack && !isDrumTrack) {
+    return false;
+  }
+
+  if (isTextTrack) {
+    textTrackVisible = !textTrackVisible;
+    appState.textTrackVisible = textTrackVisible;
+    if (!textTrackVisible) {
+      selectedTextClipStep = null;
+      selectedTextClipSteps = new Set();
+    }
+  }
+
+  if (isDrumTrack) {
+    drumTrackVisible = !drumTrackVisible;
+    appState.drumTrackVisible = drumTrackVisible;
+    if (!drumTrackVisible) {
+      selectedDrumClipStep = null;
+      selectedDrumClipSteps = new Set();
+      resetDrumPulseCursor(arrangement?.step);
+    }
+  }
+
+  renderWorkstation();
+  markAppStateDirty(true);
+  setStatus(`${isTextTrack ? "TEXT" : "DRUM"} track ${isTextTrack ? (textTrackVisible ? "shown" : "hidden") : (drumTrackVisible ? "shown" : "hidden")}`);
+  return true;
+}
+
 window.addTrack = addTrack;
 window.canAddTrack = canAddTrack;
+window.removeTrack = removeTrack;
+window.canRemoveTrack = canRemoveTrack;
+window.duplicateTrack = duplicateTrack;
+window.moveTrack = moveTrack;
+window.clearTrackLane = clearTrackLane;
 window.freemixRenameTrack = renameTrack;
 
 function createInitialArrangement(steps = arrangementStepCount) {

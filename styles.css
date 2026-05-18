@@ -1715,6 +1715,20 @@ input[type="number"]:focus {
   justify-content: flex-end;
 }
 
+.track-management-row {
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.track-management-button {
+  flex: 0 0 auto;
+}
+
+.track-special-toggle[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  color: var(--accent);
+}
+
 .track-add-button {
   min-height: 16px;
   border: 1px solid var(--line);
@@ -1783,6 +1797,63 @@ input[type="number"]:focus {
   gap: 1px;
   min-width: 0;
   align-items: start;
+}
+
+.track-tool-row {
+  display: grid;
+  grid-template-columns:
+    minmax(54px, 0.7fr)
+    minmax(64px, 0.75fr)
+    minmax(78px, 0.92fr)
+    minmax(54px, 0.55fr)
+    repeat(4, minmax(42px, auto));
+  gap: 2px;
+  align-items: end;
+  min-width: 0;
+}
+
+.track-tool-button {
+  min-height: 17px;
+  border: 1px solid var(--line);
+  border-radius: 1px 2px 1px 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--silver) 16%, var(--control) 84%) 0, var(--control) 56%, var(--panel-alt) 100%);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.48rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.track-tool-button.danger {
+  color: color-mix(in srgb, #ff625a 82%, var(--ink));
+}
+
+.track-tool-button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.track-row.is-locked,
+.track-row.is-frozen {
+  border-color: color-mix(in srgb, var(--track-color) 36%, var(--line));
+}
+
+.track-row.is-locked .track-row-body,
+.track-row.is-frozen .track-row-body {
+  filter: saturate(0.88);
+}
+
+.track-row.is-height-compact .track-media-prep,
+.track-row.is-height-compact .track-channel-row--bottom,
+.track-row.is-height-compact .piano-roll-editor,
+.track-row.is-height-compact .automation-editor {
+  display: none;
+}
+
+.track-row.is-height-tall .piano-roll-grid {
+  max-height: 240px;
 }
 
 .track-media-prep {
@@ -2048,6 +2119,15 @@ input[type="number"]:focus {
 
 .track-state-chip[data-control="solo"] {
   cursor: pointer;
+}
+
+.track-remove-chip {
+  cursor: pointer;
+}
+
+.track-remove-chip:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 
 .track-title-action.track-collapse-toggle {
@@ -3809,6 +3889,7 @@ body::after {
 .transport-button,
 .track-toggle,
 .track-advanced-toggle,
+.track-tool-button,
 .arrangement-toggle,
 .arrangement-delete,
 .arrangement-clear,
@@ -3831,6 +3912,7 @@ input[type="number"] {
 .transport-button:hover,
 .track-toggle:hover,
 .track-advanced-toggle:hover,
+.track-tool-button:hover,
 .arrangement-toggle:hover,
 .arrangement-delete:hover,
 .arrangement-clear:hover,

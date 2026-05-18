@@ -10,6 +10,12 @@
     masterMuted: false,
     metronomeEnabled: true,
     arrangementStepCount: 8,
+    textTrackVisible: true,
+    drumTrackVisible: true,
+    textTrackMuted: false,
+    textTrackSolo: false,
+    drumTrackMuted: false,
+    drumTrackSolo: false,
     trackCount: 1,
     tracks: null,
     arrangement: null,
@@ -28,13 +34,25 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
+    "textTrackVisible",
+    "drumTrackVisible",
+    "textTrackMuted",
+    "textTrackSolo",
+    "drumTrackMuted",
+    "drumTrackSolo",
     "trackCount",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_KEYS = new Set([
     "name",
+    "color",
     "showAdvanced",
     "collapsed",
+    "locked",
+    "frozen",
+    "heightMode",
+    "capturePreset",
+    "timingNudgeMs",
     "muted",
     "volume",
     "startTime",
@@ -46,6 +64,9 @@
     "pitch",
   ]);
   const TRACK_PREF_VALID_DURATION_FILTERS = new Set(["any", "quick", "short", "medium", "long"]);
+  const TRACK_PREF_VALID_COLORS = new Set(["green", "amber", "blue", "red"]);
+  const TRACK_PREF_VALID_HEIGHT_MODES = new Set(["normal", "compact", "tall"]);
+  const TRACK_PREF_VALID_CAPTURE_PRESETS = new Set(["current", "dry", "muted", "performance"]);
   const TRACK_PREF_VALID_BLEND_MODES = new Set([
     "normal",
     "screen",
@@ -63,13 +84,25 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
+    "textTrackVisible",
+    "drumTrackVisible",
+    "textTrackMuted",
+    "textTrackSolo",
+    "drumTrackMuted",
+    "drumTrackSolo",
     "trackCount",
     "userOnboarding",
   ]);
   const PERSISTED_TRACK_FAVORITE_KEYS = Object.freeze([
     "name",
+    "color",
     "showAdvanced",
     "collapsed",
+    "locked",
+    "frozen",
+    "heightMode",
+    "capturePreset",
+    "timingNudgeMs",
     "muted",
     "volume",
     "startTime",
@@ -117,6 +150,12 @@
     MIN_ARRANGEMENT_STEPS,
     MAX_ARRANGEMENT_STEPS,
   );
+  state.textTrackVisible = state.textTrackVisible ?? defaultsFromSaved.textTrackVisible;
+  state.drumTrackVisible = state.drumTrackVisible ?? defaultsFromSaved.drumTrackVisible;
+  state.textTrackMuted = !!(state.textTrackMuted ?? defaultsFromSaved.textTrackMuted);
+  state.textTrackSolo = !!(state.textTrackSolo ?? defaultsFromSaved.textTrackSolo);
+  state.drumTrackMuted = !!(state.drumTrackMuted ?? defaultsFromSaved.drumTrackMuted);
+  state.drumTrackSolo = !!(state.drumTrackSolo ?? defaultsFromSaved.drumTrackSolo);
   state.trackCount = clamp(
     Number(state.trackCount) ||
       Number(defaultsFromSaved.trackCount) ||
@@ -235,7 +274,7 @@
         return;
       }
 
-      if (key === "showAdvanced" || key === "muted" || key === "collapsed") {
+      if (key === "showAdvanced" || key === "muted" || key === "collapsed" || key === "locked" || key === "frozen") {
         snapshot[key] = !!value;
         return;
       }
@@ -246,13 +285,29 @@
         return;
       }
 
-      if (key === "volume" || key === "startTime" || key === "opacity" || key === "speed" || key === "pitch") {
+      if (key === "color") {
+        snapshot[key] = TRACK_PREF_VALID_COLORS.has(String(value)) ? String(value) : null;
+        return;
+      }
+
+      if (key === "heightMode") {
+        snapshot[key] = TRACK_PREF_VALID_HEIGHT_MODES.has(String(value)) ? String(value) : "normal";
+        return;
+      }
+
+      if (key === "capturePreset") {
+        snapshot[key] = TRACK_PREF_VALID_CAPTURE_PRESETS.has(String(value)) ? String(value) : "current";
+        return;
+      }
+
+      if (key === "volume" || key === "startTime" || key === "opacity" || key === "speed" || key === "pitch" || key === "timingNudgeMs") {
         const limits = {
           volume: [-Infinity, Infinity],
           startTime: [0, Infinity],
           opacity: [0, 1],
           speed: [0.5, 2],
           pitch: [-12, 12],
+          timingNudgeMs: [-250, 250],
         }[key];
         snapshot[key] = clamp(sanitizeNumber(value, snapshot[key]), limits[0], limits[1]);
         return;
@@ -393,6 +448,30 @@
         track.collapsed = stored.collapsed;
       }
 
+      if (typeof stored.locked === "boolean") {
+        track.locked = stored.locked;
+      }
+
+      if (typeof stored.frozen === "boolean") {
+        track.frozen = stored.frozen;
+      }
+
+      if (typeof stored.color === "string" && TRACK_PREF_VALID_COLORS.has(stored.color)) {
+        track.color = stored.color;
+      }
+
+      if (typeof stored.heightMode === "string" && TRACK_PREF_VALID_HEIGHT_MODES.has(stored.heightMode)) {
+        track.heightMode = stored.heightMode;
+      }
+
+      if (typeof stored.capturePreset === "string" && TRACK_PREF_VALID_CAPTURE_PRESETS.has(stored.capturePreset)) {
+        track.capturePreset = stored.capturePreset;
+      }
+
+      if (typeof stored.timingNudgeMs === "number") {
+        track.timingNudgeMs = stored.timingNudgeMs;
+      }
+
       if (typeof stored.name === "string" && stored.name.trim()) {
         track.name = stored.name.trim();
       }
@@ -436,8 +515,14 @@
     rows.forEach((track) => {
       snapshot[track.id] = {
         name: String(track.name || "").trim(),
+        color: track.color || "green",
         showAdvanced: !!track.showAdvanced,
         collapsed: !!track.collapsed,
+        locked: !!track.locked,
+        frozen: false,
+        heightMode: track.heightMode || "normal",
+        capturePreset: track.capturePreset || "current",
+        timingNudgeMs: Number(track.timingNudgeMs) || 0,
         muted: !!track.muted,
         volume: Number(track.volume) || 0,
         startTime: Number(track.startTime) || 0,
@@ -475,6 +560,12 @@
             MIN_ARRANGEMENT_STEPS,
             MAX_ARRANGEMENT_STEPS,
           ),
+          textTrackVisible: state.textTrackVisible !== false,
+          drumTrackVisible: state.drumTrackVisible !== false,
+          textTrackMuted: !!state.textTrackMuted,
+          textTrackSolo: !!state.textTrackSolo,
+          drumTrackMuted: !!state.drumTrackMuted,
+          drumTrackSolo: !!state.drumTrackSolo,
           masterMuted: !!state.masterMuted,
           trackCount: getTrackCountSnapshot(state.tracks),
           userOnboarding: state.userOnboarding,
@@ -551,6 +642,12 @@
     "masterMuted",
     "metronomeEnabled",
     "arrangementStepCount",
+    "textTrackVisible",
+    "drumTrackVisible",
+    "textTrackMuted",
+    "textTrackSolo",
+    "drumTrackMuted",
+    "drumTrackSolo",
     "trackCount",
     "tracks",
     "arrangement",
